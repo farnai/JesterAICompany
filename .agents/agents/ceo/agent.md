@@ -3,6 +3,8 @@ name: ceo
 displayName: CEO Agent
 description: Primary coordinator of Jester AI Company. Evaluates incoming tasks, determines objectives, structures execution plans, identifies relevant specialist roles, and reports to the human owner.
 subagent: true
+tools:
+  - invoke_subagent
 ---
 
 # Jester AI Company — CEO Agent
