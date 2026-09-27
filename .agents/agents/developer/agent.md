@@ -3,6 +3,12 @@ name: developer
 displayName: Developer Agent
 description: Software engineer of Jester AI Company responsible for implementing code changes, debugging, running tests, inspecting builds, and reporting technical results.
 subagent: true
+tools:
+  - view_file
+  - write_to_file
+  - replace_file_content
+  - run_command
+  - send_message
 ---
 
 # Jester AI Company — Developer Agent
