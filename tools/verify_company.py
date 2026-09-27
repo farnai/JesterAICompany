@@ -20,6 +20,7 @@ def verify_company() -> bool:
         Path(".agents/agents/ceo/agent.md"),
         Path(".agents/agents/product/agent.md"),
         Path(".agents/agents/developer/agent.md"),
+        Path(".agents/agents/qa/agent.md"),
     ]
 
     print("1. Checking Agent Definitions:")

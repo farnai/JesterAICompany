@@ -53,6 +53,7 @@ def parse_metadata_from_readme(readme_path: Path) -> Dict[str, Any]:
     metadata: Dict[str, Any] = {
         "company_name": DEFAULT_COMPANY_NAME,
         "registered_agents": list(DEFAULT_REGISTERED_AGENTS),
+        "agent_count": len(DEFAULT_REGISTERED_AGENTS),
         "status": DEFAULT_STATUS,
     }
 
@@ -95,6 +96,9 @@ def parse_metadata_from_readme(readme_path: Path) -> Dict[str, Any]:
         ]
         if extracted_roles:
             metadata["registered_agents"] = extracted_roles
+
+    # Automatically count registered agents
+    metadata["agent_count"] = len(metadata["registered_agents"])
 
     # 3. Status / Build Phase (Section 6 current step)
     phase_match = re.search(

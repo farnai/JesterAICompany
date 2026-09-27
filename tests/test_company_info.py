@@ -45,7 +45,7 @@ def test_stdout_is_valid_json():
 
 
 def test_schema_keys_present():
-    """AC 3: Keys company_name, registered_agents, and status are present."""
+    """AC 3: Keys company_name, registered_agents, agent_count, and status are present."""
     result = subprocess.run(
         [sys.executable, str(SCRIPT_PATH)],
         cwd=REPO_ROOT,
@@ -53,8 +53,26 @@ def test_schema_keys_present():
         text=True,
     )
     data = json.loads(result.stdout)
-    for key in ("company_name", "registered_agents", "status"):
+    for key in ("company_name", "registered_agents", "agent_count", "status"):
         assert key in data, f"Missing key '{key}' in output JSON"
+
+
+def test_agent_count_value():
+    """Verify agent_count is present, is an integer, and equals len(registered_agents)."""
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    data = json.loads(result.stdout)
+    assert "agent_count" in data, "agent_count must be present in output JSON"
+    assert isinstance(data["agent_count"], int) and not isinstance(data["agent_count"], bool), (
+        "agent_count must be an integer"
+    )
+    assert data["agent_count"] == len(data["registered_agents"]), (
+        f"agent_count ({data['agent_count']}) must equal len(registered_agents) ({len(data['registered_agents'])})"
+    )
 
 
 def test_company_name_value():
@@ -160,4 +178,34 @@ def test_fallback_on_missing_readme():
         data = json.loads(result.stdout)
         assert data["company_name"] == "Jester AI Company"
         assert len(data["registered_agents"]) == 7
+        assert data["agent_count"] == 7
+        assert data["agent_count"] == len(data["registered_agents"])
         assert data["status"] == "STEP 2 = Company Foundation"
+
+
+def test_agent_count_dynamic_custom_readme():
+    """Verify agent_count dynamically reflects the number of parsed agents from README."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_readme = Path(tmpdir) / "README.md"
+        tmp_readme.write_text(
+            "# Test Company\n"
+            "- **Name:** Custom Co\n"
+            "## 4. Initial Employee Roles\n"
+            "- **Alpha:** Lead\n"
+            "- **Beta:** Support\n"
+            "- **Gamma:** QA\n"
+            "## 6. Build Plan\n"
+            "- **STEP 1 = Plan** *(Current)*\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--repo-root", tmpdir],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["company_name"] == "Custom Co"
+        assert data["registered_agents"] == ["Alpha", "Beta", "Gamma"]
+        assert data["agent_count"] == 3
+        assert data["agent_count"] == len(data["registered_agents"])
