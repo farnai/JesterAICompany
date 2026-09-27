@@ -33,6 +33,7 @@ from jester_ai_company.status import (
     VERSION,
     format_status_console,
     get_company_status,
+    get_pipeline_telemetry,
     get_repo_root,
 )
 
@@ -47,6 +48,7 @@ __all__ = [
     "VERSION",
     "format_status_console",
     "get_company_status",
+    "get_pipeline_telemetry",
     "get_repo_root",
     "main",
 ]
