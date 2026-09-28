@@ -42,6 +42,8 @@ from .status import (
     get_pipeline_telemetry,
 )
 
+from .control_center import ControlCenterHandler, create_server, run_control_center
+
 __version__ = "0.1.0"
 
 __all__ = [
@@ -67,6 +69,9 @@ __all__ = [
     "RunNotFoundError",
     "InvalidTaskStateError",
     "ExecutionError",
+    "ControlCenterHandler",
+    "create_server",
+    "run_control_center",
     "RECOGNIZED_AGENTS",
     "get_agent_inventory",
     "DEFAULT_COMPANY_NAME",

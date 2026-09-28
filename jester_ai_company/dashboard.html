@@ -1,0 +1,1662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jester AI Company — Control Center</title>
+  <style>
+    :root {
+      --bg-base: #0a0d14;
+      --bg-surface: #111726;
+      --bg-surface-elevated: #182238;
+      --bg-surface-hover: #202d4a;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-accent: rgba(99, 102, 241, 0.35);
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent-primary: #6366f1;
+      --accent-primary-hover: #4f46e5;
+      --accent-cyan: #06b6d4;
+      --status-success: #10b981;
+      --status-success-bg: rgba(16, 185, 129, 0.12);
+      --status-failed: #ef4444;
+      --status-failed-bg: rgba(239, 68, 68, 0.12);
+      --status-warning: #f59e0b;
+      --status-warning-bg: rgba(245, 158, 11, 0.12);
+      --status-info: #3b82f6;
+      --status-info-bg: rgba(59, 130, 246, 0.12);
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", "Helvetica Neue", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.4);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Top Navigation Header */
+    header {
+      background: rgba(17, 23, 38, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-subtle);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      padding: 0.75rem 1.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand-section {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .brand-logo {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-cyan));
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.1rem;
+      color: #fff;
+      box-shadow: 0 0 15px rgba(99, 102, 241, 0.4);
+    }
+
+    .brand-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #fff;
+    }
+
+    .brand-subtitle {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .system-health-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.3rem 0.75rem;
+      background: var(--status-success-bg);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--status-success);
+    }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      background-color: var(--status-success);
+      border-radius: 50%;
+      box-shadow: 0 0 8px var(--status-success);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.45rem 0.9rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all 0.15s ease-in-out;
+      font-family: inherit;
+    }
+
+    .btn-primary {
+      background: var(--accent-primary);
+      color: #fff;
+    }
+    .btn-primary:hover {
+      background: var(--accent-primary-hover);
+      box-shadow: 0 0 12px rgba(99, 102, 241, 0.4);
+    }
+
+    .btn-secondary {
+      background: var(--bg-surface-elevated);
+      color: var(--text-main);
+      border-color: var(--border-subtle);
+    }
+    .btn-secondary:hover {
+      background: var(--bg-surface-hover);
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    .btn-success {
+      background: var(--status-success);
+      color: #fff;
+    }
+    .btn-success:hover {
+      filter: brightness(1.1);
+    }
+
+    /* Tab Navigation */
+    .tab-bar {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      padding: 0 1.75rem;
+      gap: 0.25rem;
+      overflow-x: auto;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 0.85rem 1.1rem;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .tab-btn:hover {
+      color: var(--text-main);
+    }
+
+    .tab-btn.active {
+      color: #fff;
+      border-bottom-color: var(--accent-primary);
+    }
+
+    .badge-count {
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      padding: 0.1rem 0.45rem;
+      border-radius: 999px;
+      font-weight: 600;
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      padding: 1.75rem;
+      max-width: 1440px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .view-panel {
+      display: none;
+    }
+    .view-panel.active {
+      display: block;
+      animation: fadeIn 0.2s ease-in-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Grid & Cards */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 1.75rem;
+    }
+
+    .stat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 1.25rem;
+      box-shadow: var(--shadow-card);
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+    .stat-card:hover {
+      border-color: rgba(255, 255, 255, 0.18);
+      transform: translateY(-2px);
+    }
+
+    .stat-label {
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.4rem;
+    }
+
+    .stat-value {
+      font-size: 2rem;
+      font-weight: 800;
+      color: #fff;
+      line-height: 1.1;
+    }
+
+    .stat-subtext {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .content-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 1.5rem;
+      margin-bottom: 1.75rem;
+      box-shadow: var(--shadow-card);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    /* Badges & Status */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.2rem 0.55rem;
+      border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .badge-success { background: var(--status-success-bg); color: var(--status-success); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-failed { background: var(--status-failed-bg); color: var(--status-failed); border: 1px solid rgba(239, 68, 68, 0.3); }
+    .badge-warning { background: var(--status-warning-bg); color: var(--status-warning); border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-info { background: var(--status-info-bg); color: var(--status-info); border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge-neutral { background: var(--bg-surface-elevated); color: var(--text-muted); border: 1px solid var(--border-subtle); }
+
+    /* Tables */
+    .table-container {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.88rem;
+    }
+
+    th {
+      background: var(--bg-surface-elevated);
+      color: var(--text-muted);
+      font-weight: 600;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-main);
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    /* Agent Roster Grid */
+    .agent-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1.25rem;
+    }
+
+    .agent-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 1.25rem;
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: all 0.15s ease;
+    }
+    .agent-card:hover {
+      border-color: var(--border-accent);
+      transform: translateY(-2px);
+    }
+
+    .agent-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 0.75rem;
+    }
+
+    .agent-name {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #fff;
+    }
+    .agent-role {
+      font-size: 0.75rem;
+      color: var(--accent-cyan);
+      font-family: var(--font-mono);
+      font-weight: 600;
+    }
+
+    .agent-desc {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+      line-height: 1.45;
+    }
+
+    .agent-tools {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-top: auto;
+    }
+
+    .tool-tag {
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-dim);
+      font-size: 0.72rem;
+      font-family: var(--font-mono);
+      padding: 0.15rem 0.45rem;
+      border-radius: var(--radius-sm);
+    }
+
+    /* Modals & Drawers */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal-content {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      width: 100%;
+      max-width: 640px;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      padding: 1.75rem;
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .modal-title {
+      font-size: 1.2rem;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .close-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.5rem;
+      cursor: pointer;
+      line-height: 1;
+    }
+    .close-btn:hover { color: #fff; }
+
+    .form-group {
+      margin-bottom: 1.1rem;
+    }
+    .form-group label {
+      display: block;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 0.4rem;
+    }
+    .form-control {
+      width: 100%;
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      color: #fff;
+      padding: 0.55rem 0.75rem;
+      font-size: 0.88rem;
+      font-family: inherit;
+    }
+    .form-control:focus {
+      outline: none;
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+    }
+    textarea.form-control {
+      min-height: 90px;
+      resize: vertical;
+    }
+
+    /* Artifact Previewer */
+    .artifact-viewer-modal {
+      max-width: 880px;
+    }
+
+    .code-preview {
+      background: #06090e;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 1rem;
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+      color: #e2e8f0;
+      max-height: 500px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* Filters & Search */
+    .filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+      align-items: center;
+    }
+    .search-input {
+      flex: 1;
+      min-width: 240px;
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      color: #fff;
+      padding: 0.5rem 0.85rem;
+      font-size: 0.85rem;
+      font-family: inherit;
+    }
+    .search-input:focus {
+      outline: none;
+      border-color: var(--accent-primary);
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: var(--text-dim);
+    }
+    .empty-state h3 {
+      font-size: 1.1rem;
+      color: var(--text-muted);
+      margin-bottom: 0.4rem;
+    }
+
+    /* Notice callout */
+    .callout {
+      background: rgba(99, 102, 241, 0.08);
+      border-left: 3px solid var(--accent-primary);
+      padding: 0.85rem 1.1rem;
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      font-size: 0.85rem;
+      color: var(--text-main);
+      margin-bottom: 1.25rem;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border-subtle);
+      padding: 1rem 1.75rem;
+      color: var(--text-dim);
+      font-size: 0.78rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--bg-surface);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Header -->
+  <header>
+    <div class="brand-section">
+      <div class="brand-logo">J</div>
+      <div>
+        <div class="brand-title" id="hdr-company-name">Jester AI Company</div>
+        <div class="brand-subtitle">Operations Control Center</div>
+      </div>
+      <div class="system-health-pill">
+        <span class="pulse-dot"></span>
+        <span id="hdr-health">OPERATIONAL</span>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <button class="btn btn-secondary" onclick="fetchFullState()" title="Reload live state from CompanyService">
+        ↻ Refresh
+      </button>
+      <button class="btn btn-secondary" onclick="openNewProjectModal()">
+        + New Project
+      </button>
+      <button class="btn btn-primary" onclick="openNewTaskModal()">
+        + New Task
+      </button>
+    </div>
+  </header>
+
+  <!-- Navigation Tabs -->
+  <nav class="tab-bar">
+    <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">
+      Overview
+    </button>
+    <button class="tab-btn" data-tab="agents" onclick="switchTab('agents')">
+      Employees <span class="badge-count" id="tab-cnt-agents">7</span>
+    </button>
+    <button class="tab-btn" data-tab="projects" onclick="switchTab('projects')">
+      Projects <span class="badge-count" id="tab-cnt-projects">0</span>
+    </button>
+    <button class="tab-btn" data-tab="tasks" onclick="switchTab('tasks')">
+      Tasks <span class="badge-count" id="tab-cnt-tasks">0</span>
+    </button>
+    <button class="tab-btn" data-tab="runs" onclick="switchTab('runs')">
+      Execution Runs <span class="badge-count" id="tab-cnt-runs">0</span>
+    </button>
+    <button class="tab-btn" data-tab="verifications" onclick="switchTab('verifications')">
+      QA & Verification <span class="badge-count" id="tab-cnt-veris">0</span>
+    </button>
+    <button class="tab-btn" data-tab="artifacts" onclick="switchTab('artifacts')">
+      Artifacts & Results <span class="badge-count" id="tab-cnt-artifacts">0</span>
+    </button>
+  </nav>
+
+  <!-- Main Container -->
+  <main>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 1: OVERVIEW -->
+    <!-- ===================================================================== -->
+    <div id="view-overview" class="view-panel active">
+      <!-- High Level Metrics -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Active AI Employees</div>
+          <div class="stat-value" id="stat-active-employees">7</div>
+          <div class="stat-subtext">All specialized roles active</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Registered Projects</div>
+          <div class="stat-value" id="stat-total-projects">0</div>
+          <div class="stat-subtext" id="stat-sub-projects">Multi-project enabled</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total Tasks</div>
+          <div class="stat-value" id="stat-total-tasks">0</div>
+          <div class="stat-subtext">
+            <span class="badge badge-success" id="stat-completed-tasks">0 Done</span>
+            <span class="badge badge-failed" id="stat-failed-tasks">0 Failed</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Execution Runs</div>
+          <div class="stat-value" id="stat-total-runs">0</div>
+          <div class="stat-subtext" id="stat-run-rate">Telemetry linked</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">QA Verifications</div>
+          <div class="stat-value" id="stat-qa-checks">0</div>
+          <div class="stat-subtext">
+            <span class="badge badge-success" id="stat-qa-passed">0 Passed</span>
+            <span class="badge badge-failed" id="stat-qa-failed">0 Failed</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Company Identity & Purpose -->
+      <div class="content-card">
+        <div class="card-header">
+          <div class="card-title">🏢 Company Operational Context</div>
+          <span class="badge badge-success" id="ov-status-badge">OPERATIONAL</span>
+        </div>
+        <p style="color: var(--text-main); font-size: 0.95rem; margin-bottom: 0.75rem;" id="ov-purpose">
+          A team of AI employees that collaborate to perform real work and report results to the human owner.
+        </p>
+        <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; font-size: 0.82rem; color: var(--text-muted);">
+          <div><strong>Architecture:</strong> Universal Company Core + CompanyService</div>
+          <div><strong>Orchestration:</strong> CEO Agent with native invoke_subagent</div>
+          <div><strong>Quality Assurance:</strong> Independent QA Gate</div>
+        </div>
+      </div>
+
+      <!-- Recent Executions Table -->
+      <div class="content-card">
+        <div class="card-header">
+          <div class="card-title">⚡ Recent Executions</div>
+          <button class="btn btn-secondary" onclick="switchTab('runs')">View All Runs →</button>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Run ID</th>
+                <th>Project</th>
+                <th>Task Title</th>
+                <th>Attempt</th>
+                <th>Status</th>
+                <th>QA Verification</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody id="tbl-recent-runs">
+              <tr><td colspan="7" class="empty-state">Loading recent runs...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 2: AGENTS -->
+    <!-- ===================================================================== -->
+    <div id="view-agents" class="view-panel">
+      <div class="callout">
+        <strong>The 7 Specialized AI Employees:</strong> These employees are universal, reusable assets of Jester AI Company. They collaborate across projects and report verified outcomes to the human owner.
+      </div>
+      <div class="agent-grid" id="grid-agents">
+        <!-- Rendered dynamically -->
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 3: PROJECTS -->
+    <!-- ===================================================================== -->
+    <div id="view-projects" class="view-panel">
+      <div class="content-card">
+        <div class="card-header">
+          <div class="card-title">📁 Registered Projects</div>
+          <button class="btn btn-primary" onclick="openNewProjectModal()">+ Add Project</button>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Project ID</th>
+                <th>Project Name</th>
+                <th>Tech Stack</th>
+                <th>Root Path</th>
+                <th>Tasks Count</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tbl-projects">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Project Detail Panel -->
+      <div id="project-detail-panel" class="content-card" style="display: none;">
+        <div class="card-header">
+          <div class="card-title">🔍 Project Detail: <span id="dtl-project-name" style="color: var(--accent-cyan); margin-left: 0.5rem;"></span></div>
+          <button class="btn btn-secondary" onclick="document.getElementById('project-detail-panel').style.display='none'">Close</button>
+        </div>
+        <div id="dtl-project-body"></div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 4: TASKS -->
+    <!-- ===================================================================== -->
+    <div id="view-tasks" class="view-panel">
+      <div class="filter-bar">
+        <input type="text" id="task-search" class="search-input" placeholder="Search tasks by title, goal, or ID..." oninput="filterTasks()">
+        <select id="task-project-filter" class="form-control" style="width: 200px;" onchange="filterTasks()">
+          <option value="">All Projects</option>
+        </select>
+        <select id="task-status-filter" class="form-control" style="width: 160px;" onchange="filterTasks()">
+          <option value="">All Statuses</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="FAILED">Failed</option>
+          <option value="IN_PROGRESS">In Progress</option>
+          <option value="PENDING">Pending</option>
+        </select>
+        <button class="btn btn-primary" onclick="openNewTaskModal()">+ New Task</button>
+      </div>
+
+      <div class="content-card">
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Task ID</th>
+                <th>Project</th>
+                <th>Title</th>
+                <th>Status</th>
+                <th>Runs</th>
+                <th>Latest Result</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tbl-tasks">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Task Detail Panel -->
+      <div id="task-detail-panel" class="content-card" style="display: none;">
+        <div class="card-header">
+          <div class="card-title">📋 Task Details & History</div>
+          <button class="btn btn-secondary" onclick="document.getElementById('task-detail-panel').style.display='none'">Close</button>
+        </div>
+        <div id="dtl-task-body"></div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 5: RUNS -->
+    <!-- ===================================================================== -->
+    <div id="view-runs" class="view-panel">
+      <div class="callout">
+        <strong>Execution Runs:</strong> Each task run records attempt number, CEO orchestration, deliverables, and verification results. A single Task can have multiple runs when retrying.
+      </div>
+      <div class="content-card">
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Run ID</th>
+                <th>Project</th>
+                <th>Task</th>
+                <th>Attempt</th>
+                <th>Status</th>
+                <th>QA Check</th>
+                <th>Artifacts</th>
+                <th>Completed At</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tbl-runs">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 6: QA & VERIFICATION -->
+    <!-- ===================================================================== -->
+    <div id="view-verifications" class="view-panel">
+      <div class="callout">
+        <strong>Independent QA Gate:</strong> The distinction between <em>Execution Success</em> (did the agents run?) and <em>QA Verification</em> (did independent QA verify the deliverables against acceptance criteria?) is fundamental to Jester AI Company.
+      </div>
+      <div class="content-card">
+        <div class="card-header">
+          <div class="card-title">🛡️ QA Verification Checks</div>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Verification ID</th>
+                <th>Run ID</th>
+                <th>Task</th>
+                <th>Verifier</th>
+                <th>Result</th>
+                <th>Summary</th>
+                <th>Executed At</th>
+              </tr>
+            </thead>
+            <tbody id="tbl-verifications">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- VIEW 7: ARTIFACTS & RESULTS -->
+    <!-- ===================================================================== -->
+    <div id="view-artifacts" class="view-panel">
+      <div class="filter-bar">
+        <input type="text" id="artifact-search" class="search-input" placeholder="Search artifacts by name or path..." oninput="filterArtifacts()">
+        <select id="artifact-type-filter" class="form-control" style="width: 220px;" onchange="filterArtifacts()">
+          <option value="">All Artifact Types</option>
+          <option value="SPECIFICATION">SPECIFICATION</option>
+          <option value="CODE_PATCH">CODE_PATCH</option>
+          <option value="VERIFICATION_REPORT">VERIFICATION_REPORT</option>
+          <option value="LOG">LOG</option>
+          <option value="SUMMARY">SUMMARY</option>
+        </select>
+      </div>
+
+      <div class="content-card">
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Artifact Name</th>
+                <th>Type</th>
+                <th>Run ID</th>
+                <th>Project</th>
+                <th>Durable</th>
+                <th>Relative Path</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tbl-artifacts">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- MODALS -->
+  <!-- ===================================================================== -->
+
+  <!-- 1. New Project Modal -->
+  <div id="modal-project" class="modal-backdrop">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title">Create New Project</div>
+        <button class="close-btn" onclick="closeModal('modal-project')">&times;</button>
+      </div>
+      <form onsubmit="handleCreateProject(event)">
+        <div class="form-group">
+          <label>Project ID (e.g. project-alpha)</label>
+          <input type="text" id="inp-proj-id" class="form-control" required placeholder="project-alpha">
+        </div>
+        <div class="form-group">
+          <label>Project Name</label>
+          <input type="text" id="inp-proj-name" class="form-control" required placeholder="Project Alpha">
+        </div>
+        <div class="form-group">
+          <label>Tech Stack (comma-separated)</label>
+          <input type="text" id="inp-proj-tech" class="form-control" placeholder="Python, FastAPI, React">
+        </div>
+        <div class="form-group">
+          <label>Root Path (Optional)</label>
+          <input type="text" id="inp-proj-root" class="form-control" placeholder="/path/to/project">
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('modal-project')">Cancel</button>
+          <button type="submit" class="btn btn-primary">Create Project</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 2. New Task Modal -->
+  <div id="modal-task" class="modal-backdrop">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title">Create New Task</div>
+        <button class="close-btn" onclick="closeModal('modal-task')">&times;</button>
+      </div>
+      <form onsubmit="handleCreateTask(event)">
+        <div class="form-group">
+          <label>Project</label>
+          <select id="inp-task-proj" class="form-control" required>
+            <!-- Populated dynamically -->
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Task Title</label>
+          <input type="text" id="inp-task-title" class="form-control" required placeholder="e.g. Implement Health Status Endpoint">
+        </div>
+        <div class="form-group">
+          <label>Task Goal (Full Prompt)</label>
+          <textarea id="inp-task-goal" class="form-control" required placeholder="Describe the goal for the CEO and specialists..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>Constraints (comma-separated)</label>
+          <input type="text" id="inp-task-constraints" class="form-control" placeholder="Zero external dependencies, 100% test coverage">
+        </div>
+        <div class="form-group">
+          <label>Required Roles (comma-separated)</label>
+          <input type="text" id="inp-task-roles" class="form-control" placeholder="product, developer, qa">
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('modal-task')">Cancel</button>
+          <button type="submit" class="btn btn-primary">Create Task</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 3. Execute Task Modal -->
+  <div id="modal-execute" class="modal-backdrop">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title">Execute Task</div>
+        <button class="close-btn" onclick="closeModal('modal-execute')">&times;</button>
+      </div>
+      <form onsubmit="handleExecuteTask(event)">
+        <input type="hidden" id="inp-exec-task-id">
+        <div class="form-group">
+          <label>Task</label>
+          <div id="exec-task-display" style="color: var(--accent-cyan); font-weight: 600; padding: 0.5rem 0;"></div>
+        </div>
+        <div class="form-group">
+          <label>Verification Command</label>
+          <input type="text" id="inp-exec-cmd" class="form-control" placeholder="python tools/verify_company.py">
+        </div>
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" id="inp-exec-mock" checked>
+            <span>Simulate execution with Mock Mode (Fast, safe, zero agy token usage)</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" id="inp-exec-dryrun">
+            <span>Dry-run simulation only</span>
+          </label>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('modal-execute')">Cancel</button>
+          <button type="submit" class="btn btn-success" id="btn-exec-submit">Start Execution</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 4. Artifact Content Viewer Modal -->
+  <div id="modal-artifact" class="modal-backdrop">
+    <div class="modal-content artifact-viewer-modal">
+      <div class="modal-header">
+        <div>
+          <div class="modal-title" id="art-modal-title">Artifact Preview</div>
+          <div style="font-size: 0.75rem; color: var(--text-dim);" id="art-modal-path"></div>
+        </div>
+        <button class="close-btn" onclick="closeModal('modal-artifact')">&times;</button>
+      </div>
+      <div class="code-preview" id="art-modal-body">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer>
+    <div>Jester AI Company — Stage 27 Control Center</div>
+    <div>Universal Company Core &bull; Application Service Boundary</div>
+  </footer>
+
+  <!-- Dashboard JavaScript Logic -->
+  <script>
+    // State Store
+    const state = {
+      overview: null,
+      agents: [],
+      projects: [],
+      tasks: [],
+      runs: [],
+      verifications: [],
+      artifacts: []
+    };
+
+    // Tab Switching
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tabId);
+      });
+      document.querySelectorAll('.view-panel').forEach(panel => {
+        panel.classList.toggle('active', panel.id === `view-${tabId}`);
+      });
+    }
+
+    // Modal Helpers
+    function openModal(id) {
+      document.getElementById(id).classList.add('open');
+    }
+    function closeModal(id) {
+      document.getElementById(id).classList.remove('open');
+    }
+
+    function openNewProjectModal() {
+      openModal('modal-project');
+    }
+
+    function openNewTaskModal() {
+      const select = document.getElementById('inp-task-proj');
+      select.innerHTML = state.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)} (${p.id})</option>`).join('');
+      openModal('modal-task');
+    }
+
+    function openExecuteModal(taskId, taskTitle) {
+      document.getElementById('inp-exec-task-id').value = taskId;
+      document.getElementById('exec-task-display').textContent = `${taskTitle} (${taskId})`;
+      document.getElementById('inp-exec-cmd').value = 'python tools/verify_company.py';
+      openModal('modal-execute');
+    }
+
+    // Escape HTML to prevent XSS
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    // Fetch and render all data from CompanyService
+    async function fetchFullState() {
+      try {
+        const [overviewRes, agentsRes, projectsRes, tasksRes, runsRes, verisRes, artsRes] = await Promise.all([
+          fetch('/api/overview'),
+          fetch('/api/agents'),
+          fetch('/api/projects'),
+          fetch('/api/tasks'),
+          fetch('/api/runs'),
+          fetch('/api/verifications'),
+          fetch('/api/artifacts')
+        ]);
+
+        state.overview = await overviewRes.json();
+        state.agents = await agentsRes.json();
+        state.projects = await projectsRes.json();
+        state.tasks = await tasksRes.json();
+        state.runs = await runsRes.json();
+        state.verifications = await verisRes.json();
+        state.artifacts = await artsRes.json();
+
+        renderOverview();
+        renderAgents();
+        renderProjects();
+        renderTasks();
+        renderRuns();
+        renderVerifications();
+        renderArtifacts();
+      } catch (err) {
+        console.error('Failed to load state from Control Center API:', err);
+      }
+    }
+
+    // Render Overview
+    function renderOverview() {
+      if (!state.overview) return;
+      const c = state.overview.counts || {};
+      const comp = state.overview.company || {};
+
+      document.getElementById('hdr-company-name').textContent = comp.name || 'Jester AI Company';
+      document.getElementById('ov-purpose').textContent = comp.purpose || '';
+
+      document.getElementById('stat-active-employees').textContent = c.active_employees ?? 7;
+      document.getElementById('stat-total-projects').textContent = c.total_projects ?? 0;
+      document.getElementById('stat-total-tasks').textContent = c.total_tasks ?? 0;
+      document.getElementById('stat-completed-tasks').textContent = `${c.completed_tasks ?? 0} Done`;
+      document.getElementById('stat-failed-tasks').textContent = `${c.failed_tasks ?? 0} Failed`;
+
+      document.getElementById('stat-total-runs').textContent = c.total_runs ?? 0;
+      document.getElementById('stat-qa-checks').textContent = c.total_verifications ?? 0;
+      document.getElementById('stat-qa-passed').textContent = `${c.passed_verifications ?? 0} Passed`;
+      document.getElementById('stat-qa-failed').textContent = `${c.failed_verifications ?? 0} Failed`;
+
+      // Update badge counts on tabs
+      document.getElementById('tab-cnt-agents').textContent = state.agents.length;
+      document.getElementById('tab-cnt-projects').textContent = state.projects.length;
+      document.getElementById('tab-cnt-tasks').textContent = state.tasks.length;
+      document.getElementById('tab-cnt-runs').textContent = state.runs.length;
+      document.getElementById('tab-cnt-veris').textContent = state.verifications.length;
+      document.getElementById('tab-cnt-artifacts').textContent = state.artifacts.length;
+
+      // Render recent runs table
+      const recent = state.overview.recent_runs || [];
+      const tbody = document.getElementById('tbl-recent-runs');
+      if (recent.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No execution runs recorded yet.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = recent.slice(0, 8).map(r => {
+        const statusBadge = r.status === 'SUCCESS' 
+          ? '<span class="badge badge-success">SUCCESS</span>'
+          : '<span class="badge badge-failed">FAILED</span>';
+        const qaBadge = r.has_passed_verification
+          ? '<span class="badge badge-success">PASSED</span>'
+          : '<span class="badge badge-warning">CHECK DETAILS</span>';
+        
+        return `
+          <tr>
+            <td><code style="color: var(--accent-cyan);">${escapeHtml(r.id)}</code></td>
+            <td><strong>${escapeHtml(r.project_name || r.project_id)}</strong></td>
+            <td>${escapeHtml(r.task_title || r.task_id)}</td>
+            <td>#${r.attempt_number || 1}</td>
+            <td>${statusBadge}</td>
+            <td>${qaBadge}</td>
+            <td style="color: var(--text-dim); font-size: 0.8rem;">${(r.created_at || '').substring(0, 19).replace('T', ' ')}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // Render Agents (7 Employees)
+    function renderAgents() {
+      const grid = document.getElementById('grid-agents');
+      if (!state.agents.length) {
+        grid.innerHTML = '<div class="empty-state">No agents registered.</div>';
+        return;
+      }
+
+      grid.innerHTML = state.agents.map(a => `
+        <div class="agent-card">
+          <div>
+            <div class="agent-header">
+              <div>
+                <div class="agent-name">${escapeHtml(a.title)}</div>
+                <div class="agent-role">@${escapeHtml(a.role)}</div>
+              </div>
+              <span class="badge badge-success">${a.status}</span>
+            </div>
+            <div class="agent-desc">${escapeHtml(a.responsibilities)}</div>
+          </div>
+          <div class="agent-tools">
+            ${(a.tools || []).map(t => `<span class="tool-tag">${escapeHtml(t)}</span>`).join('')}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // Render Projects
+    function renderProjects() {
+      const tbody = document.getElementById('tbl-projects');
+      if (!state.projects.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No projects registered. Create one to begin.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = state.projects.map(p => {
+        const tasksCount = p.tasks ? Object.keys(p.tasks).length : 0;
+        const techStack = (p.tech_stack || []).map(t => `<span class="badge badge-neutral">${escapeHtml(t)}</span>`).join(' ');
+        return `
+          <tr>
+            <td><code>${escapeHtml(p.id)}</code></td>
+            <td><strong>${escapeHtml(p.name)}</strong></td>
+            <td>${techStack || '<span style="color: var(--text-dim);">Default</span>'}</td>
+            <td style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-dim);">${escapeHtml(p.root_path || '-')}</td>
+            <td><span class="badge badge-info">${tasksCount} Tasks</span></td>
+            <td><span class="badge badge-success">${p.status || 'ACTIVE'}</span></td>
+            <td>
+              <button class="btn btn-secondary" onclick="viewProjectDetail('${p.id}')">View Details</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      // Update project filter in Tasks tab
+      const projSelect = document.getElementById('task-project-filter');
+      projSelect.innerHTML = '<option value="">All Projects</option>' + 
+        state.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    }
+
+    function viewProjectDetail(projectId) {
+      const p = state.projects.find(x => x.id === projectId);
+      if (!p) return;
+      document.getElementById('dtl-project-name').textContent = p.name;
+      const tasks = p.tasks ? Object.values(p.tasks) : [];
+
+      document.getElementById('dtl-project-body').innerHTML = `
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+          <div><span style="color: var(--text-dim); font-size: 0.8rem;">Project ID:</span><br><code>${escapeHtml(p.id)}</code></div>
+          <div><span style="color: var(--text-dim); font-size: 0.8rem;">Root Path:</span><br><span style="font-size: 0.85rem;">${escapeHtml(p.root_path)}</span></div>
+          <div><span style="color: var(--text-dim); font-size: 0.8rem;">Tech Stack:</span><br>${(p.tech_stack || []).join(', ') || 'Standard'}</div>
+        </div>
+        <div class="card-title" style="font-size: 0.95rem; margin-bottom: 0.75rem;">Associated Tasks (${tasks.length})</div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr><th>Task ID</th><th>Title</th><th>Status</th><th>Goal</th></tr>
+            </thead>
+            <tbody>
+              ${tasks.length ? tasks.map(t => `
+                <tr>
+                  <td><code>${escapeHtml(t.id)}</code></td>
+                  <td><strong>${escapeHtml(t.title)}</strong></td>
+                  <td><span class="badge badge-${t.status === 'COMPLETED' ? 'success' : 'neutral'}">${t.status}</span></td>
+                  <td style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(t.goal)}</td>
+                </tr>
+              `).join('') : '<tr><td colspan="4" class="empty-state">No tasks registered in this project yet.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      `;
+      document.getElementById('project-detail-panel').style.display = 'block';
+    }
+
+    // Render Tasks
+    function renderTasks() {
+      filterTasks();
+    }
+
+    function filterTasks() {
+      const q = (document.getElementById('task-search').value || '').toLowerCase();
+      const projId = document.getElementById('task-project-filter').value;
+      const status = document.getElementById('task-status-filter').value;
+
+      const filtered = state.tasks.filter(t => {
+        if (projId && t.project_id !== projId) return false;
+        if (status && t.status !== status) return false;
+        if (q) {
+          const matchTitle = (t.title || '').toLowerCase().includes(q);
+          const matchGoal = (t.goal || '').toLowerCase().includes(q);
+          const matchId = (t.id || '').toLowerCase().includes(q);
+          if (!matchTitle && !matchGoal && !matchId) return false;
+        }
+        return true;
+      });
+
+      const tbody = document.getElementById('tbl-tasks');
+      if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No tasks matching current filter.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(t => {
+        let badgeClass = 'badge-neutral';
+        if (t.status === 'COMPLETED') badgeClass = 'badge-success';
+        if (t.status === 'FAILED') badgeClass = 'badge-failed';
+        if (t.status === 'IN_PROGRESS') badgeClass = 'badge-warning';
+
+        const runsCount = t.runs ? t.runs.length : 0;
+        const resultSummary = t.result ? t.result.summary : (runsCount > 0 ? 'Run in progress / failed' : 'Pending');
+
+        return `
+          <tr>
+            <td><code>${escapeHtml(t.id)}</code></td>
+            <td><strong>${escapeHtml(t.project_id)}</strong></td>
+            <td>
+              <div><strong>${escapeHtml(t.title)}</strong></div>
+              <div style="font-size: 0.78rem; color: var(--text-dim); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                ${escapeHtml(t.goal)}
+              </div>
+            </td>
+            <td><span class="badge ${badgeClass}">${t.status}</span></td>
+            <td><span class="badge badge-info">${runsCount}</span></td>
+            <td style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(resultSummary)}</td>
+            <td>
+              <div style="display: flex; gap: 0.4rem;">
+                <button class="btn btn-secondary" onclick="viewTaskDetail('${t.id}')">Details</button>
+                <button class="btn btn-success" onclick="openExecuteModal('${t.id}', '${escapeHtml(t.title)}')">Execute</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function viewTaskDetail(taskId) {
+      const t = state.tasks.find(x => x.id === taskId);
+      if (!t) return;
+
+      const runs = t.runs || [];
+      const res = t.result;
+
+      document.getElementById('dtl-task-body').innerHTML = `
+        <div style="margin-bottom: 1.25rem;">
+          <h3 style="color: #fff; margin-bottom: 0.3rem;">${escapeHtml(t.title)}</h3>
+          <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent-cyan);">${escapeHtml(t.id)} &bull; Project: ${escapeHtml(t.project_id)}</div>
+        </div>
+        <div class="callout" style="background: rgba(255, 255, 255, 0.03); border-left-color: var(--accent-cyan);">
+          <strong>Goal:</strong> ${escapeHtml(t.goal)}
+        </div>
+        ${t.constraints && t.constraints.length ? `<p style="font-size: 0.85rem; margin-bottom: 0.5rem;"><strong>Constraints:</strong> ${t.constraints.map(c => `<span class="badge badge-neutral">${escapeHtml(c)}</span>`).join(' ')}</p>` : ''}
+        ${t.required_roles && t.required_roles.length ? `<p style="font-size: 0.85rem; margin-bottom: 1rem;"><strong>Required Roles:</strong> ${t.required_roles.map(r => `<span class="badge badge-info">@${escapeHtml(r)}</span>`).join(' ')}</p>` : ''}
+        
+        ${res ? `
+          <div class="content-card" style="background: var(--bg-surface-elevated); margin-bottom: 1.5rem;">
+            <div class="card-title" style="font-size: 0.95rem; color: var(--status-success);">✓ Task Result Summary</div>
+            <p style="font-size: 0.88rem; margin: 0.5rem 0;">${escapeHtml(res.summary)}</p>
+            <div style="font-size: 0.78rem; color: var(--text-dim);">Completed at: ${res.completed_at || '-'} &bull; Total Attempts: ${res.total_runs}</div>
+          </div>
+        ` : ''}
+
+        <div class="card-title" style="font-size: 0.95rem; margin-bottom: 0.75rem;">Execution Attempts (${runs.length})</div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr><th>Run ID</th><th>Attempt</th><th>Status</th><th>Artifacts</th><th>QA Pass</th><th>Timestamp</th></tr>
+            </thead>
+            <tbody>
+              ${runs.length ? runs.map(r => `
+                <tr>
+                  <td><code>${escapeHtml(r.id)}</code></td>
+                  <td>#${r.attempt_number}</td>
+                  <td><span class="badge badge-${r.status === 'SUCCESS' ? 'success' : 'failed'}">${r.status}</span></td>
+                  <td>${r.artifacts ? r.artifacts.length : 0} files</td>
+                  <td>${(r.verifications && r.verifications.some(v => v.passed)) ? '<span class="badge badge-success">PASSED</span>' : '<span class="badge badge-failed">FAILED</span>'}</td>
+                  <td style="font-size: 0.78rem; color: var(--text-dim);">${(r.created_at || '').substring(0, 19).replace('T', ' ')}</td>
+                </tr>
+              `).join('') : '<tr><td colspan="6" class="empty-state">No execution runs for this task yet. Click Execute to begin.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      `;
+      document.getElementById('task-detail-panel').style.display = 'block';
+    }
+
+    // Render Runs
+    function renderRuns() {
+      const tbody = document.getElementById('tbl-runs');
+      if (!state.runs.length) {
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No execution runs found.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = state.runs.map(r => {
+        const qaPassed = r.has_passed_verification || (r.verifications && r.verifications.some(v => v.passed));
+        const statusBadge = r.status === 'SUCCESS' 
+          ? '<span class="badge badge-success">SUCCESS</span>'
+          : '<span class="badge badge-failed">FAILED</span>';
+        const qaBadge = qaPassed
+          ? '<span class="badge badge-success">PASSED</span>'
+          : '<span class="badge badge-failed">FAILED</span>';
+        const artCount = r.artifacts ? r.artifacts.length : 0;
+
+        return `
+          <tr>
+            <td><code>${escapeHtml(r.id)}</code></td>
+            <td><strong>${escapeHtml(r.project_name || r.project_id || '-')}</strong></td>
+            <td>${escapeHtml(r.task_title || r.task_id)}</td>
+            <td>#${r.attempt_number || 1}</td>
+            <td>${statusBadge}</td>
+            <td>${qaBadge}</td>
+            <td><span class="badge badge-neutral">${artCount} files</span></td>
+            <td style="font-size: 0.8rem; color: var(--text-dim);">${(r.completed_at || r.created_at || '').substring(0, 19).replace('T', ' ')}</td>
+            <td>
+              <button class="btn btn-secondary" onclick="viewRunArtifacts('${r.id}')">Artifacts</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function viewRunArtifacts(runId) {
+      switchTab('artifacts');
+      document.getElementById('artifact-search').value = runId;
+      filterArtifacts();
+    }
+
+    // Render QA / Verifications
+    function renderVerifications() {
+      const tbody = document.getElementById('tbl-verifications');
+      if (!state.verifications.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No QA verifications recorded.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = state.verifications.map(v => {
+        const passBadge = v.passed 
+          ? '<span class="badge badge-success">PASSED</span>' 
+          : '<span class="badge badge-failed">FAILED</span>';
+        return `
+          <tr>
+            <td><code>${escapeHtml(v.id)}</code></td>
+            <td><code>${escapeHtml(v.run_id)}</code></td>
+            <td>${escapeHtml(v.task_title || v.task_id || '-')}</td>
+            <td><span class="badge badge-info">@${escapeHtml(v.verifier_role)}</span></td>
+            <td>${passBadge}</td>
+            <td style="font-size: 0.82rem;">${escapeHtml(v.summary)}</td>
+            <td style="font-size: 0.78rem; color: var(--text-dim);">${(v.executed_at || '').substring(0, 19).replace('T', ' ')}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // Render Artifacts
+    function renderArtifacts() {
+      filterArtifacts();
+    }
+
+    function filterArtifacts() {
+      const q = (document.getElementById('artifact-search').value || '').toLowerCase();
+      const typeFilter = document.getElementById('artifact-type-filter').value;
+
+      const filtered = state.artifacts.filter(a => {
+        if (typeFilter && a.artifact_type !== typeFilter) return false;
+        if (q) {
+          const matchName = (a.name || '').toLowerCase().includes(q);
+          const matchPath = (a.path || '').toLowerCase().includes(q);
+          const matchRun = (a.run_id || '').toLowerCase().includes(q);
+          if (!matchName && !matchPath && !matchRun) return false;
+        }
+        return true;
+      });
+
+      const tbody = document.getElementById('tbl-artifacts');
+      if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No artifacts matching filter.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(a => `
+        <tr>
+          <td><strong>${escapeHtml(a.name)}</strong></td>
+          <td><span class="badge badge-info">${escapeHtml(a.artifact_type)}</span></td>
+          <td><code>${escapeHtml(a.run_id)}</code></td>
+          <td>${escapeHtml(a.project_name || a.project_id || '-')}</td>
+          <td>${a.durable ? '✓ Durable' : 'Ephemeral'}</td>
+          <td style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-dim);">${escapeHtml(a.path)}</td>
+          <td>
+            <button class="btn btn-secondary" onclick="viewArtifactContent('${escapeHtml(a.path)}', '${escapeHtml(a.run_id)}', '${escapeHtml(a.name)}')">View Content</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    // View Artifact Content in Modal
+    async function viewArtifactContent(path, runId, name) {
+      document.getElementById('art-modal-title').textContent = name || 'Artifact';
+      document.getElementById('art-modal-path').textContent = `${runId} / ${path}`;
+      document.getElementById('art-modal-body').textContent = 'Loading content from server...';
+      openModal('modal-artifact');
+
+      try {
+        const url = `/api/artifacts/content?path=${encodeURIComponent(path)}&run_id=${encodeURIComponent(runId)}`;
+        const res = await fetch(url);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          document.getElementById('art-modal-body').textContent = `Failed to load artifact content: ${errData.error || res.statusText}`;
+          return;
+        }
+        const text = await res.text();
+        document.getElementById('art-modal-body').textContent = text;
+      } catch (err) {
+        document.getElementById('art-modal-body').textContent = `Network error loading artifact: ${err.message}`;
+      }
+    }
+
+    // Handlers for POST actions
+    async function handleCreateProject(e) {
+      e.preventDefault();
+      const techVal = document.getElementById('inp-proj-tech').value;
+      const techList = techVal ? techVal.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+      const payload = {
+        project_id: document.getElementById('inp-proj-id').value.trim(),
+        name: document.getElementById('inp-proj-name').value.trim(),
+        root_path: document.getElementById('inp-proj-root').value.trim() || undefined,
+        tech_stack: techList
+      };
+
+      try {
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Error: ' + (err.error || 'Failed to create project'));
+          return;
+        }
+        closeModal('modal-project');
+        await fetchFullState();
+        switchTab('projects');
+      } catch (err) {
+        alert('Network error: ' + err.message);
+      }
+    }
+
+    async function handleCreateTask(e) {
+      e.preventDefault();
+      const constVal = document.getElementById('inp-task-constraints').value;
+      const rolesVal = document.getElementById('inp-task-roles').value;
+
+      const payload = {
+        project_id: document.getElementById('inp-task-proj').value,
+        title: document.getElementById('inp-task-title').value.trim(),
+        goal: document.getElementById('inp-task-goal').value.trim(),
+        constraints: constVal ? constVal.split(',').map(s => s.trim()).filter(Boolean) : [],
+        required_roles: rolesVal ? rolesVal.split(',').map(s => s.trim()).filter(Boolean) : []
+      };
+
+      try {
+        const res = await fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Error: ' + (err.error || 'Failed to create task'));
+          return;
+        }
+        closeModal('modal-task');
+        await fetchFullState();
+        switchTab('tasks');
+      } catch (err) {
+        alert('Network error: ' + err.message);
+      }
+    }
+
+    async function handleExecuteTask(e) {
+      e.preventDefault();
+      const taskId = document.getElementById('inp-exec-task-id').value;
+      const verifyCmd = document.getElementById('inp-exec-cmd').value.trim();
+      const mock = document.getElementById('inp-exec-mock').checked;
+      const dryRun = document.getElementById('inp-exec-dryrun').checked;
+
+      const submitBtn = document.getElementById('btn-exec-submit');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Executing...';
+
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/execute`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            verify_cmd: verifyCmd || undefined,
+            mock: mock,
+            dry_run: dryRun
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Execution error: ' + (data.error || 'Failed to execute task'));
+        } else {
+          closeModal('modal-execute');
+          await fetchFullState();
+          switchTab('runs');
+        }
+      } catch (err) {
+        alert('Network error: ' + err.message);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Start Execution';
+      }
+    }
+
+    // Initial Load
+    fetchFullState();
+    // Auto-refresh every 15 seconds
+    setInterval(fetchFullState, 15000);
+  </script>
+</body>
+</html>
