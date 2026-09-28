@@ -19,7 +19,9 @@ from .core import (
     VerificationResult,
     create_default_company,
 )
+from .execution import TaskExecutor
 from .registry import RECOGNIZED_AGENTS, get_agent_inventory
+
 from .status import (
     DEFAULT_COMPANY_NAME,
     DEFAULT_PURPOSE,
@@ -48,7 +50,9 @@ __all__ = [
     "TaskStatus",
     "VerificationResult",
     "create_default_company",
+    "TaskExecutor",
     "RECOGNIZED_AGENTS",
+
     "get_agent_inventory",
     "DEFAULT_COMPANY_NAME",
     "DEFAULT_PURPOSE",

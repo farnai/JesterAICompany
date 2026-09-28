@@ -234,7 +234,29 @@ class Task:
         self.result = res
         return res
 
+    def execute(
+        self,
+        project: Optional["Project"] = None,
+        verify_cmd: Optional[str] = None,
+        mock: bool = False,
+        dry_run: bool = False,
+        output_dir: str = ".runs",
+        verbose: bool = False,
+    ) -> "TaskRun":
+        """Initiate real execution of this Task using Company Core TaskExecutor."""
+        from .execution import TaskExecutor
+
+        executor = TaskExecutor(output_dir=output_dir, verbose=verbose)
+        return executor.execute_task(
+            self,
+            project=project,
+            verify_cmd=verify_cmd,
+            mock=mock,
+            dry_run=dry_run,
+        )
+
     def to_dict(self) -> Dict[str, Any]:
+
         d = asdict(self)
         d["runs"] = [r.to_dict() for r in self.runs]
         d["approvals"] = [a.to_dict() for a in self.approvals]
@@ -307,7 +329,30 @@ class Company:
     def get_employee(self, role_or_id: str) -> Optional[Employee]:
         return self.employees.get(role_or_id)
 
+    def execute_task(
+        self,
+        task: Task,
+        project: Optional[Project] = None,
+        verify_cmd: Optional[str] = None,
+        mock: bool = False,
+        dry_run: bool = False,
+        output_dir: str = ".runs",
+        verbose: bool = False,
+    ) -> TaskRun:
+        """Execute a Task within its Project context using the Company's TaskExecutor."""
+        from .execution import TaskExecutor
+
+        executor = TaskExecutor(company=self, output_dir=output_dir, verbose=verbose)
+        return executor.execute_task(
+            task,
+            project=project,
+            verify_cmd=verify_cmd,
+            mock=mock,
+            dry_run=dry_run,
+        )
+
     def to_dict(self) -> Dict[str, Any]:
+
         return {
             "id": self.id,
             "name": self.name,
