@@ -18,11 +18,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from jester_ai_company.core import Project, Task, create_default_company
-from jester_ai_company.execution import TaskExecutor
+from jester_ai_company.service import CompanyService
 
 
 def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
+
     parser = argparse.ArgumentParser(
         description="Execute a Task in a Project context using Jester AI Company Core.",
     )
@@ -101,38 +101,35 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
 def main(cli_args: Optional[List[str]] = None) -> int:
     args = parse_args(cli_args)
 
-    company = create_default_company(REPO_ROOT)
-
-    project = Project(
-        id=args.project_id,
-        name=args.project_name,
-        root_path=str(REPO_ROOT),
-        tech_stack=args.tech_stack,
-    )
-    company.register_project(project)
-
-    task_id = args.task_id or f"task_{uuid.uuid4().hex[:8]}"
-    task = project.create_task(
-        task_id=task_id,
-        title=args.task_title,
-        goal=args.goal,
-        constraints=args.constraints,
-    )
-
-    executor = TaskExecutor(
-        company=company,
+    service = CompanyService(
         output_dir=args.output_dir,
         verbose=args.verbose,
         repo_root=REPO_ROOT,
     )
 
-    run = executor.execute_task(
-        task,
-        project=project,
+    project = service.create_project(
+        project_id=args.project_id,
+        name=args.project_name,
+        root_path=str(REPO_ROOT),
+        tech_stack=args.tech_stack,
+    )
+
+    task = service.create_task(
+        project_id=project.id,
+        task_id=args.task_id,
+        title=args.task_title,
+        goal=args.goal,
+        constraints=args.constraints,
+    )
+
+    run = service.execute_task(
+        task_id=task.id,
+        project_id=project.id,
         verify_cmd=args.verify_cmd,
         mock=args.mock,
         dry_run=args.dry_run,
     )
+
 
     print("\n" + "=" * 80)
     print("TASK EXECUTION SUMMARY")

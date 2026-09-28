@@ -21,6 +21,15 @@ from .core import (
 )
 from .execution import TaskExecutor
 from .registry import RECOGNIZED_AGENTS, get_agent_inventory
+from .service import (
+    CompanyService,
+    CompanyServiceError,
+    ExecutionError,
+    InvalidTaskStateError,
+    ProjectNotFoundError,
+    RunNotFoundError,
+    TaskNotFoundError,
+)
 
 from .status import (
     DEFAULT_COMPANY_NAME,
@@ -51,8 +60,14 @@ __all__ = [
     "VerificationResult",
     "create_default_company",
     "TaskExecutor",
+    "CompanyService",
+    "CompanyServiceError",
+    "ProjectNotFoundError",
+    "TaskNotFoundError",
+    "RunNotFoundError",
+    "InvalidTaskStateError",
+    "ExecutionError",
     "RECOGNIZED_AGENTS",
-
     "get_agent_inventory",
     "DEFAULT_COMPANY_NAME",
     "DEFAULT_PURPOSE",
