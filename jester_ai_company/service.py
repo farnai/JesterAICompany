@@ -23,7 +23,7 @@ Architecture:
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import uuid
 
 from .core import (
@@ -41,6 +41,21 @@ from .core import (
     create_default_company,
 )
 from .execution import TaskExecutor
+from .product_result import (
+    ProductResultParseError,
+    ProductResultValidationError,
+    ProductTaskResult,
+    build_product_execution_prompt,
+    parse_and_validate_product_result,
+)
+from .materializer import materialize_specialist_artifact
+from .research_result import (
+    ResearchResultParseError,
+    ResearchResultValidationError,
+    ResearchTaskResult,
+    build_research_execution_prompt,
+    parse_and_validate_research_result,
+)
 from .proposal import (
     CEOActionProposal,
     ProposalError,
@@ -816,5 +831,173 @@ class CompanyService:
             expected_output=list(proposal.expected_output or []),
         )
         return task
+
+    # --------------------------------------------------------------------------
+    # Specialist Task Execution (STEP 6B & STEP 7)
+    # --------------------------------------------------------------------------
+
+    def _execute_specialist_task(
+        self,
+        task: Task,
+        agent_name: str,
+        prompt: str,
+        result_parser: Callable[[str], Any],
+    ) -> TaskRun:
+        """Internal generic specialist execution mechanism (STEP 7).
+
+        Executes the lifecycle mechanics for a specialist task without
+        knowing role-specific semantics:
+        - Transitions TaskRun to RUNNING.
+        - Invokes AntigravityRuntime for agent_name with prompt.
+        - Handles execution failure, timeout, and empty output safely.
+        - Applies the provided result_parser to parse & validate.
+        - Completes TaskRun (SUCCESS or FAILED) and Task (COMPLETED or FAILED).
+        - Persists validated structured result in Task.result.details.
+        """
+        run = task.create_run()
+        run.status = RunStatus.RUNNING.value
+
+        exec_result = self.runtime.execute(agent=agent_name, prompt=prompt)
+
+        # 1. Handle runtime failures
+        if not exec_result.success:
+            if exec_result.timed_out:
+                error_msg = f"{agent_name.capitalize()} runtime execution timed out after {exec_result.duration_ms:.0f}ms."
+            else:
+                error_msg = f"{agent_name.capitalize()} runtime execution failed with exit code {exec_result.exit_code}."
+            logger.warning("%s task %s execution failed: %s", agent_name.capitalize(), task.id, error_msg)
+            run.complete(status=RunStatus.FAILED.value, error=error_msg)
+            task.complete(status=TaskStatus.FAILED.value, summary=f"Task execution failed: {error_msg}")
+            return run
+
+        # 2. Handle empty output
+        raw_stdout = (exec_result.stdout or "").strip()
+        if not raw_stdout:
+            error_msg = f"{agent_name.capitalize()} runtime execution produced empty output."
+            logger.warning("%s task %s produced empty output", agent_name.capitalize(), task.id)
+            run.complete(status=RunStatus.FAILED.value, error=error_msg)
+            task.complete(status=TaskStatus.FAILED.value, summary=f"Task execution failed: {error_msg}")
+            return run
+
+        # 3. Deterministic parsing and schema validation
+        try:
+            typed_result = result_parser(raw_stdout)
+        except Exception as parse_err:
+            error_msg = f"{agent_name.capitalize()} output validation failed: {parse_err}"
+            logger.warning("%s task %s validation failed: %s", agent_name.capitalize(), task.id, error_msg)
+            run.complete(status=RunStatus.FAILED.value, error=error_msg)
+            task.complete(status=TaskStatus.FAILED.value, summary=f"Task execution failed: {error_msg}")
+            return run
+
+        # 4. Materialize durable artifact & complete Run/Task
+        if getattr(typed_result, "status", None) == "completed":
+            try:
+                materialize_specialist_artifact(
+                    base_output_dir=self.output_dir,
+                    task=task,
+                    run=run,
+                    agent_name=agent_name,
+                    typed_result=typed_result,
+                )
+            except Exception as mat_err:
+                error_msg = f"Artifact materialization failed: {mat_err}"
+                logger.warning("%s task %s materialization failed: %s", agent_name.capitalize(), task.id, error_msg)
+                run.complete(status=RunStatus.FAILED.value, error=error_msg)
+                task.complete(status=TaskStatus.FAILED.value, summary=f"Task execution failed: {error_msg}")
+                return run
+
+            run.complete(status=RunStatus.SUCCESS.value)
+            task.complete(
+                status=TaskStatus.COMPLETED.value,
+                summary=typed_result.summary,
+                details=typed_result.to_dict(),
+            )
+        else:
+            error_msg = getattr(typed_result, "summary", "") or f"{agent_name.capitalize()} agent reported task failure."
+            run.complete(status=RunStatus.FAILED.value, error=error_msg)
+            task.complete(
+                status=TaskStatus.FAILED.value,
+                summary=f"Task execution failed: {error_msg}",
+                details=typed_result.to_dict(),
+            )
+
+        return run
+
+
+    def execute_product_task(
+        self,
+        task_id: str,
+        project_id: Optional[str] = None,
+    ) -> TaskRun:
+        """Execute a registered PENDING Task assigned to Product Agent (STEP 6B).
+
+        Validates that the task is PENDING and required_roles == ['product'].
+        Constructs product execution prompt and delegates to generic execution mechanism.
+        """
+        task = self.get_task(task_id, project_id=project_id)
+
+        # 1. Eligibility validation
+        if task.status != TaskStatus.PENDING.value:
+            raise InvalidTaskStateError(
+                f"Cannot execute task '{task.id}': Task status is '{task.status}', expected '{TaskStatus.PENDING.value}'."
+            )
+
+        if not task.required_roles:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task has no required roles assigned."
+            )
+
+        normalized_roles = [r.strip().lower() for r in task.required_roles]
+        if normalized_roles != ["product"]:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task is assigned to {task.required_roles}, expected exactly ['product']."
+            )
+
+        prompt = build_product_execution_prompt(task)
+        return self._execute_specialist_task(
+            task=task,
+            agent_name="product",
+            prompt=prompt,
+            result_parser=parse_and_validate_product_result,
+        )
+
+    def execute_research_task(
+        self,
+        task_id: str,
+        project_id: Optional[str] = None,
+    ) -> TaskRun:
+        """Execute a registered PENDING Task assigned to Research Agent (STEP 7).
+
+        Validates that the task is PENDING and required_roles == ['research'].
+        Constructs research execution prompt and delegates to generic execution mechanism.
+        """
+        task = self.get_task(task_id, project_id=project_id)
+
+        # 1. Eligibility validation
+        if task.status != TaskStatus.PENDING.value:
+            raise InvalidTaskStateError(
+                f"Cannot execute task '{task.id}': Task status is '{task.status}', expected '{TaskStatus.PENDING.value}'."
+            )
+
+        if not task.required_roles:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task has no required roles assigned."
+            )
+
+        normalized_roles = [r.strip().lower() for r in task.required_roles]
+        if normalized_roles != ["research"]:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task is assigned to {task.required_roles}, expected exactly ['research']."
+            )
+
+        prompt = build_research_execution_prompt(task)
+        return self._execute_specialist_task(
+            task=task,
+            agent_name="research",
+            prompt=prompt,
+            result_parser=parse_and_validate_research_result,
+        )
+
+
 
 

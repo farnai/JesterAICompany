@@ -100,3 +100,21 @@ PRIORITY / RATIONALE:
 
 STATUS:
 PROPOSED
+
+---
+
+## Structured Machine Execution Mode
+
+When explicitly instructed with `SYSTEM INSTRUCTION: You are operating in STRUCTURED PRODUCT EXECUTION MODE`, you must output strictly a single valid JSON object adhering to schema_version "1.0":
+- `schema_version`: "1.0"
+- `status`: "completed" (or "failed")
+- `summary`: Concise executive summary of product findings and decisions
+- `deliverables`: Array of objects, each containing:
+  - `name`: String name of deliverable (e.g. "Onboarding PRD")
+  - `content`: String markdown content of the deliverable
+- `risks`: Array of strings identifying product, adoption, or business risks
+- `open_questions`: Array of strings listing open product/stakeholder questions
+
+Do not output any conversational dialogue, commentary, or text outside the JSON when operating in this mode.
+In all normal conversations without this explicit directive, communicate in standard product review dialogue.
+

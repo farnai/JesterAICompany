@@ -58,6 +58,36 @@ from .proposal import (
     extract_json_text,
     parse_and_validate_proposal,
 )
+from .product_result import (
+    ProductDeliverable,
+    ProductResultError,
+    ProductResultParseError,
+    ProductResultValidationError,
+    ProductTaskResult,
+    build_product_execution_prompt,
+    extract_product_json_text,
+    parse_and_validate_product_result,
+)
+from .research_result import (
+    ResearchFinding,
+    ResearchResultError,
+    ResearchResultParseError,
+    ResearchResultValidationError,
+    ResearchSource,
+    ResearchTaskResult,
+    build_research_execution_prompt,
+    extract_research_json_text,
+    parse_and_validate_research_result,
+)
+from .materializer import (
+    MaterializationError,
+    atomic_write_text,
+    compute_sha256,
+    format_product_report,
+    format_research_report,
+    get_safe_run_artifacts_dir,
+    materialize_specialist_artifact,
+)
 
 __version__ = "0.1.0"
 
@@ -108,6 +138,30 @@ __all__ = [
     "build_task_proposal_prompt",
     "extract_json_text",
     "parse_and_validate_proposal",
+    "ProductDeliverable",
+    "ProductResultError",
+    "ProductResultParseError",
+    "ProductResultValidationError",
+    "ProductTaskResult",
+    "build_product_execution_prompt",
+    "extract_product_json_text",
+    "parse_and_validate_product_result",
+    "ResearchFinding",
+    "ResearchResultError",
+    "ResearchResultParseError",
+    "ResearchResultValidationError",
+    "ResearchSource",
+    "ResearchTaskResult",
+    "build_research_execution_prompt",
+    "extract_research_json_text",
+    "parse_and_validate_research_result",
+    "MaterializationError",
+    "atomic_write_text",
+    "compute_sha256",
+    "format_product_report",
+    "format_research_report",
+    "get_safe_run_artifacts_dir",
+    "materialize_specialist_artifact",
     "__version__",
 ]
 

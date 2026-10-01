@@ -89,6 +89,9 @@ class Artifact:
     path: str
     durable: bool = True
     created_at: str = field(default_factory=_utc_now_iso)
+    sha256: Optional[str] = None
+    run_id: Optional[str] = None
+    producer_role: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -166,13 +169,24 @@ class TaskRun:
         self.error = error
         self.completed_at = _utc_now_iso()
 
-    def add_artifact(self, name: str, artifact_type: str, path: str, durable: bool = True) -> Artifact:
+    def add_artifact(
+        self,
+        name: str,
+        artifact_type: str,
+        path: str,
+        durable: bool = True,
+        sha256: Optional[str] = None,
+        producer_role: Optional[str] = None,
+    ) -> Artifact:
         art = Artifact(
             id=str(uuid.uuid4())[:8],
             name=name,
             artifact_type=artifact_type,
             path=path,
             durable=durable,
+            sha256=sha256,
+            run_id=self.id,
+            producer_role=producer_role,
         )
         self.artifacts.append(art)
         return art
@@ -204,6 +218,7 @@ class TaskResult:
     total_runs: int
     final_run_id: Optional[str] = None
     completed_at: str = field(default_factory=_utc_now_iso)
+    details: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -238,7 +253,7 @@ class Task:
         self.approvals.append(app)
         return app
 
-    def complete(self, status: str, summary: str) -> TaskResult:
+    def complete(self, status: str, summary: str, details: Optional[Dict[str, Any]] = None) -> TaskResult:
         self.status = status
         latest_run = self.runs[-1] if self.runs else None
         res = TaskResult(
@@ -247,9 +262,11 @@ class Task:
             summary=summary,
             total_runs=len(self.runs),
             final_run_id=latest_run.id if latest_run else None,
+            details=details or {},
         )
         self.result = res
         return res
+
 
     def execute(
         self,
