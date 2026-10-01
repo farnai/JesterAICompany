@@ -1,0 +1,1151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jester AI Company — Stage 27-D.1: Visual Explorations (Interactive Comparison)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* RESET & COMMON FOUNDATION */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+      background: #FBFBF9;
+      color: #18191B;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* TOP COMPARISON SWITCHER BAR (EXPLORATION TOOL) */
+    .switcher-bar {
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      background: #18191B;
+      color: #FFFFFF;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    }
+    .switcher-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .switcher-tag {
+      background: #F95924;
+      color: #FFF;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .switcher-tabs {
+      display: flex;
+      gap: 8px;
+      background: rgba(255,255,255,0.08);
+      padding: 4px;
+      border-radius: 8px;
+    }
+    .switcher-btn {
+      background: transparent;
+      border: none;
+      color: #A0A3A8;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: inherit;
+    }
+    .switcher-btn:hover {
+      color: #FFF;
+      background: rgba(255,255,255,0.05);
+    }
+    .switcher-btn.active {
+      background: #F95924;
+      color: #FFF;
+      box-shadow: 0 2px 8px rgba(249,89,36,0.3);
+    }
+
+    /* DIRECTION CONTAINER STYLES */
+    .direction-view {
+      display: none;
+      padding: 32px 48px 80px;
+      max-width: 1440px;
+      margin: 0 auto;
+    }
+    .direction-view.active {
+      display: block;
+    }
+
+    /* ========================================================
+       DIRECTION A: EDITORIAL STUDIO (THE ARCHITECTURAL ATELIER)
+       ======================================================== */
+    .view-a {
+      background: #FBFBF9;
+      color: #18191B;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .a-founder-masthead {
+      border-bottom: 1px solid rgba(24, 25, 27, 0.12);
+      padding-bottom: 24px;
+      margin-bottom: 36px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+    .a-founder-title {
+      font-family: 'Newsreader', serif;
+      font-size: 38px;
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      color: #18191B;
+      line-height: 1.1;
+    }
+    .a-founder-meta {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #93969F;
+      margin-bottom: 6px;
+    }
+    .a-actions {
+      display: flex;
+      gap: 12px;
+    }
+    .a-btn {
+      background: #FFFFFF;
+      border: 1px solid rgba(24, 25, 27, 0.15);
+      color: #18191B;
+      padding: 8px 18px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 600;
+      border-radius: 0;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .a-btn:hover {
+      background: #18191B;
+      color: #FFF;
+    }
+    .a-btn-primary {
+      background: #F95924;
+      color: #FFF;
+      border-color: #F95924;
+    }
+    .a-btn-primary:hover {
+      background: #D94313;
+      color: #FFF;
+    }
+
+    /* Direction A Company Map */
+    .a-map-container {
+      background: #FFFFFF;
+      border: 1px solid rgba(24, 25, 27, 0.1);
+      padding: 36px;
+      margin-bottom: 40px;
+      position: relative;
+    }
+    .a-map-label {
+      position: absolute;
+      top: 16px;
+      left: 20px;
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: #93969F;
+    }
+    .a-ceo-box {
+      max-width: 440px;
+      margin: 0 auto 36px;
+      border: 1px solid #18191B;
+      padding: 16px 20px;
+      background: #FFFFFF;
+      text-align: center;
+      position: relative;
+    }
+    .a-ceo-box::after {
+      content: '';
+      position: absolute;
+      bottom: -36px;
+      left: 50%;
+      width: 1px;
+      height: 36px;
+      background: rgba(24, 25, 27, 0.2);
+    }
+    .a-role-badge {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #F95924;
+      display: block;
+      margin-bottom: 4px;
+    }
+    .a-person-name {
+      font-family: 'Newsreader', serif;
+      font-size: 20px;
+      font-weight: 500;
+    }
+    .a-specialists-row {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 16px;
+      padding-top: 16px;
+      border-top: 1px solid rgba(24, 25, 27, 0.15);
+      position: relative;
+    }
+    .a-card {
+      border: 1px solid rgba(24, 25, 27, 0.12);
+      padding: 16px 14px;
+      background: #FBFBF9;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+    .a-card.active {
+      background: #FFFFFF;
+      border: 1px solid #F95924;
+      box-shadow: 0 4px 20px rgba(249, 89, 36, 0.08);
+    }
+    .a-card.idle {
+      opacity: 0.65;
+    }
+    .a-card-role {
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: #5A5D64;
+      margin-bottom: 4px;
+    }
+    .a-card.active .a-card-role {
+      color: #F95924;
+    }
+    .a-card-name {
+      font-family: 'Newsreader', serif;
+      font-size: 16px;
+      margin-bottom: 8px;
+    }
+    .a-card-status {
+      font-size: 11px;
+      color: #787B84;
+      font-style: italic;
+    }
+    .a-card.active .a-card-status {
+      color: #18191B;
+      font-style: normal;
+      font-weight: 600;
+    }
+
+    /* Direction A Work Grid */
+    .a-work-grid {
+      display: grid;
+      grid-template-columns: 62% 38%;
+      gap: 36px;
+    }
+    .a-section-title {
+      font-family: 'Newsreader', serif;
+      font-size: 24px;
+      font-weight: 400;
+      margin-bottom: 20px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(24, 25, 27, 0.1);
+    }
+    .a-task-dossier {
+      background: #FFFFFF;
+      border: 1px solid rgba(24, 25, 27, 0.12);
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .a-dossier-num {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: #F95924;
+      margin-bottom: 8px;
+    }
+    .a-dossier-title {
+      font-family: 'Newsreader', serif;
+      font-size: 22px;
+      font-weight: 500;
+      margin-bottom: 12px;
+    }
+    .a-dialogue-chip {
+      background: #F4F3EF;
+      border-left: 2px solid #F95924;
+      padding: 10px 14px;
+      font-size: 12.5px;
+      margin: 8px 0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .a-log-item {
+      font-size: 12.5px;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(24, 25, 27, 0.08);
+      display: flex;
+      gap: 12px;
+    }
+    .a-log-time {
+      font-family: 'JetBrains Mono', monospace;
+      color: #93969F;
+      font-size: 11px;
+      min-width: 50px;
+    }
+
+
+    /* ========================================================
+       DIRECTION B: WARM MODERN WORKPLACE (LINEAR / ERGONOMIC)
+       ======================================================== */
+    .view-b {
+      background: #F8F7F4;
+      color: #1A1C1E;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .b-nav {
+      background: #FFFFFF;
+      border: 1px solid #E5E3DC;
+      border-radius: 14px;
+      padding: 16px 24px;
+      margin-bottom: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+    }
+    .b-owner-tag {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .b-owner-avatar {
+      width: 40px;
+      height: 40px;
+      background: #1A1C1E;
+      color: #FFF;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      border: 2px solid #F95924;
+    }
+    .b-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 11.5px;
+      font-weight: 600;
+    }
+    .b-pill-active { background: rgba(249, 89, 36, 0.12); color: #F95924; }
+    .b-pill-idle { background: #EEECE6; color: #7C8089; }
+    .b-pill-qa { background: rgba(27, 135, 85, 0.12); color: #1B8755; }
+
+    /* Direction B Map */
+    .b-map-card {
+      background: #FFFFFF;
+      border: 1px solid #E5E3DC;
+      border-radius: 16px;
+      padding: 28px;
+      margin-bottom: 32px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.03);
+    }
+    .b-tree-owner {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .b-tree-ceo {
+      background: #FAF9F6;
+      border: 1px solid #E2E0D8;
+      border-radius: 12px;
+      padding: 14px 20px;
+      max-width: 480px;
+      margin: 0 auto 28px;
+      text-align: center;
+      position: relative;
+    }
+    .b-tree-ceo::after {
+      content: '';
+      position: absolute;
+      bottom: -28px;
+      left: 50%;
+      width: 2px;
+      height: 28px;
+      background: #E2E0D8;
+    }
+    .b-employee-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 14px;
+    }
+    .b-emp-card {
+      background: #FFFFFF;
+      border: 1px solid #E5E3DC;
+      border-radius: 12px;
+      padding: 14px;
+      transition: all 0.2s;
+    }
+    .b-emp-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 14px rgba(0,0,0,0.05);
+    }
+    .b-emp-card.active {
+      border-color: #F95924;
+      background: #FFFBF9;
+      box-shadow: 0 4px 16px rgba(249, 89, 36, 0.1);
+    }
+    .b-emp-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .b-emp-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: #EEECE6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .b-emp-card.active .b-emp-avatar {
+      background: #F95924;
+      color: #FFF;
+    }
+
+    /* Direction B Task Flow */
+    .b-work-table {
+      display: grid;
+      grid-template-columns: 65% 35%;
+      gap: 28px;
+    }
+    .b-task-item {
+      background: #FFFFFF;
+      border: 1px solid #E5E3DC;
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .b-progress-bar {
+      display: flex;
+      gap: 6px;
+      margin: 14px 0;
+    }
+    .b-step {
+      flex: 1;
+      height: 6px;
+      border-radius: 4px;
+      background: #E5E3DC;
+    }
+    .b-step.done { background: #1B8755; }
+    .b-step.active { background: #F95924; }
+
+
+    /* ========================================================
+       DIRECTION C: LIVING STUDIO (DYNAMIC & RELATIONAL)
+       ======================================================== */
+    .view-c {
+      background: #FAF8F5;
+      color: #191716;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .c-balcony {
+      background: linear-gradient(180deg, #FFFFFF 0%, #FAF8F5 100%);
+      border: 1px solid #EAE6DF;
+      border-radius: 20px;
+      padding: 24px 32px;
+      margin-bottom: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 4px 20px rgba(24, 25, 27, 0.04);
+    }
+    .c-balcony-crest {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .c-crest-badge {
+      width: 48px;
+      height: 48px;
+      background: #191716;
+      color: #F95924;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      font-weight: bold;
+      border: 2px solid #EAE6DF;
+    }
+
+    /* Direction C Living Studio Floor */
+    .c-studio-floor {
+      background: #FFFFFF;
+      border: 1px solid #E8E4DC;
+      border-radius: 24px;
+      padding: 36px;
+      margin-bottom: 36px;
+      position: relative;
+      overflow: hidden;
+    }
+    .c-thread-line {
+      position: absolute;
+      height: 2px;
+      background: linear-gradient(90deg, #F95924, rgba(249,89,36,0.2));
+      z-index: 1;
+      animation: threadPulse 3s infinite;
+    }
+    @keyframes threadPulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+    .c-ceo-pod {
+      max-width: 440px;
+      margin: 0 auto 36px;
+      background: #FFF;
+      border: 2px solid #191716;
+      border-radius: 16px;
+      padding: 18px 24px;
+      text-align: center;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.06);
+      position: relative;
+      z-index: 2;
+    }
+    .c-pods-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      position: relative;
+      z-index: 2;
+    }
+    .c-pod {
+      background: #FAF8F5;
+      border: 1px solid #EAE6DF;
+      border-radius: 16px;
+      padding: 20px;
+    }
+    .c-pod-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #787B84;
+      margin-bottom: 14px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .c-employee-desk {
+      background: #FFFFFF;
+      border: 1px solid #EAE6DF;
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .c-employee-desk.active {
+      border-color: #F95924;
+      background: #FFFDFB;
+      box-shadow: 0 8px 24px rgba(249, 89, 36, 0.12);
+      transform: translateY(-2px);
+    }
+    .c-desk-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: #FAF8F5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+    }
+    .c-employee-desk.active .c-desk-avatar {
+      background: rgba(249, 89, 36, 0.15);
+    }
+    .c-thought-bubble {
+      background: #FFFFFF;
+      border: 1px solid #EAE6DF;
+      border-radius: 12px;
+      padding: 8px 14px;
+      font-size: 12px;
+      font-style: italic;
+      color: #5A5D64;
+      margin-top: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+      animation: bubbleFloat 4s ease-in-out infinite;
+    }
+    @keyframes bubbleFloat {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-3px); }
+    }
+
+    /* Direction C Live Stream & Work */
+    .c-work-arena {
+      display: grid;
+      grid-template-columns: 58% 42%;
+      gap: 32px;
+    }
+    .c-task-blueprint {
+      background: #FFFFFF;
+      border: 1px solid #EAE6DF;
+      border-radius: 18px;
+      padding: 24px;
+      margin-bottom: 20px;
+      position: relative;
+    }
+    .c-stamp-qa {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      border: 2px dashed #1B8755;
+      color: #1B8755;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      transform: rotate(-3deg);
+    }
+
+    /* LEVEL 3 EVIDENCE DRAWER MOCKUP (TRIGGERABLE ACROSS ALL) */
+    .evidence-drawer-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(24, 25, 27, 0.4);
+      backdrop-filter: blur(4px);
+      z-index: 2000;
+      justify-content: flex-end;
+    }
+    .evidence-drawer-overlay.open {
+      display: flex;
+    }
+    .evidence-drawer {
+      width: 680px;
+      height: 100%;
+      background: #FFFFFF;
+      border-left: 1px solid rgba(24, 25, 27, 0.12);
+      box-shadow: -12px 0 40px rgba(0,0,0,0.15);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      padding: 36px;
+    }
+    .drawer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 20px;
+      border-bottom: 1px solid rgba(24, 25, 27, 0.1);
+      margin-bottom: 24px;
+    }
+    .drawer-close {
+      background: #F4F3EF;
+      border: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    .evidence-box {
+      background: #F4F3EF;
+      border: 1px solid rgba(24, 25, 27, 0.08);
+      border-radius: 8px;
+      padding: 16px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      margin-bottom: 20px;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- TOP SWITCHER BAR -->
+  <div class="switcher-bar">
+    <div class="switcher-brand">
+      <span>Jester AI Company</span>
+      <span class="switcher-tag">Stage 27-D.1 Explorations</span>
+    </div>
+    <div class="switcher-tabs">
+      <button class="switcher-btn active" onclick="switchDirection('a')">Direction A: Editorial Studio</button>
+      <button class="switcher-btn" onclick="switchDirection('b')">Direction B: Warm Modern Workplace</button>
+      <button class="switcher-btn" onclick="switchDirection('c')">Direction C: Living Studio</button>
+    </div>
+    <div>
+      <button class="a-btn a-btn-primary" onclick="toggleDrawer(true)">Inspect Level 3 Evidence</button>
+    </div>
+  </div>
+
+
+  <!-- ========================================================
+       DIRECTION A: EDITORIAL STUDIO
+       ======================================================== -->
+  <div id="view-a" class="direction-view view-a active">
+    <!-- Founder Masthead -->
+    <header class="a-founder-masthead">
+      <div>
+        <div class="a-founder-meta">Office of the Founder & Owner • Jester AI Company</div>
+        <h1 class="a-founder-title">Good afternoon, Founder.</h1>
+        <p style="color: #5A5D64; font-size: 14px; margin-top: 6px;">
+          The studio is currently engaged on <strong>1 project</strong>. Task #01.2 is under construction by Developer.
+        </p>
+      </div>
+      <div class="a-actions">
+        <button class="a-btn a-btn-primary">+ Commission Task</button>
+        <button class="a-btn">Studio Register</button>
+      </div>
+    </header>
+
+    <!-- Architectural Company Map -->
+    <section class="a-map-container">
+      <div class="a-map-label">FIG. 01 — STUDIO ORGANIZATIONAL BLUEPRINT</div>
+      
+      <!-- CEO Centerpiece -->
+      <div class="a-ceo-box">
+        <span class="a-role-badge">Orchestration & Planning</span>
+        <div class="a-person-name">CEO Agent</div>
+        <div style="font-size: 11px; color: #5A5D64; margin-top: 4px;">
+          Directing Sprint #1: Restaurant Web Platform
+        </div>
+      </div>
+
+      <!-- Specialists Grid -->
+      <div class="a-specialists-row">
+        <div class="a-card idle">
+          <div class="a-card-role">Product</div>
+          <div class="a-card-name">Product Agent</div>
+          <div class="a-card-status">Available for next sprint</div>
+        </div>
+        <div class="a-card idle">
+          <div class="a-card-role">Research</div>
+          <div class="a-card-name">Research Agent</div>
+          <div class="a-card-status">Available for next sprint</div>
+        </div>
+        <div class="a-card idle">
+          <div class="a-card-role">UX</div>
+          <div class="a-card-name">UX Agent</div>
+          <div class="a-card-status">Available for next sprint</div>
+        </div>
+        <div class="a-card idle">
+          <div class="a-card-role">Marketing</div>
+          <div class="a-card-name">Marketing Agent</div>
+          <div class="a-card-status">Available for next sprint</div>
+        </div>
+        <div class="a-card active">
+          <div class="a-card-role">Implementation</div>
+          <div class="a-card-name">Developer Agent</div>
+          <div class="a-card-status">● Active: Building nav component</div>
+        </div>
+        <div class="a-card" style="border-color: #1B8755;">
+          <div class="a-card-role" style="color: #1B8755;">Verification</div>
+          <div class="a-card-name">QA Agent</div>
+          <div class="a-card-status">○ Waiting for code artifact</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Work & Activity Grid -->
+    <div class="a-work-grid">
+      <!-- Active Work Dossier -->
+      <div>
+        <h2 class="a-section-title">Active Commissions & Deliverables</h2>
+        <div class="a-task-dossier">
+          <div class="a-dossier-num">TASK REF 01.2 / RESTAURANT WEBSITE</div>
+          <h3 class="a-dossier-title">Implement Responsive Navigation Header</h3>
+          <p style="font-size: 13.5px; color: #5A5D64; margin-bottom: 16px;">
+            Construct clean semantic HTML/CSS header with mobile drawer. Must satisfy WCAG AAA contrast and zero external dependencies.
+          </p>
+
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #93969F; margin-bottom: 6px;">
+            Workplace Dialogue
+          </div>
+          <div class="a-dialogue-chip">
+            <strong>CEO:</strong> "Homepage first. Ensure mobile drawer handles 320px viewport without overflow."
+          </div>
+          <div class="a-dialogue-chip">
+            <strong>Developer:</strong> "On it. Writing Vanilla CSS. Running local tests now."
+          </div>
+
+          <div style="margin-top: 20px; display: flex; gap: 12px;">
+            <button class="a-btn" onclick="toggleDrawer(true)">Inspect Evidence & Code</button>
+            <button class="a-btn a-btn-primary">Awaiting QA Verdict</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Studio Log -->
+      <div>
+        <h2 class="a-section-title">Chronological Log</h2>
+        <div class="a-log-item">
+          <div class="a-log-time">14:15</div>
+          <div><strong>CEO Agent</strong> evaluated owner mission and generated execution plan.</div>
+        </div>
+        <div class="a-log-item">
+          <div class="a-log-time">14:18</div>
+          <div><strong>CEO Agent</strong> delegated Task #01.2 to Developer Agent.</div>
+        </div>
+        <div class="a-log-item">
+          <div class="a-log-time">14:24</div>
+          <div><strong>Developer Agent</strong> created <code>header.html</code> & <code>nav.css</code>.</div>
+        </div>
+        <div class="a-log-item">
+          <div class="a-log-time">14:28</div>
+          <div><strong>QA Agent</strong> scheduled verification inspection container.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ========================================================
+       DIRECTION B: WARM MODERN WORKPLACE
+       ======================================================== -->
+  <div id="view-b" class="direction-view view-b">
+    <!-- Modern Header -->
+    <header class="b-nav">
+      <div class="b-owner-tag">
+        <div class="b-owner-avatar">YOU</div>
+        <div>
+          <div style="font-size: 14px; font-weight: 700;">Company Founder & Owner</div>
+          <div style="font-size: 12px; color: #7C8089;">Jester AI Company Control Center</div>
+        </div>
+      </div>
+      <div>
+        <span class="b-pill b-pill-active">● 1 Project Active</span>
+        <span class="b-pill b-pill-qa" style="margin-left: 8px;">✓ QA Ready</span>
+      </div>
+      <div>
+        <button class="a-btn a-btn-primary" style="border-radius: 8px;">+ New Task</button>
+      </div>
+    </header>
+
+    <!-- Modern Tree Map -->
+    <section class="b-map-card">
+      <div class="b-tree-owner">
+        <div style="font-size: 11px; font-weight: 700; color: #F95924; text-transform: uppercase;">Founder Authority</div>
+        <div style="font-weight: 700; font-size: 16px;">Owner Workspace</div>
+      </div>
+      <div class="b-tree-ceo">
+        <div style="font-size: 11px; font-weight: 700; color: #7C8089; text-transform: uppercase;">Leadership</div>
+        <div style="font-weight: 700; font-size: 17px;">CEO Agent</div>
+        <div style="font-size: 12px; color: #5A5D64; margin-top: 2px;">Coordinating: Restaurant Web Platform</div>
+      </div>
+
+      <div class="b-employee-grid">
+        <div class="b-emp-card">
+          <div class="b-emp-head"><div class="b-emp-avatar">PM</div><strong>Product</strong></div>
+          <span class="b-pill b-pill-idle">Idle</span>
+        </div>
+        <div class="b-emp-card">
+          <div class="b-emp-head"><div class="b-emp-avatar">RE</div><strong>Research</strong></div>
+          <span class="b-pill b-pill-idle">Idle</span>
+        </div>
+        <div class="b-emp-card">
+          <div class="b-emp-head"><div class="b-emp-avatar">UX</div><strong>UX</strong></div>
+          <span class="b-pill b-pill-idle">Idle</span>
+        </div>
+        <div class="b-emp-card">
+          <div class="b-emp-head"><div class="b-emp-avatar">MK</div><strong>Marketing</strong></div>
+          <span class="b-pill b-pill-idle">Idle</span>
+        </div>
+        <div class="b-emp-card active">
+          <div class="b-emp-head"><div class="b-emp-avatar">DEV</div><strong>Developer</strong></div>
+          <span class="b-pill b-pill-active">Building</span>
+        </div>
+        <div class="b-emp-card" style="border-color: #1B8755;">
+          <div class="b-emp-head"><div class="b-emp-avatar" style="background:#1B8755; color:#FFF;">QA</div><strong>QA</strong></div>
+          <span class="b-pill b-pill-qa">Waiting</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Work Board -->
+    <div class="b-work-table">
+      <div>
+        <h3 style="font-size: 17px; margin-bottom: 16px;">Current Tasks in Flight</h3>
+        <div class="b-task-item">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong>#TSK-012 — Responsive Navigation Header</strong>
+            <span class="b-pill b-pill-active">In Progress</span>
+          </div>
+          <p style="font-size: 13px; color: #5A5D64; margin: 10px 0;">
+            Project: Restaurant Website • Goal: Launch mobile-first booking site
+          </p>
+
+          <div class="b-progress-bar">
+            <div class="b-step done" title="Planning: Done"></div>
+            <div class="b-step active" title="Developer: Active"></div>
+            <div class="b-step" title="QA: Queued"></div>
+            <div class="b-step" title="Approval: Pending"></div>
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top: 14px;">
+            <span style="font-size: 12px; color: #7C8089;">Assigned: Developer (@developer)</span>
+            <button class="a-btn" style="border-radius: 6px; padding: 6px 12px;" onclick="toggleDrawer(true)">View Run Details</button>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h3 style="font-size: 17px; margin-bottom: 16px;">Live Collaboration Feed</h3>
+        <div style="background: #FFF; border: 1px solid #E5E3DC; border-radius: 14px; padding: 16px;">
+          <div style="font-size: 12.5px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #F0EFEA;">
+            <strong>CEO:</strong> Task assigned to Developer. Goal: Mobile responsive menu.
+          </div>
+          <div style="font-size: 12.5px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #F0EFEA;">
+            <strong>Developer:</strong> Code authored in <code>header.html</code>. Running tests.
+          </div>
+          <div style="font-size: 12.5px; color: #1B8755;">
+            <strong>QA:</strong> Standing by for verification run.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ========================================================
+       DIRECTION C: LIVING STUDIO
+       ======================================================== -->
+  <div id="view-c" class="direction-view view-c">
+    <!-- Founder's Balcony -->
+    <header class="c-balcony">
+      <div class="c-balcony-crest">
+        <div class="c-crest-badge">👑</div>
+        <div>
+          <div style="font-size: 11px; font-weight: 700; color: #F95924; text-transform: uppercase; letter-spacing: 0.1em;">Founder's Balcony</div>
+          <h2 style="font-size: 22px; font-weight: 700;">Welcome back to your company.</h2>
+          <div style="font-size: 13px; color: #5A5D64;">
+            Studio Atmosphere: <strong>Active & Focused</strong> • 2 team members collaborating on Restaurant Website.
+          </div>
+        </div>
+      </div>
+      <div>
+        <button class="a-btn a-btn-primary" style="border-radius: 20px; padding: 10px 24px;">Direct Company Mission</button>
+      </div>
+    </header>
+
+    <!-- Spatial Living Studio Floor -->
+    <section class="c-studio-floor">
+      <!-- Animated thread from CEO to Developer -->
+      <div class="c-thread-line" style="top: 115px; left: 45%; width: 25%;"></div>
+
+      <!-- CEO Planning Desk -->
+      <div class="c-ceo-pod">
+        <div style="font-size: 11px; font-weight: 700; color: #F95924; text-transform: uppercase;">Studio Director</div>
+        <div style="font-size: 20px; font-weight: 700; margin: 4px 0;">CEO Agent</div>
+        <div style="font-size: 12.5px; color: #5A5D64;">
+          Orchestrating Task #12 -> Delegated to Developer & QA
+        </div>
+      </div>
+
+      <!-- Studio Pods -->
+      <div class="c-pods-row">
+        <!-- Strategy Pod -->
+        <div class="c-pod">
+          <div class="c-pod-title">
+            <span>Strategy Pod</span>
+            <span style="color: #93969F;">Idle</span>
+          </div>
+          <div class="c-employee-desk">
+            <div class="c-desk-avatar">📋</div>
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">Product Agent</div>
+              <div style="font-size: 11px; color: #787B84;">Reading PRD archives</div>
+            </div>
+          </div>
+          <div class="c-employee-desk">
+            <div class="c-desk-avatar">🔍</div>
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">Research Agent</div>
+              <div style="font-size: 11px; color: #787B84;">Observing system logs</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Craft Pod -->
+        <div class="c-pod" style="border-color: #F95924; background: #FFFBF9;">
+          <div class="c-pod-title">
+            <span style="color: #F95924;">Craft Pod (Active)</span>
+            <span style="color: #F95924;">● Busy</span>
+          </div>
+          <div class="c-employee-desk active">
+            <div class="c-desk-avatar">💻</div>
+            <div style="flex: 1;">
+              <div style="font-weight: 700; font-size: 13px; color: #191716;">Developer Agent</div>
+              <div style="font-size: 11.5px; color: #F95924; font-weight: 600;">Writing header CSS & JS...</div>
+            </div>
+          </div>
+          <div class="c-thought-bubble">
+            💭 "ქეში გექნება გასაწმენდი... wait, container test passed."
+          </div>
+        </div>
+
+        <!-- Integrity Pod -->
+        <div class="c-pod" style="border-color: #1B8755;">
+          <div class="c-pod-title">
+            <span style="color: #1B8755;">Integrity Pod</span>
+            <span style="color: #1B8755;">○ Queued</span>
+          </div>
+          <div class="c-employee-desk" style="border-color: #1B8755;">
+            <div class="c-desk-avatar" style="background: rgba(27,135,85,0.1);">🛡️</div>
+            <div>
+              <div style="font-weight: 700; font-size: 13px;">QA Agent</div>
+              <div style="font-size: 11.5px; color: #1B8755;">Standing by with test runner</div>
+            </div>
+          </div>
+          <div style="font-size: 11px; color: #5A5D64; margin-top: 8px; font-style: italic;">
+            "Will verify code against acceptance criteria once pushed."
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Work Arena -->
+    <div class="c-work-arena">
+      <div class="c-task-blueprint">
+        <div class="c-stamp-qa">QA QUEUED</div>
+        <div style="font-size: 11px; font-weight: 700; color: #F95924; text-transform: uppercase;">Active Project: Restaurant Website</div>
+        <h3 style="font-size: 20px; font-weight: 700; margin: 6px 0 12px;">Task #12 — Responsive Header & Mobile Menu</h3>
+        <p style="font-size: 13.5px; color: #5A5D64; margin-bottom: 20px;">
+          Developer has committed the navigation component. Handoff to QA is initiated.
+        </p>
+
+        <div style="background: #FAF8F5; border-radius: 12px; padding: 14px; margin-bottom: 16px;">
+          <div style="font-size: 11px; font-weight: 700; color: #787B84; text-transform: uppercase; margin-bottom: 8px;">Colleague Exchange</div>
+          <div style="font-size: 13px; margin-bottom: 6px;"><strong>Developer:</strong> "Done."</div>
+          <div style="font-size: 13px; color: #1B8755;"><strong>QA:</strong> "Not yet. Pulling branch for verification."</div>
+        </div>
+
+        <button class="a-btn a-btn-primary" style="border-radius: 10px;" onclick="toggleDrawer(true)">Inspect Tangible Deliverable</button>
+      </div>
+
+      <div style="background: #FFFFFF; border: 1px solid #EAE6DF; border-radius: 18px; padding: 24px;">
+        <h3 style="font-size: 16px; font-weight: 700; margin-bottom: 16px;">Tangible Deliverables Shelf</h3>
+        <div style="border: 1px solid #EAE6DF; border-radius: 10px; padding: 12px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between;">
+          <div>
+            <div style="font-weight: 600; font-size: 13px;">📄 specification.md</div>
+            <div style="font-size: 11px; color: #787B84;">Authored by Product Agent</div>
+          </div>
+          <button class="a-btn" style="padding: 4px 10px; font-size: 11px;" onclick="toggleDrawer(true)">Read</button>
+        </div>
+        <div style="border: 1px solid #F95924; background: #FFFDFB; border-radius: 10px; padding: 12px; display: flex; align-items: center; justify-content: space-between;">
+          <div>
+            <div style="font-weight: 700; font-size: 13px; color: #F95924;">💻 header.html & nav.css</div>
+            <div style="font-size: 11px; color: #787B84;">Authored by Developer Agent (Exit Code: 0)</div>
+          </div>
+          <button class="a-btn a-btn-primary" style="padding: 4px 10px; font-size: 11px;" onclick="toggleDrawer(true)">Inspect</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ========================================================
+       LEVEL 3 EVIDENCE & VERIFICATION DRAWER (MODAL OVERLAY)
+       ======================================================== -->
+  <div id="evidence-drawer" class="evidence-drawer-overlay">
+    <div class="evidence-drawer">
+      <div class="drawer-header">
+        <div>
+          <span style="font-size: 11px; font-weight: 700; color: #F95924; text-transform: uppercase;">Level 3 Evidence</span>
+          <h2 style="font-size: 22px; font-weight: 700; margin-top: 2px;">Execution & Verification Manifest</h2>
+        </div>
+        <button class="drawer-close" onclick="toggleDrawer(false)">✕</button>
+      </div>
+
+      <div style="margin-bottom: 24px;">
+        <h4 style="font-size: 14px; margin-bottom: 8px;">Task Run #1 Execution Summary</h4>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">
+          <div style="background: #F4F3EF; padding: 10px; border-radius: 8px; font-size: 12px;">
+            <span style="color: #7C8089; display: block;">Status</span>
+            <strong style="color: #1B8755;">SUCCESS (Code 0)</strong>
+          </div>
+          <div style="background: #F4F3EF; padding: 10px; border-radius: 8px; font-size: 12px;">
+            <span style="color: #7C8089; display: block;">Duration</span>
+            <strong>0.84s</strong>
+          </div>
+          <div style="background: #F4F3EF; padding: 10px; border-radius: 8px; font-size: 12px;">
+            <span style="color: #7C8089; display: block;">Verifier</span>
+            <strong>QA Agent (@qa)</strong>
+          </div>
+        </div>
+      </div>
+
+      <h4 style="font-size: 14px; margin-bottom: 8px;">Independent QA Verification Evidence</h4>
+      <div class="evidence-box">
+        Command: python tools/verify_company.py<br>
+        === Verification Output ===<br>
+        [PASS] Header semantic markup validated.<br>
+        [PASS] Viewport breakpoints: 320px, 768px, 1280px verified.<br>
+        [PASS] Zero external CSS framework dependencies.<br>
+        Result: ALL 3 ACCEPTANCE CRITERIA PASSED.<br>
+        Exit Code: 0
+      </div>
+
+      <h4 style="font-size: 14px; margin-bottom: 8px;">Delivered Artifact Preview (header.html)</h4>
+      <div class="evidence-box" style="color: #18191B; background: #FFFFFF; border: 1px solid rgba(24,25,27,0.15);">
+        &lt;header class="studio-nav"&gt;<br>
+        &nbsp;&nbsp;&lt;div class="brand"&gt;Restaurant Co.&lt;/div&gt;<br>
+        &nbsp;&nbsp;&lt;nav class="menu"&gt;<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&lt;a href="#menu"&gt;Menu&lt;/a&gt;<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&lt;a href="#reserve"&gt;Reserve&lt;/a&gt;<br>
+        &nbsp;&nbsp;&lt;/nav&gt;<br>
+        &lt;/header&gt;
+      </div>
+
+      <div style="margin-top: auto; padding-top: 24px; border-top: 1px solid rgba(24,25,27,0.1); display: flex; gap: 12px;">
+        <button class="a-btn a-btn-primary" style="flex: 1;" onclick="alert('Deliverable Approved by Founder!')">Approve Deliverable</button>
+        <button class="a-btn" style="flex: 1;" onclick="alert('Revision Requested')">Request Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function switchDirection(dir) {
+      document.querySelectorAll('.direction-view').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.switcher-btn').forEach(btn => btn.classList.remove('active'));
+      
+      document.getElementById('view-' + dir).classList.add('active');
+      event.target.classList.add('active');
+    }
+
+    function toggleDrawer(open) {
+      const drawer = document.getElementById('evidence-drawer');
+      if (open) {
+        drawer.classList.add('open');
+      } else {
+        drawer.classList.remove('open');
+      }
+    }
+  </script>
+</body>
+</html>

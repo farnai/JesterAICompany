@@ -3,14 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Jester AI Company — Control Center & Company World</title>
+  <title>Jester AI Company — The Company World (Stage 27-D.4)</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    /* ========================================================
-       DESIGN TOKENS & RESET
-       ======================================================== */
+    /* RESET & THEME TOKENS */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
       --bg-linen: #FBFBF9;
@@ -32,25 +30,19 @@
       --red-defect: #D9383A;
       --shadow-soft: 0 4px 20px -2px rgba(24, 25, 27, 0.05), 0 2px 6px rgba(24, 25, 27, 0.02);
       --shadow-lift: 0 12px 32px -4px rgba(24, 25, 27, 0.08), 0 4px 12px rgba(24, 25, 27, 0.03);
-      --shadow-drawer: -12px 0 40px rgba(0, 0, 0, 0.12);
     }
 
     body {
-      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
       background: var(--bg-linen);
       color: var(--ink-primary);
       line-height: 1.5;
       -webkit-font-smoothing: antialiased;
       overflow-x: hidden;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
     }
 
-    /* ========================================================
-       TOP STUDIO HEADER (CONTROL CENTER)
-       ======================================================== */
-    .studio-header {
+    /* TOP STUDIO BAR */
+    .studio-top-bar {
       position: sticky;
       top: 0;
       z-index: 200;
@@ -62,12 +54,12 @@
       align-items: center;
       justify-content: space-between;
     }
-    .brand-section {
+    .studio-brand-cluster {
       display: flex;
       align-items: center;
       gap: 14px;
     }
-    .brand-crest {
+    .studio-crest-box {
       width: 38px;
       height: 38px;
       background: var(--ink-primary);
@@ -80,25 +72,26 @@
       font-size: 17px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     }
-    .brand-title {
+    .studio-title-block {
+      line-height: 1.2;
+    }
+    .studio-title {
       font-size: 15px;
       font-weight: 800;
       letter-spacing: -0.02em;
     }
-    .brand-subtitle {
-      font-size: 11px;
+    .studio-tagline {
+      font-size: 11.5px;
       color: var(--ink-secondary);
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
+      font-weight: 500;
     }
 
-    .top-actions-cluster {
+    .studio-actions-cluster {
       display: flex;
       align-items: center;
       gap: 12px;
     }
-    .btn {
+    .action-btn {
       padding: 8px 16px;
       font-size: 12.5px;
       font-weight: 600;
@@ -112,58 +105,38 @@
       background: var(--bg-surface);
       color: var(--ink-primary);
       transition: all 0.2s ease;
-      text-decoration: none;
     }
-    .btn:hover {
+    .action-btn:hover {
       background: var(--bg-inset);
       transform: translateY(-1px);
     }
-    .btn-primary {
+    .action-btn-primary {
       background: var(--orange-accent);
       color: #FFFFFF;
       border-color: var(--orange-accent);
       box-shadow: 0 2px 10px rgba(249, 89, 36, 0.25);
     }
-    .btn-primary:hover {
+    .action-btn-primary:hover {
       background: #D94313;
     }
-    .btn-chat-trigger {
+    .action-btn-sim {
       background: var(--bg-surface);
-      border-color: rgba(249, 89, 36, 0.35);
       color: var(--orange-accent);
-      font-weight: 700;
-      position: relative;
+      border-color: rgba(249, 89, 36, 0.35);
     }
-    .btn-chat-trigger:hover {
+    .action-btn-sim:hover {
       background: var(--orange-wash);
     }
-    .unread-pill {
-      background: var(--orange-accent);
-      color: #FFFFFF;
-      font-size: 10px;
-      font-weight: 800;
-      padding: 2px 6px;
-      border-radius: 10px;
-      margin-left: 4px;
-    }
 
-    /* ========================================================
-       MAIN COMPANY WORLD VIEWPORT
-       ======================================================== */
+    /* MAIN VIEWPORT */
     .company-world-viewport {
       max-width: 1440px;
-      width: 100%;
       margin: 0 auto;
       padding: 24px 36px 60px;
-      flex: 1;
-      transition: padding-right 0.3s ease;
-    }
-    body.chat-open .company-world-viewport {
-      padding-right: 440px;
     }
 
     /* ========================================================
-       1. FOUNDER SUITE (SUMMIT)
+       FOUNDER SUITE (THE SUMMIT)
        ======================================================== */
     .founder-suite-banner {
       background: linear-gradient(180deg, #FFFFFF 0%, #FAFAF8 100%);
@@ -183,22 +156,23 @@
       gap: 16px;
     }
     .founder-avatar-frame {
-      width: 56px;
-      height: 56px;
+      width: 54px;
+      height: 54px;
       border-radius: 50%;
       background: #FFFFFF;
       border: 2px solid var(--orange-accent);
       box-shadow: 0 0 0 4px var(--orange-wash), 0 4px 12px rgba(0,0,0,0.08);
       overflow: hidden;
       flex-shrink: 0;
-      cursor: pointer;
     }
     .founder-avatar-frame svg {
       width: 100%;
       height: 100%;
     }
-    .founder-title-block {
-      line-height: 1.25;
+    .founder-name {
+      font-size: 17px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
     }
     .founder-role-badge {
       font-size: 11px;
@@ -207,21 +181,15 @@
       text-transform: uppercase;
       letter-spacing: 0.08em;
     }
-    .founder-name {
-      font-size: 18px;
-      font-weight: 800;
-      letter-spacing: -0.01em;
-      color: var(--ink-primary);
-    }
     .founder-state-line {
       font-size: 13px;
       color: var(--ink-secondary);
-      margin-top: 3px;
+      margin-top: 2px;
     }
-    .founder-stats-cluster {
+    .founder-controls {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
     }
     .live-pulse-badge {
       display: inline-flex;
@@ -248,7 +216,7 @@
     }
 
     /* ========================================================
-       2. THE STUDIO FLOOR CANVAS (CENTRAL COMPANY WORLD)
+       THE STUDIO FLOOR CANVAS (CENTRAL COMPANY WORLD)
        ======================================================== */
     .studio-floor-canvas {
       background: #FFFFFF;
@@ -284,6 +252,12 @@
       stroke-dasharray: 6 10;
       animation: flowForward 1.5s linear infinite;
     }
+    .flow-conduit.remediation {
+      stroke: var(--amber-alert);
+      stroke-width: 2.5;
+      stroke-dasharray: 4 8;
+      animation: flowReverse 1.3s linear infinite;
+    }
     .flow-conduit.passed {
       stroke: var(--green-verified);
       stroke-width: 2.5;
@@ -291,6 +265,10 @@
     @keyframes flowForward {
       from { stroke-dashoffset: 32; }
       to { stroke-dashoffset: 0; }
+    }
+    @keyframes flowReverse {
+      from { stroke-dashoffset: 0; }
+      to { stroke-dashoffset: 32; }
     }
 
     /* WORKSTATIONS & OFFICE PHYSICAL ELEMENTS */
@@ -337,7 +315,7 @@
       color: var(--ink-secondary);
     }
 
-    /* EMPLOYEE NODE COMPONENT */
+    /* EMPLOYEE NODE COMPONENT (PORTRAIT & STATUS) */
     .employee-node {
       display: flex;
       align-items: center;
@@ -395,7 +373,7 @@
       color: #FFFFFF;
     }
 
-    /* CEO STRATEGY DESK */
+    /* CEO STRATEGY DESK (CENTERPIECE) */
     .ceo-station-pod {
       position: absolute;
       top: 30px;
@@ -415,7 +393,7 @@
       border-color: var(--orange-accent);
     }
 
-    /* WORK / DELIVERABLE NODES */
+    /* WORK / DELIVERABLE NODES (INFOGRAPHIC BOXES) */
     .workflow-artifact-node {
       position: absolute;
       background: #FFFFFF;
@@ -455,7 +433,7 @@
       margin-top: 4px;
     }
 
-    /* WAYPOINT LABELS */
+    /* WAYPOINT CHIP (LABELS ALONG CONDUITS) */
     .conduit-waypoint-chip {
       position: absolute;
       background: #FFFFFF;
@@ -510,11 +488,11 @@
     }
 
     /* ========================================================
-       3. LOWER DECK: OPERATIONAL DOSSIER & REAL WORK BENCH
+       WORKPLACE CONVERSATION STRIP (INTEGRATED LOWER DECK)
        ======================================================== */
     .studio-lower-grid {
       display: grid;
-      grid-template-columns: 58% 42%;
+      grid-template-columns: 60% 40%;
       gap: 24px;
     }
     .deck-card {
@@ -540,225 +518,45 @@
       font-weight: 600;
     }
 
-    .real-task-item {
-      border: 1px solid var(--border-subtle);
-      border-radius: 14px;
-      padding: 16px;
-      margin-bottom: 12px;
-      background: #FFFFFF;
-      transition: all 0.2s;
-    }
-    .real-task-item:hover {
-      border-color: var(--orange-accent);
-      box-shadow: 0 4px 14px rgba(0,0,0,0.04);
-    }
-    .task-item-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 6px;
-    }
-    .task-status-pill {
-      font-size: 10.5px;
-      font-weight: 700;
-      padding: 2px 8px;
-      border-radius: 10px;
-      text-transform: uppercase;
-    }
-    .status-completed { background: rgba(22, 128, 80, 0.1); color: var(--green-verified); }
-    .status-in_progress { background: var(--orange-wash); color: var(--orange-accent); }
-    .status-pending { background: #EEECE6; color: var(--ink-secondary); }
-
-    /* ========================================================
-       4. PERSISTENT COMPANY CHAT (RIGHT SLIDE-OUT PANEL)
-       ======================================================== */
-    .company-chat-drawer {
-      position: fixed;
-      top: 0;
-      right: 0;
-      width: 410px;
-      height: 100vh;
-      background: #FFFFFF;
-      border-left: 1px solid var(--border-desk);
-      box-shadow: var(--shadow-drawer);
-      z-index: 300;
+    .dialogue-stream-box {
       display: flex;
       flex-direction: column;
-      transform: translateX(100%);
-      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      gap: 10px;
     }
-    .company-chat-drawer.open {
-      transform: translateX(0);
-    }
-    .chat-header {
-      padding: 18px 22px;
-      border-bottom: 1px solid var(--border-subtle);
+    .dialogue-row {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: linear-gradient(180deg, #FFFFFF 0%, #FAFAF8 100%);
-    }
-    .chat-title-group {
-      line-height: 1.25;
-    }
-    .chat-headline {
-      font-size: 13.5px;
-      font-weight: 800;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      color: var(--ink-primary);
-    }
-    .chat-subline {
-      font-size: 11px;
-      color: var(--ink-secondary);
-      font-weight: 600;
-    }
-    .chat-close-btn {
-      background: var(--bg-inset);
-      border: none;
-      width: 30px;
-      height: 30px;
-      border-radius: 8px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 14px;
-      color: var(--ink-primary);
-      transition: all 0.2s;
-    }
-    .chat-close-btn:hover {
-      background: #E8E5DD;
-    }
-
-    .chat-messages-scroll {
-      flex: 1;
-      overflow-y: auto;
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      background: #FAF8F5;
-    }
-    .chat-bubble-row {
-      display: flex;
-      flex-direction: column;
-      max-width: 88%;
-    }
-    .chat-bubble-row.owner {
-      align-self: flex-end;
-      align-items: flex-end;
-    }
-    .chat-bubble-row.ceo,
-    .chat-bubble-row.developer,
-    .chat-bubble-row.qa {
-      align-self: flex-start;
+      gap: 12px;
       align-items: flex-start;
     }
-    .chat-speaker-label {
-      font-size: 10.5px;
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      margin-bottom: 4px;
-      color: var(--ink-muted);
-    }
-    .chat-bubble-row.owner .chat-speaker-label {
-      color: var(--orange-accent);
-    }
-    .chat-bubble {
-      padding: 12px 16px;
-      border-radius: 14px;
-      font-size: 13px;
-      line-height: 1.45;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.04);
-      white-space: pre-wrap;
-    }
-    .chat-bubble-row.owner .chat-bubble {
-      background: var(--ink-primary);
-      color: #FFFFFF;
-      border-bottom-right-radius: 4px;
-    }
-    .chat-bubble-row.ceo .chat-bubble {
-      background: #FFFFFF;
-      color: var(--ink-primary);
-      border: 1px solid var(--border-desk);
-      border-bottom-left-radius: 4px;
-      border-left: 3px solid var(--orange-accent);
-    }
-
-    .chat-quick-suggestions {
-      padding: 8px 16px;
-      background: #FFFFFF;
-      border-top: 1px solid var(--border-subtle);
-      display: flex;
-      gap: 6px;
-      overflow-x: auto;
-      white-space: nowrap;
-    }
-    .suggestion-chip {
-      background: var(--bg-inset);
+    .dialogue-mini-avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
       border: 1px solid var(--border-subtle);
-      border-radius: 14px;
-      padding: 4px 10px;
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--ink-secondary);
-      cursor: pointer;
-      transition: all 0.2s;
+      overflow: hidden;
+      flex-shrink: 0;
     }
-    .suggestion-chip:hover {
-      background: var(--orange-wash);
-      color: var(--orange-accent);
-      border-color: rgba(249,89,36,0.3);
-    }
-
-    .chat-input-area {
-      padding: 14px 18px;
-      border-top: 1px solid var(--border-subtle);
-      background: #FFFFFF;
-      display: flex;
-      gap: 10px;
-      align-items: center;
-    }
-    .chat-input {
-      flex: 1;
+    .dialogue-bubble {
+      background: var(--bg-inset);
+      border-radius: 12px;
       padding: 10px 14px;
-      border-radius: 10px;
-      border: 1px solid var(--border-desk);
-      font-family: inherit;
       font-size: 13px;
-      outline: none;
-      transition: border-color 0.2s;
-      background: var(--bg-linen);
+      flex: 1;
+      border-left: 3px solid transparent;
     }
-    .chat-input:focus {
-      border-color: var(--orange-accent);
-      background: #FFFFFF;
-    }
-    .chat-send-btn {
-      width: 38px;
-      height: 38px;
-      border-radius: 10px;
-      background: var(--orange-accent);
-      border: none;
-      color: #FFFFFF;
-      cursor: pointer;
+    .dialogue-bubble.dev { border-left-color: var(--orange-accent); }
+    .dialogue-bubble.qa { border-left-color: var(--green-verified); }
+    .dialogue-bubble.ceo { border-left-color: var(--ink-primary); }
+    .dialogue-speaker-name {
       font-weight: 700;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.2s;
-    }
-    .chat-send-btn:hover {
-      background: #D94313;
-      transform: scale(1.05);
+      font-size: 11px;
+      color: var(--orange-accent);
+      margin-bottom: 2px;
+      display: block;
     }
 
-    /* ========================================================
-       LEVEL 3 EVIDENCE DRAWER (MODAL OVERLAY)
-       ======================================================== */
-    .evidence-scrim {
+    /* LEVEL 3 EVIDENCE DRAWER */
+    .drawer-scrim {
       display: none;
       position: fixed;
       top: 0;
@@ -770,8 +568,8 @@
       z-index: 1000;
       justify-content: flex-end;
     }
-    .evidence-scrim.open { display: flex; }
-    .evidence-panel {
+    .drawer-scrim.open { display: flex; }
+    .drawer-panel {
       width: 680px;
       height: 100%;
       background: #FFFFFF;
@@ -790,47 +588,23 @@
       border-radius: 12px;
       line-height: 1.6;
       margin: 14px 0;
-      overflow-x: auto;
-    }
-
-    /* EMPLOYEE DOSSIER MODAL */
-    .dossier-modal {
-      display: none;
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(24, 25, 27, 0.45);
-      backdrop-filter: blur(4px);
-      z-index: 1100;
-      align-items: center;
-      justify-content: center;
-    }
-    .dossier-modal.open { display: flex; }
-    .dossier-card {
-      width: 520px;
-      background: #FFFFFF;
-      border-radius: 20px;
-      padding: 32px;
-      box-shadow: var(--shadow-lift);
-      position: relative;
     }
   </style>
 </head>
 <body>
 
   <!-- ========================================================
-       VECTOR SVG DEFS: ALL 7 EMPLOYEES + FOUNDER
+       SVG ASSET DEFS: ORIGINAL VECTOR AVATARS
        ======================================================== -->
   <svg style="display: none;">
     <defs>
-      <!-- FOUNDER AVATAR -->
+      <!-- FOUNDER AVATAR (Distinguished, visionary modern founder) -->
       <g id="avatar-founder">
         <rect width="100" height="100" fill="#242831"/>
         <path d="M22 100 C22 72 36 66 50 66 C64 66 78 72 78 100 Z" fill="#14171E"/>
         <path d="M42 66 L50 78 L58 66 Z" fill="#D9822B"/>
         <circle cx="50" cy="45" r="20" fill="#F8CBA7"/>
+        <!-- Styled modern dark hair with slight wave -->
         <path d="M28 40 C28 22 40 18 52 18 C64 18 72 24 72 38 C68 28 58 24 50 24 C40 24 32 30 28 40 Z" fill="#1F1D1B"/>
         <circle cx="43" cy="44" r="2" fill="#18191B"/>
         <circle cx="57" cy="44" r="2" fill="#18191B"/>
@@ -860,9 +634,11 @@
         <rect width="100" height="100" fill="#F0EFF2"/>
         <path d="M22 100 C22 72 36 66 50 66 C64 66 78 72 78 100 Z" fill="#262A33"/>
         <circle cx="50" cy="45" r="19" fill="#F8CBAB"/>
+        <!-- Headset -->
         <path d="M30 64 C30 76 70 76 70 64" fill="none" stroke="#F95924" stroke-width="4" stroke-linecap="round"/>
         <rect x="26" y="60" width="8" height="12" rx="3" fill="#18191B"/>
         <rect x="66" y="60" width="8" height="12" rx="3" fill="#18191B"/>
+        <!-- Tousled hair -->
         <path d="M30 40 C30 22 42 20 50 20 C60 20 70 24 70 38 C66 30 58 26 50 26 C42 26 34 32 30 40 Z" fill="#1F242E"/>
         <circle cx="43" cy="44" r="2" fill="#18191B"/>
         <circle cx="57" cy="44" r="2" fill="#18191B"/>
@@ -879,7 +655,7 @@
         <circle cx="43" cy="45" r="2" fill="#18191B"/>
         <circle cx="57" cy="45" r="2" fill="#18191B"/>
         <path d="M39 39 Q43 38 47 39" stroke="#18191B" stroke-width="1.8" fill="none"/>
-        <path d="M53 36 Q57 34 61 36" stroke="#18191B" stroke-width="2" fill="none"/>
+        <path d="M53 36 Q57 34 61 36" stroke="#18191B" stroke-width="2" fill="none"/><!-- Raised eyebrow -->
         <path d="M46 55 Q50 54 54 55" stroke="#9E4D36" stroke-width="1.6" fill="none"/>
       </g>
 
@@ -889,6 +665,7 @@
         <path d="M24 100 C24 74 36 68 50 68 C64 68 76 74 76 100 Z" fill="#2D3B36"/>
         <circle cx="50" cy="46" r="19" fill="#F5CBA7"/>
         <path d="M30 48 C28 26 40 22 50 22 C60 22 72 26 70 48 C72 58 68 64 66 68 L34 68 C32 64 28 58 30 48 Z" fill="#3D2B1F"/>
+        <!-- Glasses -->
         <rect x="37" y="40" width="11" height="9" rx="2" fill="none" stroke="#6E4723" stroke-width="2"/>
         <rect x="52" y="40" width="11" height="9" rx="2" fill="none" stroke="#6E4723" stroke-width="2"/>
         <line x1="48" y1="44" x2="52" y2="44" stroke="#6E4723" stroke-width="2"/>
@@ -939,22 +716,22 @@
 
 
   <!-- ========================================================
-       TOP HEADER (CONTROL CENTER BRAND & ACTIONS)
+       TOP STUDIO APPLICATION BAR
        ======================================================== -->
-  <header class="studio-header">
-    <div class="brand-section">
-      <div class="brand-crest">J</div>
-      <div>
-        <div class="brand-title">JESTER AI COMPANY</div>
-        <div class="brand-subtitle">Control Center • Overview & Employees</div>
+  <header class="studio-top-bar">
+    <div class="studio-brand-cluster">
+      <div class="studio-crest-box">J</div>
+      <div class="studio-title-block">
+        <div class="studio-title">JESTER AI COMPANY</div>
+        <div class="studio-tagline">The Company World • Stage 27-D.4</div>
       </div>
     </div>
 
-    <div class="top-actions-cluster">
-      <button class="btn btn-chat-trigger" onclick="toggleChat(true)">
-        <span>💬</span> Company Chat <span id="chat-count-pill" class="unread-pill">1</span>
+    <div class="studio-actions-cluster">
+      <button class="action-btn action-btn-sim" onclick="triggerSimulation()">
+        <span>⚡</span> Simulate QA Remediation Loop
       </button>
-      <button class="btn btn-primary" onclick="toggleEvidence(true)">
+      <button class="action-btn action-btn-primary" onclick="toggleDrawer(true)">
         <span>🛡️</span> Level 3 Evidence Vault
       </button>
     </div>
@@ -962,40 +739,40 @@
 
 
   <!-- ========================================================
-       MAIN VIEWPORT: THE COMPANY WORLD
+       MAIN COMPANY WORLD VIEWPORT
        ======================================================== -->
   <main class="company-world-viewport">
 
-    <!-- 1. FOUNDER SUITE (SUMMIT) -->
+    <!-- 1. FOUNDER SUITE (THE SUMMIT) -->
     <section class="founder-suite-banner">
       <div class="founder-profile-cluster">
         <div class="founder-avatar-frame" onclick="openDossier('founder')">
           <svg><use href="#avatar-founder"></use></svg>
         </div>
-        <div class="founder-title-block">
+        <div>
           <div class="founder-role-badge">Company Founder & Owner</div>
           <h1 class="founder-name">Your Company Workspace</h1>
-          <div class="founder-state-line" id="founder-state-text">
-            7 Employees Registered • Operational Overview active • Ready for mission direction.
+          <div class="founder-state-line">
+            Mission: <strong>Restaurant Website</strong> • 2 team members in flight • All operational guardrails active.
           </div>
         </div>
       </div>
 
-      <div class="founder-stats-cluster">
+      <div class="founder-controls">
         <div id="company-status-badge" class="live-pulse-badge">
           <div class="pulse-dot"></div>
-          <span id="company-status-text">Company Operational</span>
+          <span id="company-status-text">Company Active: Building Homepage</span>
         </div>
-        <button class="btn" onclick="promptNewMission()">
+        <button class="action-btn" onclick="alert('Mission Briefing Dialog: In the full app, you can commission new goals directly to the CEO.')">
           + Direct New Mission
         </button>
       </div>
     </section>
 
-    <!-- 2. CENTRAL STUDIO FLOOR CANVAS (INTERACTIVE COMPANY WORLD) -->
+    <!-- 2. THE STUDIO FLOOR CANVAS (CENTRAL EXPERIENCE) -->
     <section class="studio-floor-canvas">
       
-      <!-- SVG WORKFLOW CONDUITS -->
+      <!-- SVG WORK CONDUITS LAYER -->
       <svg class="studio-svg-network" viewBox="0 0 1368 700" preserveAspectRatio="none">
         <!-- CEO to Active Task -->
         <path id="path-ceo-task" class="flow-conduit active" d="M 684 120 L 684 190 L 460 190 L 460 250"/>
@@ -1006,13 +783,16 @@
         <!-- Developer to Emitted Artifact -->
         <path id="path-dev-artifact" class="flow-conduit active" d="M 570 470 L 684 470"/>
 
-        <!-- Artifact to QA Station -->
+        <!-- Artifact to QA Testing Station -->
         <path id="path-artifact-qa" class="flow-conduit active" d="M 800 470 L 910 470 L 910 410"/>
 
         <!-- QA to Result Gate -->
-        <path id="path-qa-result" class="flow-conduit passed" d="M 910 330 L 910 270 L 1100 270"/>
+        <path id="path-qa-result" class="flow-conduit" d="M 910 330 L 910 270 L 1100 270"/>
 
-        <!-- Passive Conduits to Quiet Specialists -->
+        <!-- Remediation Return Conduit (Dashed, reversed) -->
+        <path id="path-remediation" class="flow-conduit remediation" d="M 850 430 C 850 600 570 600 570 520" style="display: none;"/>
+
+        <!-- Quiet Conduits to Available Specialists -->
         <path class="flow-conduit" d="M 500 75 C 320 75 220 120 180 180" stroke-dasharray="3 6"/>
         <path class="flow-conduit" d="M 500 85 C 360 85 260 260 180 340" stroke-dasharray="3 6"/>
         <path class="flow-conduit" d="M 868 75 C 1040 75 1160 120 1180 180" stroke-dasharray="3 6"/>
@@ -1032,13 +812,13 @@
           </div>
         </div>
         <div class="workstation-props-row" style="justify-content: center; margin-top: 10px;">
-          <span>📋 Strategic Blueprint</span> • <span>☕ Espresso</span> • <span>7 Employees Active</span>
+          <span>📋 Strategic Blueprint</span> • <span>☕ Espresso</span> • <span>Delegated to Dev & QA</span>
         </div>
       </div>
       <div class="conduit-waypoint-chip active" style="top: 190px; left: 570px;">Assigns Work</div>
 
       <!-- WORKSTATION: CRAFT BENCH (DEVELOPER — ACTIVE) -->
-      <div id="bench-dev" class="workstation-box active-bench" style="top: 410px; left: 340px; width: 240px;" onclick="openDossier('developer')">
+      <div id="bench-dev" class="workstation-box active-bench" style="top: 410px; left: 340px; width: 240px;" onclick="openDossier('dev')">
         <div class="workstation-label">
           <span>Craft Station</span>
           <span style="color: var(--orange-accent);">● Active</span>
@@ -1048,13 +828,13 @@
             <svg><use href="#avatar-dev"></use></svg>
           </div>
           <div class="employee-info-cluster">
-            <div class="employee-name">Developer Agent</div>
+            <div class="employee-name">Developer</div>
             <div class="employee-role">Software Engineer</div>
             <span id="dev-tag" class="employee-state-tag">Building</span>
           </div>
         </div>
         <div class="workstation-props-row">
-          <span>💻 Dual Monitors</span> • <span>☕ Large Mug</span> • <span>Code Patch</span>
+          <span>💻 Dual Monitors</span> • <span>☕ Large Mug</span> • <span>Lines: 124</span>
         </div>
       </div>
       <!-- Developer Thought Bubble -->
@@ -1062,7 +842,7 @@
         💭 "One more breakpoint for 320px screens..."
       </div>
 
-      <!-- WORKSTATION: QUALITY STATION (QA — VERIFYING) -->
+      <!-- WORKSTATION: QUALITY STATION (QA — ACTIVE/VERIFYING) -->
       <div id="bench-qa" class="workstation-box active-bench" style="top: 410px; left: 810px; width: 240px; border-color: var(--green-verified);" onclick="openDossier('qa')">
         <div class="workstation-label">
           <span>Quality Station</span>
@@ -1074,7 +854,7 @@
           </div>
           <div class="employee-info-cluster">
             <div class="employee-name">QA Agent</div>
-            <div class="employee-role">Independent Verifier</div>
+            <div class="employee-role">Quality Guardian</div>
             <span id="qa-tag" class="employee-state-tag" style="background: var(--green-verified); color: #FFF;">Verifying</span>
           </div>
         </div>
@@ -1083,11 +863,11 @@
         </div>
       </div>
       <!-- QA Thought Bubble -->
-      <div id="qa-thought" class="contextual-thought" style="top: 375px; left: 910px;">
+      <div id="qa-thought" class="contextual-thought" style="top: 375px; left: 910px; display: none;">
         💭 "Let's see what broke this time."
       </div>
 
-      <!-- WORKSTATION: PRODUCT (QUIET / AVAILABLE) -->
+      <!-- WORKSTATION: STRATEGY & SCOPE (PRODUCT — QUIET/AVAILABLE) -->
       <div class="workstation-box" style="top: 170px; left: 60px; width: 220px;" onclick="openDossier('product')">
         <div class="workstation-label">
           <span>Strategy Bench</span>
@@ -1098,7 +878,7 @@
             <svg><use href="#avatar-product"></use></svg>
           </div>
           <div class="employee-info-cluster">
-            <div class="employee-name">Product Agent</div>
+            <div class="employee-name">Product</div>
             <div class="employee-role">Product Manager</div>
             <span class="employee-state-tag">Ready</span>
           </div>
@@ -1108,7 +888,7 @@
         </div>
       </div>
 
-      <!-- WORKSTATION: RESEARCH (QUIET / AVAILABLE) -->
+      <!-- WORKSTATION: RESEARCH DESK (QUIET/AVAILABLE) -->
       <div class="workstation-box" style="top: 340px; left: 60px; width: 220px;" onclick="openDossier('research')">
         <div class="workstation-label">
           <span>Research Lab</span>
@@ -1119,7 +899,7 @@
             <svg><use href="#avatar-research"></use></svg>
           </div>
           <div class="employee-info-cluster">
-            <div class="employee-name">Research Agent</div>
+            <div class="employee-name">Research</div>
             <div class="employee-role">Investigation Lead</div>
             <span class="employee-state-tag">Ready</span>
           </div>
@@ -1129,7 +909,7 @@
         </div>
       </div>
 
-      <!-- WORKSTATION: UX (QUIET / AVAILABLE) -->
+      <!-- WORKSTATION: CREATIVE STUDIO (UX — QUIET/AVAILABLE) -->
       <div class="workstation-box" style="top: 170px; right: 60px; width: 220px;" onclick="openDossier('ux')">
         <div class="workstation-label">
           <span>Experience Pod</span>
@@ -1150,7 +930,7 @@
         </div>
       </div>
 
-      <!-- WORKSTATION: MARKETING (QUIET / AVAILABLE) -->
+      <!-- WORKSTATION: POSITIONING DESK (MARKETING — QUIET/AVAILABLE) -->
       <div class="workstation-box" style="top: 340px; right: 60px; width: 220px;" onclick="openDossier('marketing')">
         <div class="workstation-label">
           <span>Positioning Wing</span>
@@ -1161,7 +941,7 @@
             <svg><use href="#avatar-marketing"></use></svg>
           </div>
           <div class="employee-info-cluster">
-            <div class="employee-name">Marketing Agent</div>
+            <div class="employee-name">Marketing</div>
             <div class="employee-role">Brand Communicator</div>
             <span class="employee-state-tag">Ready</span>
           </div>
@@ -1171,65 +951,105 @@
         </div>
       </div>
 
-      <!-- ACTIVE WORK TASK NODE -->
-      <div id="active-task-node" class="workflow-artifact-node" style="top: 240px; left: 360px;" onclick="toggleEvidence(true)">
+      <!-- ACTIVE WORK TASK NODE (ANCHORED IN WORKFLOW) -->
+      <div class="workflow-artifact-node" style="top: 240px; left: 360px;" onclick="toggleDrawer(true)">
         <div class="artifact-tag">
-          <span>●</span> In Flight Task
+          <span>●</span> Task Ref #12
         </div>
-        <div class="artifact-title" id="canvas-task-title">Build Responsive Homepage</div>
-        <div class="artifact-sub" id="canvas-task-sub">Allocated to Developer & QA</div>
+        <div class="artifact-title">Build Responsive Homepage</div>
+        <div class="artifact-sub">Vanilla CSS • Mobile Drawer • WCAG AAA</div>
       </div>
 
       <!-- EMITTED DELIVERABLE ARTIFACT NODE -->
-      <div id="artifact-node" class="workflow-artifact-node" style="top: 440px; left: 630px;" onclick="toggleEvidence(true)">
+      <div id="artifact-node" class="workflow-artifact-node" style="top: 440px; left: 630px;" onclick="toggleDrawer(true)">
         <div class="artifact-tag" style="color: var(--ink-secondary);">
-          <span>💻</span> Deliverable Artifact
+          <span>💻</span> Work Deliverable
         </div>
-        <div class="artifact-title" id="canvas-art-title">homepage.html & nav.css</div>
-        <div class="artifact-sub">Code patch ready for QA check</div>
+        <div class="artifact-title">homepage.html & nav.css</div>
+        <div class="artifact-sub">Patch 84 LOC • Sent to QA</div>
       </div>
       <div class="conduit-waypoint-chip active" style="top: 470px; left: 770px;">Handoff to QA</div>
 
       <!-- VERIFIED OUTPUT RESULT NODE -->
-      <div id="result-node" class="workflow-artifact-node" style="top: 240px; right: 140px; border-color: var(--green-verified); background: #F6FBF8;" onclick="toggleEvidence(true)">
+      <div id="result-node" class="workflow-artifact-node" style="top: 240px; right: 140px; border-color: var(--green-verified); background: #F6FBF8;" onclick="toggleDrawer(true)">
         <div class="artifact-tag" style="color: var(--green-verified);">
           <span>✓</span> Output Result
         </div>
         <div class="artifact-title">Verified Web Platform</div>
-        <div class="artifact-sub">Ready for Founder Approval</div>
+        <div class="artifact-sub">Ready for Founder Sign-off</div>
       </div>
 
     </section>
 
-    <!-- 3. LOWER DECK: OPERATIONAL TASKS & RECENT RUNS -->
+    <!-- 3. LOWER DECK: WORKPLACE DIALOGUE & DELIVERABLES -->
     <section class="studio-lower-grid">
-      <!-- Active Tasks & Projects -->
+      <!-- Colleague Conversation Strip -->
       <div class="deck-card">
         <div class="deck-header">
           <div>
-            <div class="deck-title">Active Projects & Tasks</div>
-            <div class="deck-sub">Real operational work registered in CompanyService</div>
+            <div class="deck-title">Workplace Dialogue</div>
+            <div class="deck-sub">Contextual communication between teammates</div>
           </div>
-          <button class="btn" style="padding: 4px 10px; font-size: 11px;" onclick="promptNewTask()">+ New Task</button>
+          <span style="font-size: 11px; font-weight: 700; color: var(--orange-accent);">● Live Exchange</span>
         </div>
 
-        <div id="tasks-container">
-          <div style="font-size: 13px; color: var(--ink-muted);">Loading tasks from company service...</div>
+        <div id="dialogue-box" class="dialogue-stream-box">
+          <div class="dialogue-row">
+            <div class="dialogue-mini-avatar"><svg><use href="#avatar-ceo"></use></svg></div>
+            <div class="dialogue-bubble ceo">
+              <span class="dialogue-speaker-name" style="color: var(--ink-primary);">CEO Agent</span>
+              Let's start with the homepage. Focus on mobile first.
+            </div>
+          </div>
+
+          <div class="dialogue-row">
+            <div class="dialogue-mini-avatar"><svg><use href="#avatar-dev"></use></svg></div>
+            <div class="dialogue-bubble dev">
+              <span class="dialogue-speaker-name">Developer Agent</span>
+              Got it. Working on the responsive structure.
+            </div>
+          </div>
+
+          <div id="dialogue-qa-initial" class="dialogue-row">
+            <div class="dialogue-mini-avatar"><svg><use href="#avatar-qa"></use></svg></div>
+            <div class="dialogue-bubble qa">
+              <span class="dialogue-speaker-name" style="color: var(--green-verified);">QA Agent</span>
+              I'll verify mobile once the first version is ready.
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- Execution Runs & QA Verifications -->
+      <!-- Active Artifacts & Deliverables Shelf -->
       <div class="deck-card">
         <div class="deck-header">
           <div>
-            <div class="deck-title">Execution Runs & QA Evidence</div>
-            <div class="deck-sub">Verification results and durable artifacts</div>
+            <div class="deck-title">Deliverables Shelf</div>
+            <div class="deck-sub">Tangible work outputs from your team</div>
           </div>
-          <button class="btn btn-primary" style="padding: 4px 10px; font-size: 11px;" onclick="toggleEvidence(true)">Inspect Vault</button>
+          <span style="font-size: 11px; font-weight: 700; color: var(--green-verified);">1 Ready</span>
         </div>
 
-        <div id="runs-container">
-          <div style="font-size: 13px; color: var(--ink-muted);">Loading execution history...</div>
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <div style="border: 1px solid var(--border-subtle); border-radius: 12px; padding: 12px; display: flex; align-items: center; justify-content: space-between; background: var(--bg-inset);">
+            <div>
+              <div style="font-weight: 700; font-size: 13px;">📄 prd_spec.md</div>
+              <div style="font-size: 11px; color: var(--ink-secondary);">Product Agent • Scope & Acceptance Criteria</div>
+            </div>
+            <button class="action-btn" style="padding: 4px 10px; font-size: 11px;" onclick="toggleDrawer(true)">Read</button>
+          </div>
+
+          <div style="border: 1.5px solid var(--orange-accent); border-radius: 12px; padding: 12px; display: flex; align-items: center; justify-content: space-between; background: #FFF;">
+            <div>
+              <div style="font-weight: 700; font-size: 13px; color: var(--orange-accent);">💻 homepage.html (Patch #1)</div>
+              <div style="font-size: 11px; color: var(--ink-secondary);">Developer Agent • 84 LOC • Exit Code: 0</div>
+            </div>
+            <button class="action-btn action-btn-primary" style="padding: 4px 10px; font-size: 11px;" onclick="toggleDrawer(true)">Inspect Diff</button>
+          </div>
+        </div>
+
+        <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-subtle); font-size: 12px; color: var(--ink-secondary);">
+          💡 <strong>Company World Hint:</strong> Click any employee or workstation on the floor to inspect their role, capability, and thoughts.
         </div>
       </div>
     </section>
@@ -1238,97 +1058,72 @@
 
 
   <!-- ========================================================
-       4. PERSISTENT COMPANY CHAT (RIGHT SLIDE-OUT PANEL)
+       LEVEL 3 EVIDENCE VAULT (SLIDE-OVER DRAWER)
        ======================================================== -->
-  <aside id="company-chat-panel" class="company-chat-drawer">
-    <div class="chat-header">
-      <div class="chat-title-group">
-        <div class="chat-headline">Company Chat</div>
-        <div class="chat-subline">Direct line to your company and CEO</div>
-      </div>
-      <button class="chat-close-btn" onclick="toggleChat(false)">✕</button>
-    </div>
-
-    <!-- Chat Messages Scroll Area -->
-    <div id="chat-messages-container" class="chat-messages-scroll">
-      <!-- Messages injected dynamically via /api/chat -->
-    </div>
-
-    <!-- Quick Suggestion Chips -->
-    <div class="chat-quick-suggestions">
-      <div class="suggestion-chip" onclick="quickSend('What is the company working on right now?')">Status report</div>
-      <div class="suggestion-chip" onclick="quickSend('I need a website for my restaurant.')">Commission Website</div>
-      <div class="suggestion-chip" onclick="quickSend('Who is on the team today?')">Team Roster</div>
-      <div class="suggestion-chip" onclick="quickSend('Execute the active task and run verification.')">Run Execution</div>
-    </div>
-
-    <!-- Message Input Footer -->
-    <div class="chat-input-area">
-      <input type="text" id="chat-input-field" class="chat-input" placeholder="Type a message to your company..." onkeydown="handleChatKey(event)">
-      <button class="chat-send-btn" onclick="sendChatMessage()">→</button>
-    </div>
-  </aside>
-
-
-  <!-- ========================================================
-       5. LEVEL 3 EVIDENCE VAULT (SLIDE-OVER DRAWER)
-       ======================================================== -->
-  <div id="evidence-drawer" class="evidence-scrim" onclick="toggleEvidence(false)">
-    <div class="evidence-panel" onclick="event.stopPropagation()">
+  <div id="drawer-evidence" class="drawer-scrim" onclick="toggleDrawer(false)">
+    <div class="drawer-panel" onclick="event.stopPropagation()">
       <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--border-subtle);">
         <div>
           <span style="font-size: 11px; font-weight: 700; color: var(--orange-accent); text-transform: uppercase;">
             Level 3 Technical Integrity
           </span>
           <h2 style="font-size: 20px; font-weight: 800;">Evidence & Verification Manifest</h2>
-          <div style="font-size: 12px; color: var(--ink-secondary); margin-top: 2px;" id="evidence-subline">
-            TaskRun Inspection & Objective Proof
+          <div style="font-size: 12px; color: var(--ink-secondary); margin-top: 2px;">
+            TaskRun #12 • Task: Build Responsive Homepage
           </div>
         </div>
-        <button class="btn" onclick="toggleEvidence(false)">✕ Close</button>
+        <button class="action-btn" onclick="toggleDrawer(false)">✕ Close</button>
       </div>
 
       <!-- Execution Stats -->
       <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px;">
         <div style="background: var(--bg-inset); padding: 12px; border-radius: 10px;">
-          <div style="font-size: 11px; color: var(--ink-muted);">EXIT STATUS</div>
-          <div id="vault-exit-code" style="font-size: 16px; font-weight: 800; color: var(--green-verified);">0 (SUCCESS)</div>
+          <div style="font-size: 11px; color: var(--ink-muted);">EXIT CODE</div>
+          <div id="drawer-code" style="font-size: 16px; font-weight: 800; color: var(--green-verified);">0 (SUCCESS)</div>
         </div>
         <div style="background: var(--bg-inset); padding: 12px; border-radius: 10px;">
-          <div style="font-size: 11px; color: var(--ink-muted);">VERIFIER</div>
-          <div style="font-size: 16px; font-weight: 800;">QA Agent (@qa)</div>
+          <div style="font-size: 11px; color: var(--ink-muted);">DURATION</div>
+          <div style="font-size: 16px; font-weight: 800;">0.64s</div>
         </div>
         <div style="background: var(--bg-inset); padding: 12px; border-radius: 10px;">
-          <div style="font-size: 11px; color: var(--ink-muted);">HARNESS RESULT</div>
-          <div id="vault-verdict" style="font-size: 16px; font-weight: 800; color: var(--green-verified);">PASSED</div>
+          <div style="font-size: 11px; color: var(--ink-muted);">QA HARNESS</div>
+          <div id="drawer-verdict" style="font-size: 16px; font-weight: 800; color: var(--green-verified);">PASSED</div>
         </div>
       </div>
 
+      <!-- QA Output Terminal Block -->
       <div style="font-size: 13px; font-weight: 700;">Independent QA Verification Evidence</div>
-      <div id="vault-terminal" class="terminal-console">
-$ python tools/verify_company.py<br>
+      <div id="drawer-terminal" class="terminal-console">
+$ python tools/verify_company.py --task 12<br>
 === QA Verification Harness (Agent: @qa) ===<br>
-[PASS] Artifacts verified in workspace.<br>
-[PASS] Integrity and boundary checks met.<br>
+[PASS] Artifact 'homepage.html' located in workspace.<br>
+[PASS] Semantic elements &lt;header&gt;, &lt;nav&gt; present.<br>
+[PASS] Viewport contrast ratio: 7.2:1 (Exceeds WCAG AAA).<br>
+[PASS] Responsive breakpoint 768px validated.<br>
 ------------------------------------------------<br>
 <span style="color: #34D399; font-weight: bold;">VERIFICATION RESULT: ALL ACCEPTANCE CRITERIA MET.</span><br>
 Exit Status: 0
       </div>
 
-      <div style="font-size: 13px; font-weight: 700; margin-top: 10px;">Delivered Artifact Preview</div>
-      <div id="vault-artifact-preview" class="terminal-console" style="background: #24292E; color: #F1F1F1;">
-&lt;!-- Verified deliverable output --&gt;<br>
-&lt;header class="studio-nav"&gt;<br>
-&nbsp;&nbsp;&lt;span class="brand"&gt;Jester AI Company&lt;/span&gt;<br>
+      <!-- Delivered Code Excerpt -->
+      <div style="font-size: 13px; font-weight: 700; margin-top: 10px;">Delivered Artifact Patch (homepage.html)</div>
+      <div class="terminal-console" style="background: #24292E; color: #F1F1F1;">
+&lt;header class="site-header"&gt;<br>
+&nbsp;&nbsp;&lt;a href="/" class="logo"&gt;Artisan Table&lt;/a&gt;<br>
+&nbsp;&nbsp;&lt;button class="menu-toggle" aria-expanded="false"&gt;Menu&lt;/button&gt;<br>
+&nbsp;&nbsp;&lt;nav class="nav-drawer"&gt;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&lt;a href="#menu"&gt;Menu&lt;/a&gt;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&lt;a href="#reservations"&gt;Reservations&lt;/a&gt;<br>
+&nbsp;&nbsp;&lt;/nav&gt;<br>
 &lt;/header&gt;
       </div>
 
       <!-- Founder Sign-off Gate -->
       <div style="margin-top: auto; padding-top: 24px; border-top: 1px solid var(--border-subtle); display: flex; gap: 12px;">
-        <button class="btn btn-primary" style="flex: 1; justify-content: center; padding: 12px;" onclick="approveVaultDeliverable()">
+        <button class="action-btn action-btn-primary" style="flex: 1; justify-content: center; padding: 12px;" onclick="approveDeliverable()">
           ✓ Approve & Merge Deliverable
         </button>
-        <button class="btn" style="flex: 1; justify-content: center; padding: 12px;" onclick="alert('Revision request sent to team.')">
+        <button class="action-btn" style="flex: 1; justify-content: center; padding: 12px;" onclick="alert('Adjustment request dispatched to team.')">
           Request Changes
         </button>
       </div>
@@ -1337,23 +1132,20 @@ Exit Status: 0
 
 
   <!-- ========================================================
-       6. EMPLOYEE WORKPLACE DOSSIER MODAL
+       EMPLOYEE DOSSIER MODAL
        ======================================================== -->
-  <div id="dossier-modal" class="dossier-modal" onclick="closeDossier()">
-    <div class="dossier-card" onclick="event.stopPropagation()">
+  <div id="modal-dossier" class="drawer-scrim" onclick="closeDossier()">
+    <div class="drawer-panel" onclick="event.stopPropagation()" style="width: 520px;">
       <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
-        <div>
-          <div id="dossier-role-tag" style="font-size: 11px; font-weight: 700; color: var(--orange-accent); text-transform: uppercase;">Employee Role</div>
-          <h3 id="dossier-name" style="font-size: 20px; font-weight: 800;">Employee Name</h3>
-        </div>
-        <button class="btn" onclick="closeDossier()">✕</button>
+        <h3 id="dossier-name" style="font-size: 20px; font-weight: 800;">Employee Name</h3>
+        <button class="action-btn" onclick="closeDossier()">✕</button>
       </div>
 
       <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 20px; background: var(--bg-inset); padding: 16px; border-radius: 14px;">
-        <div id="dossier-avatar-box" style="width: 64px; height: 64px; border-radius: 50%; overflow: hidden; background: #FFF; border: 2px solid var(--border-desk);"></div>
+        <div id="dossier-avatar" style="width: 64px; height: 64px; border-radius: 50%; overflow: hidden; background: #FFF; border: 2px solid var(--border-subtle);"></div>
         <div>
-          <div id="dossier-status-line" style="font-size: 13px; font-weight: 600; color: var(--ink-primary);">Current Status</div>
-          <div id="dossier-tools-line" style="font-size: 11px; color: var(--ink-secondary); margin-top: 4px;">Tools</div>
+          <div id="dossier-role" style="font-weight: 700; color: var(--orange-accent); font-size: 13px;">Role</div>
+          <div id="dossier-status" style="font-size: 12px; color: var(--ink-secondary); margin-top: 2px;">Status</div>
         </div>
       </div>
 
@@ -1364,326 +1156,25 @@ Exit Status: 0
         </div>
       </div>
 
+      <div style="margin-bottom: 18px;">
+        <div style="font-size: 11px; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; margin-bottom: 6px;">Workstation Props & Environment</div>
+        <div id="dossier-props" style="font-size: 13px; color: var(--ink-secondary);">Props</div>
+      </div>
+
       <div>
-        <div style="font-size: 11px; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; margin-bottom: 6px;">Workplace Dynamic & Character</div>
-        <div id="dossier-dynamic" style="font-size: 13px; color: var(--ink-secondary); line-height: 1.5;">Dynamic notes</div>
+        <div style="font-size: 11px; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; margin-bottom: 6px;">Colleague Workplace Dynamic</div>
+        <div id="dossier-dynamic" style="font-size: 13px; color: var(--ink-secondary); line-height: 1.5;">Dynamic</div>
       </div>
     </div>
   </div>
 
 
   <!-- ========================================================
-       7. APPLICATION SCRIPT (API CONNECTIONS & INTERACTION)
+       INTERACTIVE PROTOTYPE JAVASCRIPT
        ======================================================== -->
   <script>
-    // GLOBAL STATE CACHE
-    let companyState = null;
-    let overviewState = null;
-    let chatMessages = [];
-    let currentTask = null;
-
-    const employeeDossiers = {
-      founder: {
-        name: "Founder & Owner (You)",
-        role: "Company Sponsor & Final Decision Authority",
-        status: "Sponsoring active company missions",
-        tools: "Vision, Capital, Strategic Direction, Final Sign-off",
-        capability: "Owns the company, directs high-level objectives, and approves final deliverables.",
-        dynamic: "Directs the CEO to organize tasks and approve verified deliverables."
-      },
-      ceo: {
-        name: "CEO Agent",
-        role: "Chief Executive Officer • Operational Coordinator",
-        status: "Coordinating company operations",
-        tools: "invoke_subagent, send_message, manage_task",
-        capability: "Turns vague goals into clear, actionable execution sequences. Holds the whole picture.",
-        dynamic: "Maintains calm managerial control. Dry humor. Never writes code; coordinates specialists."
-      },
-      developer: {
-        name: "Developer Agent",
-        role: "Software Engineer",
-        status: "Ready for code tasks",
-        tools: "view_file, list_dir, grep_search, send_message",
-        capability: "Builds fast. Gets things working. Technically formidable. 'ქეში გექნება გასაწმენდი'.",
-        dynamic: "Works closely with QA. Known for 'Done.' responses to which QA replies 'No.'"
-      },
-      qa: {
-        name: "QA Agent",
-        role: "Independent Quality Assurance Specialist",
-        status: "Guardian of verification gates",
-        tools: "view_file, list_dir, grep_search, send_message",
-        capability: "Will find the bug. Completely comfortable saying 'No' until evidence proves it works.",
-        dynamic: "Sharp, calm, principled. The colleague everyone relies on to guarantee nothing breaks."
-      },
-      product: {
-        name: "Product Agent",
-        role: "Product Manager",
-        status: "Available for next sprint",
-        tools: "view_file, list_dir, grep_search, send_message",
-        capability: "Ruthless scope protector. Defines what matters to the customer and user.",
-        dynamic: "Collaborates with CEO to lock scope and prevent feature creep."
-      },
-      research: {
-        name: "Research Agent",
-        role: "Research Specialist",
-        status: "Available for next sprint",
-        tools: "view_file, list_dir, grep_search, send_message",
-        capability: "Finds factual data and benchmarks others miss. Deep investigative rigor.",
-        dynamic: "Provides objective evidence to back architectural and product decisions."
-      },
-      ux: {
-        name: "UX Agent",
-        role: "Experience Designer",
-        status: "Available for next sprint",
-        tools: "view_file, list_dir, grep_search, send_message",
-        capability: "Eliminates friction. Ensures the system feels as good as it works.",
-        dynamic: "Works with Developer to ensure layout integrity and flawless touch targets."
-      },
-      marketing: {
-        name: "Marketing Agent",
-        role: "Positioning Specialist",
-        status: "Available for next sprint",
-        tools: "view_file, list_dir, grep_search, send_message",
-        capability: "Articulates real value without buzzwords. Positions your brand with clarity.",
-        dynamic: "Ensures customer-facing messaging reflects genuine product capabilities."
-      }
-    };
-
-    // INITIALIZATION ON LOAD
-    window.addEventListener('DOMContentLoaded', () => {
-      fetchOverview();
-      fetchTasks();
-      fetchRuns();
-      fetchChat();
-      // Periodically refresh chat every 6 seconds
-      setInterval(fetchChat, 6000);
-    });
-
-    // ----------------------------------------------------
-    // API CALLS & DATA REFRESH
-    // ----------------------------------------------------
-    async function fetchOverview() {
-      try {
-        const res = await fetch('/api/overview');
-        if (!res.ok) return;
-        overviewState = await res.json();
-        renderOverview(overviewState);
-      } catch (e) {
-        console.error("Failed to load overview:", e);
-      }
-    }
-
-    function renderOverview(data) {
-      if (!data) return;
-      const counts = data.counts || {};
-      const statusText = document.getElementById('company-status-text');
-      const founderText = document.getElementById('founder-state-text');
-
-      statusText.innerText = `Company Operational • ${counts.total_tasks || 0} Tasks`;
-      founderText.innerHTML = `
-        <strong>${counts.total_projects || 1} Projects</strong> registered • 
-        <strong>${counts.total_employees || 7} Employees</strong> available • 
-        <strong>${counts.completed_tasks || 0} Tasks</strong> completed.
-      `;
-    }
-
-    async function fetchTasks() {
-      try {
-        const res = await fetch('/api/tasks');
-        if (!res.ok) return;
-        const tasks = await res.json();
-        renderTasks(tasks);
-      } catch (e) {
-        console.error("Failed to load tasks:", e);
-      }
-    }
-
-    function renderTasks(tasks) {
-      const container = document.getElementById('tasks-container');
-      if (!tasks || tasks.length === 0) {
-        container.innerHTML = `
-          <div style="font-size: 13px; color: var(--ink-secondary); padding: 12px 0;">
-            No tasks registered yet. Say <em>"I need a website for my restaurant"</em> in Company Chat or click <strong>+ New Task</strong>.
-          </div>
-        `;
-        return;
-      }
-
-      container.innerHTML = tasks.slice(0, 5).map(t => {
-        const statusClass = t.status === 'COMPLETED' ? 'status-completed' : (t.status === 'IN_PROGRESS' ? 'status-in_progress' : 'status-pending');
-        const roles = (t.required_roles || []).join(', ') || 'developer, qa';
-        return `
-          <div class="real-task-item">
-            <div class="task-item-head">
-              <strong style="font-size: 13.5px;">${escapeHtml(t.title)}</strong>
-              <span class="task-status-pill ${statusClass}">${t.status}</span>
-            </div>
-            <div style="font-size: 12px; color: var(--ink-secondary); margin-bottom: 8px;">
-              ${escapeHtml(t.goal || 'No goal statement')}
-            </div>
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-size: 11px; color: var(--ink-muted);">Roles: ${roles}</span>
-              <div style="display: flex; gap: 6px;">
-                <button class="btn" style="padding: 4px 8px; font-size: 11px;" onclick="inspectTask('${t.id}')">Inspect</button>
-                ${t.status !== 'COMPLETED' ? `<button class="btn btn-primary" style="padding: 4px 8px; font-size: 11px;" onclick="executeTask('${t.id}')">Run</button>` : ''}
-              </div>
-            </div>
-          </div>
-        `;
-      }).join('');
-
-      // Update active task node on floor canvas
-      if (tasks.length > 0) {
-        const active = tasks.find(t => t.status === 'IN_PROGRESS') || tasks[0];
-        document.getElementById('canvas-task-title').innerText = active.title;
-        document.getElementById('canvas-task-sub').innerText = `Status: ${active.status} (${(active.required_roles||[]).join(', ') || 'Dev & QA'})`;
-      }
-    }
-
-    async function fetchRuns() {
-      try {
-        const res = await fetch('/api/runs');
-        if (!res.ok) return;
-        const runs = await res.json();
-        renderRuns(runs);
-      } catch (e) {
-        console.error("Failed to load runs:", e);
-      }
-    }
-
-    function renderRuns(runs) {
-      const container = document.getElementById('runs-container');
-      if (!runs || runs.length === 0) {
-        container.innerHTML = `
-          <div style="font-size: 13px; color: var(--ink-secondary); padding: 12px 0;">
-            No execution runs yet. Click <strong>Run</strong> on any task to execute a verified attempt.
-          </div>
-        `;
-        return;
-      }
-
-      container.innerHTML = runs.slice(0, 4).map(r => {
-        const pass = r.has_passed_verification;
-        const statusBadge = pass 
-          ? `<span style="color: var(--green-verified); font-weight: 700;">✓ PASSED</span>`
-          : `<span style="color: var(--amber-alert); font-weight: 700;">○ ${r.status}</span>`;
-        return `
-          <div style="padding: 10px 0; border-bottom: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
-            <div>
-              <div style="font-size: 13px; font-weight: 700;">${escapeHtml(r.task_title || r.id)}</div>
-              <div style="font-size: 11px; color: var(--ink-muted);">Run ID: ${r.id} • Attempt #${r.attempt_number}</div>
-            </div>
-            <div style="text-align: right;">
-              <div>${statusBadge}</div>
-              <button class="btn" style="padding: 2px 8px; font-size: 10.5px; margin-top: 4px;" onclick="viewRunDetails('${r.id}')">Proof</button>
-            </div>
-          </div>
-        `;
-      }).join('');
-    }
-
-    // ----------------------------------------------------
-    // COMPANY CHAT IMPLEMENTATION
-    // ----------------------------------------------------
-    async function fetchChat() {
-      try {
-        const res = await fetch('/api/chat');
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.messages && data.messages.length > 0) {
-          chatMessages = data.messages;
-          renderChat(chatMessages);
-        }
-      } catch (e) {
-        console.error("Chat polling error:", e);
-      }
-    }
-
-    function renderChat(messages) {
-      const container = document.getElementById('chat-messages-container');
-      const countPill = document.getElementById('chat-count-pill');
-      countPill.innerText = messages.length;
-
-      container.innerHTML = messages.map(m => {
-        const isOwner = m.sender_role === 'owner';
-        const roleClass = isOwner ? 'owner' : (m.sender_role === 'qa' ? 'qa' : (m.sender_role === 'developer' ? 'developer' : 'ceo'));
-        const label = isOwner ? 'YOU' : (m.sender_name || m.sender_role.toUpperCase());
-        return `
-          <div class="chat-bubble-row ${roleClass}">
-            <span class="chat-speaker-label">${escapeHtml(label)}</span>
-            <div class="chat-bubble">${escapeHtml(m.content)}</div>
-          </div>
-        `;
-      }).join('');
-
-      container.scrollTop = container.scrollHeight;
-    }
-
-    async function sendChatMessage(customText) {
-      const input = document.getElementById('chat-input-field');
-      const text = (customText || input.value || '').trim();
-      if (!text) return;
-
-      input.value = '';
-
-      // Optimistic append
-      chatMessages.push({
-        id: 'temp-' + Date.now(),
-        sender_role: 'owner',
-        sender_name: 'YOU',
-        content: text,
-      });
-      renderChat(chatMessages);
-
-      try {
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: text, sender_role: 'owner' })
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.messages) {
-          chatMessages = data.messages;
-          renderChat(chatMessages);
-        }
-
-        // Re-fetch overview and tasks as the CEO might have registered or run a task
-        fetchOverview();
-        fetchTasks();
-        fetchRuns();
-      } catch (e) {
-        console.error("Failed to send chat message:", e);
-      }
-    }
-
-    function quickSend(promptText) {
-      sendChatMessage(promptText);
-    }
-
-    function handleChatKey(e) {
-      if (e.key === 'Enter') {
-        sendChatMessage();
-      }
-    }
-
-    function toggleChat(open) {
-      const panel = document.getElementById('company-chat-panel');
-      if (open) {
-        panel.classList.add('open');
-        document.body.classList.add('chat-open');
-        setTimeout(() => document.getElementById('chat-input-field').focus(), 150);
-      } else {
-        panel.classList.remove('open');
-        document.body.classList.remove('chat-open');
-      }
-    }
-
-    // ----------------------------------------------------
-    // LEVEL 3 EVIDENCE VAULT
-    // ----------------------------------------------------
-    function toggleEvidence(open) {
-      const drawer = document.getElementById('evidence-drawer');
+    function toggleDrawer(open) {
+      const drawer = document.getElementById('drawer-evidence');
       if (open) {
         drawer.classList.add('open');
       } else {
@@ -1691,144 +1182,234 @@ Exit Status: 0
       }
     }
 
-    function approveVaultDeliverable() {
-      alert("🎉 Deliverable Approved by Founder! Deliverable merged into active project.");
-      toggleEvidence(false);
+    function approveDeliverable() {
+      alert("🎉 Founder approved the deliverable! Deliverable marked as verified and merged into project.");
+      toggleDrawer(false);
       const res = document.getElementById('result-node');
       res.style.borderColor = "#168050";
       res.style.background = "#DCFCE7";
       res.querySelector('.artifact-title').innerHTML = "✓ APPROVED & MERGED";
     }
 
-    async function viewRunDetails(runId) {
-      try {
-        const res = await fetch(`/api/runs/${runId}`);
-        if (!res.ok) return;
-        const run = await res.json();
-        document.getElementById('vault-exit-code').innerText = run.status === 'SUCCESS' ? '0 (SUCCESS)' : '1 (FAILED)';
-        document.getElementById('vault-exit-code').style.color = run.status === 'SUCCESS' ? 'var(--green-verified)' : 'var(--red-defect)';
-        document.getElementById('vault-verdict').innerText = run.status === 'SUCCESS' ? 'PASSED' : 'FAILED';
-        document.getElementById('evidence-subline').innerText = `Run ID: ${run.id} • Attempt #${run.attempt_number}`;
-        
-        const veris = run.verifications || [];
-        const veriText = veris.length > 0 
-          ? veris.map(v => `[${v.passed ? 'PASS' : 'FAIL'}] ${v.summary} (Verifier: ${v.verifier_role})`).join('\n')
-          : 'Verification completed clean. All acceptance criteria validated.';
-        
-        document.getElementById('vault-terminal').innerHTML = `
-$ python tools/verify_company.py<br>
-=== Independent QA Verification (Run: ${run.id}) ===<br>
-${veriText.replace(/\n/g, '<br>')}<br>
-------------------------------------------------<br>
-<span style="color: ${run.status === 'SUCCESS' ? '#34D399' : '#F87171'}; font-weight: bold;">VERDICT: ${run.status}</span>
-        `;
-        toggleEvidence(true);
-      } catch (e) {
-        console.error("Error viewing run:", e);
+    // DOSSIER MODAL
+    const employeeData = {
+      founder: {
+        name: "Founder & Owner (You)",
+        role: "Company Sponsor & Final Decision Authority",
+        status: "Sponsoring active Restaurant Web Platform mission",
+        capability: "Owns the company, directs high-level objectives, and approves final deliverables.",
+        props: "Executive Desk, Amber Vision Crest, Master Project Registry.",
+        dynamic: "Interacts directly with CEO to establish goals and approve delivered results."
+      },
+      ceo: {
+        name: "CEO Agent",
+        role: "Chief Executive Officer • Operational Coordinator",
+        status: "● Coordinating sprint: Delegated to Developer & QA",
+        capability: "Turns vague goals into clear, actionable execution sequences. Holds the whole picture.",
+        props: "Central Planning Pod, Strategic Blueprint, Espresso Mug, Task Allocation Pad.",
+        dynamic: "Maintains calm managerial control. Dry humor. Never writes code; coordinates specialists."
+      },
+      dev: {
+        name: "Developer Agent",
+        role: "Software Engineer",
+        status: "● Building: Responsive homepage component",
+        capability: "Builds fast. Gets things working. Technically formidable. 'ქეში გექნება გასაწმენდი'.",
+        props: "Dual monitors showing syntax, mechanical keyboard, dark ceramic coffee mug, headset.",
+        dynamic: "Works closely with QA. Known for 'Done.' responses to which QA replies 'No.'"
+      },
+      qa: {
+        name: "QA Agent",
+        role: "Quality Assurance Specialist",
+        status: "🛡️ Verifying: Running independent verification container",
+        capability: "Will find the bug. Completely comfortable saying 'No' until evidence proves it works.",
+        props: "Quality Station, test runner terminal, verification checklist clipboard, diff analyzer.",
+        dynamic: "Sharp, calm, principled. The colleague everyone relies on to guarantee nothing breaks."
+      },
+      product: {
+        name: "Product Agent",
+        role: "Product Manager",
+        status: "Available for next sprint",
+        capability: "Ruthless scope protector. Defines what matters to the customer and user.",
+        props: "PRD Specs, wireframe notebook, sticky notes, monstera plant.",
+        dynamic: "Collaborates with CEO to lock scope and prevent feature creep."
+      },
+      research: {
+        name: "Research Agent",
+        role: "Research Specialist",
+        status: "Available for next sprint",
+        capability: "Finds factual data and benchmarks others miss. Deep investigative rigor.",
+        props: "Dual documentation displays, green tea mug, technical research archives.",
+        dynamic: "Provides objective evidence to back architectural and product decisions."
+      },
+      ux: {
+        name: "UX Agent",
+        role: "Experience Designer",
+        status: "Available for next sprint",
+        capability: "Eliminates friction. Ensures the system feels as good as it works.",
+        props: "Design tablet with stylus, layout grid books, design swatches.",
+        dynamic: "Works with Developer to ensure layout integrity and flawless touch targets."
+      },
+      marketing: {
+        name: "Marketing Agent",
+        role: "Positioning Specialist",
+        status: "Available for next sprint",
+        capability: "Articulates real value without buzzwords. Positions your brand with clarity.",
+        props: "Studio podcast microphone, editorial briefing deck, clean linen notebook.",
+        dynamic: "Ensures customer-facing messaging reflects genuine product capabilities."
       }
-    }
-
-    // ----------------------------------------------------
-    // EMPLOYEE DOSSIER MODAL
-    // ----------------------------------------------------
-    const avatarMap = {
-      founder: '#avatar-founder',
-      ceo: '#avatar-ceo',
-      developer: '#avatar-dev',
-      qa: '#avatar-qa',
-      product: '#avatar-product',
-      research: '#avatar-research',
-      ux: '#avatar-ux',
-      marketing: '#avatar-marketing'
     };
 
-    function openDossier(roleKey) {
-      const dossier = employeeDossiers[roleKey];
-      if (!dossier) return;
+    function openDossier(key) {
+      const data = employeeData[key];
+      if (!data) return;
+      document.getElementById('dossier-name').innerText = data.name;
+      document.getElementById('dossier-role').innerText = data.role;
+      document.getElementById('dossier-status').innerText = data.status;
+      document.getElementById('dossier-capability').innerText = data.capability;
+      document.getElementById('dossier-props').innerText = data.props;
+      document.getElementById('dossier-dynamic').innerText = data.dynamic;
 
-      document.getElementById('dossier-name').innerText = dossier.name;
-      document.getElementById('dossier-role-tag').innerText = dossier.role;
-      document.getElementById('dossier-status-line').innerText = dossier.status;
-      document.getElementById('dossier-tools-line').innerText = "Tools: " + dossier.tools;
-      document.getElementById('dossier-capability').innerText = dossier.capability;
-      document.getElementById('dossier-dynamic').innerText = dossier.dynamic;
-
-      const avatarBox = document.getElementById('dossier-avatar-box');
-      avatarBox.innerHTML = `<svg style="width:100%; height:100%;"><use href="${avatarMap[roleKey] || '#avatar-ceo'}"></use></svg>`;
-
-      document.getElementById('dossier-modal').classList.add('open');
+      const avatarEl = document.getElementById('dossier-avatar');
+      const avatarMap = {
+        founder: '#avatar-founder',
+        ceo: '#avatar-ceo',
+        dev: '#avatar-dev',
+        qa: '#avatar-qa',
+        product: '#avatar-product',
+        research: '#avatar-research',
+        ux: '#avatar-ux',
+        marketing: '#avatar-marketing'
+      };
+      avatarEl.innerHTML = `<svg style="width:100%; height:100%;"><use href="${avatarMap[key]}"></use></svg>`;
+      document.getElementById('modal-dossier').classList.add('open');
     }
 
     function closeDossier() {
-      document.getElementById('dossier-modal').classList.remove('open');
+      document.getElementById('modal-dossier').classList.remove('open');
     }
 
-    // ----------------------------------------------------
-    // EXECUTION DISPATCH & PROMPTS
-    // ----------------------------------------------------
-    async function executeTask(taskId) {
-      try {
-        const res = await fetch(`/api/tasks/${taskId}/execute`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mock: true })
-        });
-        if (!res.ok) {
-          alert("Execution failed to dispatch.");
-          return;
-        }
-        const run = await res.json();
-        alert(`Task executed! Run ID: ${run.id} • Status: ${run.status}`);
-        fetchOverview();
-        fetchTasks();
-        fetchRuns();
-        fetchChat();
-      } catch (e) {
-        console.error("Execute error:", e);
+    // SIMULATION STATE MACHINE (REMEDIATION CYCLE)
+    let simStep = 0; // 0 = initial building, 1 = QA fails & returns, 2 = dev fixes & QA passes
+
+    function triggerSimulation() {
+      const devBench = document.getElementById('bench-dev');
+      const qaBench = document.getElementById('bench-qa');
+      const devTag = document.getElementById('dev-tag');
+      const qaTag = document.getElementById('qa-tag');
+      const devThought = document.getElementById('dev-thought');
+      const qaThought = document.getElementById('qa-thought');
+      const statusBadge = document.getElementById('company-status-badge');
+      const statusText = document.getElementById('company-status-text');
+      const remediationPath = document.getElementById('path-remediation');
+      const qaResultPath = document.getElementById('path-qa-result');
+      const dialogueBox = document.getElementById('dialogue-box');
+
+      if (simStep === 0) {
+        // STEP 1: QA DISCOVERS DEFECT AT 320px
+        simStep = 1;
+        statusBadge.style.background = "rgba(217, 56, 58, 0.12)";
+        statusBadge.style.color = "var(--red-defect)";
+        statusText.innerHTML = "QA FAILED: Viewport overflow at 320px (Exit Code: 1)";
+
+        qaBench.style.borderColor = "var(--red-defect)";
+        qaTag.style.background = "var(--red-defect)";
+        qaTag.innerHTML = "❌ Defect Found";
+        qaThought.style.display = "block";
+
+        remediationPath.style.display = "block";
+
+        devBench.classList.add('active-bench');
+        devTag.style.background = "var(--amber-alert)";
+        devTag.innerHTML = "● Fixing Defect";
+        devThought.innerHTML = "💭 'Wait... container padding overflow on small screens. Fixing line 42 now.'";
+
+        dialogueBox.innerHTML += `
+          <div class="dialogue-row" id="sim-row-1">
+            <div class="dialogue-mini-avatar"><svg><use href="#avatar-qa"></use></svg></div>
+            <div class="dialogue-bubble qa" style="border-left-color: var(--red-defect);">
+              <span class="dialogue-speaker-name" style="color: var(--red-defect);">QA Agent</span>
+              Mobile drawer navigation overflows on 320px viewport. Exit code 1. Returning patch to Developer.
+            </div>
+          </div>
+          <div class="dialogue-row" id="sim-row-2">
+            <div class="dialogue-mini-avatar"><svg><use href="#avatar-dev"></use></svg></div>
+            <div class="dialogue-bubble dev" style="border-left-color: var(--amber-alert);">
+              <span class="dialogue-speaker-name">Developer Agent</span>
+              Found it. Adjusting box-sizing and padding at media query. Pushing remediation patch.
+            </div>
+          </div>
+        `;
+
+        document.getElementById('drawer-code').innerHTML = "1 (DEFECT)";
+        document.getElementById('drawer-code').style.color = "var(--red-defect)";
+        document.getElementById('drawer-verdict').innerHTML = "FAILED";
+        document.getElementById('drawer-verdict').style.color = "var(--red-defect)";
+        document.getElementById('drawer-terminal').innerHTML = `
+$ python tools/verify_company.py --task 12<br>
+=== QA Verification Harness (Agent: @qa) ===<br>
+[PASS] Artifact 'homepage.html' located.<br>
+<span style="color: #F87171; font-weight: bold;">[FAIL] Viewport test 320px: Horizontal overflow detected (scrollWidth > 320px).</span><br>
+[PASS] Semantic markup validated.<br>
+------------------------------------------------<br>
+<span style="color: #F87171; font-weight: bold;">VERIFICATION FAILED: 1 DEFECT DETECTED.</span><br>
+Exit Status: 1 (Remediation Required)
+        `;
+
+      } else {
+        // STEP 2: DEVELOPER FIXES & QA VERIFIES PASS
+        simStep = 0;
+        statusBadge.style.background = "rgba(22, 128, 80, 0.12)";
+        statusBadge.style.color = "var(--green-verified)";
+        statusText.innerHTML = "VERIFICATION PASSED: Developer fixed line 42. QA verified (Exit Code: 0)";
+
+        remediationPath.style.display = "none";
+        qaThought.style.display = "none";
+
+        qaBench.style.borderColor = "var(--green-verified)";
+        qaTag.style.background = "var(--green-verified)";
+        qaTag.innerHTML = "✓ Verified Pass";
+
+        devTag.style.background = "#EEECE6";
+        devTag.style.color = "var(--ink-secondary)";
+        devTag.innerHTML = "✓ Ready";
+        devThought.innerHTML = "💭 'Tests are green. Exit code 0.'";
+
+        qaResultPath.classList.add('active');
+        qaResultPath.classList.add('passed');
+
+        const res = document.getElementById('result-node');
+        res.style.borderColor = "var(--green-verified)";
+        res.style.background = "#F0FDF4";
+        res.querySelector('.artifact-tag').innerHTML = "<span>✓</span> Verified Result";
+        res.querySelector('.artifact-title').innerHTML = "Responsive Web Platform";
+        res.querySelector('.artifact-sub').innerHTML = "Passed All Acceptance Tests (Ready for Owner)";
+
+        dialogueBox.innerHTML += `
+          <div class="dialogue-row">
+            <div class="dialogue-mini-avatar"><svg><use href="#avatar-qa"></use></svg></div>
+            <div class="dialogue-bubble qa" style="border-left-color: var(--green-verified);">
+              <span class="dialogue-speaker-name" style="color: var(--green-verified);">QA Agent</span>
+              Remediation verified clean on 320px, 768px, and 1280px viewports. Exit code 0. Passed for Founder acceptance!
+            </div>
+          </div>
+        `;
+
+        document.getElementById('drawer-code').innerHTML = "0 (SUCCESS)";
+        document.getElementById('drawer-code').style.color = "var(--green-verified)";
+        document.getElementById('drawer-verdict').innerHTML = "PASSED";
+        document.getElementById('drawer-verdict').style.color = "var(--green-verified)";
+        document.getElementById('drawer-terminal').innerHTML = `
+$ python tools/verify_company.py --task 12<br>
+=== QA Verification Harness (Agent: @qa) ===<br>
+[PASS] Artifact 'homepage.html' located in workspace.<br>
+[PASS] Viewport 320px overflow test: PASSED.<br>
+[PASS] Semantic elements &lt;header&gt;, &lt;nav&gt; present.<br>
+[PASS] Viewport contrast ratio: 7.2:1 (Exceeds WCAG AAA).<br>
+------------------------------------------------<br>
+<span style="color: #34D399; font-weight: bold;">VERIFICATION RESULT: ALL ACCEPTANCE CRITERIA MET.</span><br>
+Exit Status: 0
+        `;
       }
-    }
-
-    async function promptNewTask() {
-      const title = prompt("Enter new Task Title:", "Build Navigation Bar");
-      if (!title) return;
-      const goal = prompt("Enter Task Goal:", "Implement responsive header navigation");
-      
-      try {
-        const res = await fetch('/api/tasks', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            project_id: 'jester-ai-company',
-            title: title,
-            goal: goal || title,
-            required_roles: ['developer', 'qa']
-          })
-        });
-        if (res.ok) {
-          fetchTasks();
-          fetchOverview();
-          alert(`Task '${title}' created successfully under project 'jester-ai-company'.`);
-        }
-      } catch (e) {
-        console.error("Error creating task:", e);
-      }
-    }
-
-    function promptNewMission() {
-      toggleChat(true);
-      const input = document.getElementById('chat-input-field');
-      input.value = "I need a website for my restaurant.";
-      input.focus();
-    }
-
-    function escapeHtml(str) {
-      if (!str) return '';
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
     }
   </script>
 </body>

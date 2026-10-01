@@ -27,6 +27,7 @@ import uuid
 
 from .core import (
     Artifact,
+    ChatMessage,
     Company,
     Employee,
     Project,
@@ -595,3 +596,147 @@ class CompanyService:
             "recent_runs": recent_runs_summary,
             "timestamp": _utc_now_iso(),
         }
+
+    # --------------------------------------------------------------------------
+    # Company Chat & Communication (Stage 27-E.1)
+    # --------------------------------------------------------------------------
+
+    def list_chat_messages(self, limit: int = 50) -> List[ChatMessage]:
+        """List chronological chat messages in the company-wide thread."""
+        return self.company.messages[-limit:]
+
+    def send_chat_message(
+        self,
+        content: str,
+        sender_role: str = "owner",
+        project_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Send a message to the company chat and synthesize the CEO/team response."""
+        text = (content or "").strip()
+        if not text:
+            raise ValueError("Message content must not be empty.")
+
+        sender_name = "You (Founder)" if sender_role == "owner" else (
+            self.company.get_employee(sender_role).title if self.company.get_employee(sender_role) else sender_role.capitalize()
+        )
+
+        user_msg = self.company.add_message(
+            sender_role=sender_role,
+            sender_name=sender_name,
+            content=text,
+            project_id=project_id,
+            task_id=task_id,
+        )
+
+        ceo_reply = None
+        if sender_role == "owner":
+            lower_text = text.lower()
+            overview = self.get_overview()
+            counts = overview["counts"]
+
+            # 1. Status / Health query
+            if any(k in lower_text for k in ["status", "overview", "health", "how are we", "report"]):
+                projects = list(self.company.projects.values())
+                proj_names = ", ".join(f"'{p.name}'" for p in projects) if projects else "none yet"
+                ceo_text = (
+                    f"Operational report for the Founder:\n"
+                    f"• Registered Projects: {counts['total_projects']} ({proj_names})\n"
+                    f"• Active Tasks: {counts['in_progress_tasks']} in progress, {counts['completed_tasks']} completed\n"
+                    f"• QA Verifications: {counts['passed_verifications']} passed, {counts['failed_verifications']} failed\n"
+                    f"All 7 specialists are available and ready."
+                )
+
+            # 2. Team / People query
+            elif any(k in lower_text for k in ["team", "who is working", "employees", "specialists", "people"]):
+                ceo_text = (
+                    f"Here is your active workforce roster, Founder:\n"
+                    f"• CEO Agent (Leadership & Planning)\n"
+                    f"• Product Agent (Scope & Requirements)\n"
+                    f"• Research Agent (Investigation & Benchmarks)\n"
+                    f"• UX Agent (Design & Touch Ergonomics)\n"
+                    f"• Marketing Agent (Positioning & Communication)\n"
+                    f"• Developer Agent (Engineering & Implementation)\n"
+                    f"• QA Agent (Independent Verification & Integrity)\n"
+                    f"Give me a mission and I will organize the team."
+                )
+
+            # 3. New project or website commission (e.g. restaurant website)
+            elif any(k in lower_text for k in ["restaurant", "website", "project", "build a", "need a", "create", "launch"]):
+                target_proj = None
+                if project_id and project_id in self.company.projects:
+                    target_proj = self.company.projects[project_id]
+                else:
+                    target_proj = self.ensure_default_project()
+
+                new_task_title = "Responsive Web Platform"
+                if "restaurant" in lower_text:
+                    new_task_title = "Restaurant Website: Responsive Booking Platform"
+                elif "homepage" in lower_text or "nav" in lower_text:
+                    new_task_title = "Responsive Navigation Header"
+
+                existing = [t for t in target_proj.tasks.values() if new_task_title in t.title]
+                if not existing:
+                    created_task = target_proj.create_task(
+                        task_id=f"task_{uuid.uuid4().hex[:6]}",
+                        title=new_task_title,
+                        goal=f"Build and verify: {text}",
+                        constraints=["Zero external dependencies", "WCAG AAA compliant"],
+                        required_roles=["developer", "qa"],
+                    )
+                    task_info = f"I've registered Task '{created_task.title}' under '{target_proj.name}'."
+                else:
+                    task_info = f"We have Task '{existing[0].title}' queued under '{target_proj.name}'."
+
+                ceo_text = (
+                    f"Understood, Founder. {task_info}\n"
+                    f"I am allocating Developer to build the clean markup and styles, with QA standing by to independently verify against acceptance criteria.\n"
+                    f"Say 'execute' or click the task in your workspace to initiate the run."
+                )
+
+            # 4. Execute / Run command
+            elif any(k in lower_text for k in ["execute", "run task", "start building", "go ahead"]):
+                all_tasks = []
+                for p in self.company.projects.values():
+                    all_tasks.extend(p.tasks.values())
+                executable = [t for t in all_tasks if t.status in (TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value)]
+
+                if executable:
+                    target_task = executable[0]
+                    try:
+                        run = self.execute_task(target_task.id, mock=True)
+                        has_passed = any(v.passed for v in run.verifications)
+                        verdict = "PASSED" if has_passed else "FAILED"
+                        ceo_text = (
+                            f"Run completed for Task '{target_task.title}' (Attempt #{run.attempt_number}):\n"
+                            f"• Status: {run.status}\n"
+                            f"• QA Verification: {verdict}\n"
+                            f"• Artifacts Produced: {len(run.artifacts)}\n"
+                            f"The output is delivered and ready for your inspection."
+                        )
+                    except Exception as e:
+                        ceo_text = f"Execution encountered an error: {str(e)}. Developer and QA are investigating."
+                else:
+                    ceo_text = "All registered tasks have already been completed. Commission a new task or project, and I will assemble the team."
+
+            # 5. General response
+            else:
+                ceo_text = (
+                    f"Received, Founder. I'm aligning our operational priorities accordingly. "
+                    f"Let me know if you would like to commission a new project, check QA verifications, or review active deliverables."
+                )
+
+            ceo_reply = self.company.add_message(
+                sender_role="ceo",
+                sender_name="CEO Agent",
+                content=ceo_text,
+                project_id=project_id,
+                task_id=task_id,
+            )
+
+        return {
+            "user_message": user_msg.to_dict(),
+            "reply": ceo_reply.to_dict() if ceo_reply else None,
+            "messages": [m.to_dict() for m in self.list_chat_messages(limit=50)],
+        }
+

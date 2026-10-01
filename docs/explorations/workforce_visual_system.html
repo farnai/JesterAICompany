@@ -1,0 +1,1486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jester AI Company — Workforce Visual System & Infographic Prototype</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    /* RESET & DESIGN TOKENS */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-linen: #FBFBF9;
+      --bg-card: #FFFFFF;
+      --bg-inset: #F4F3EF;
+      --ink-main: #18191B;
+      --ink-secondary: #5A5D64;
+      --ink-muted: #93969F;
+      --border-subtle: rgba(24, 25, 27, 0.08);
+      --border-focus: #F95924;
+      --orange-primary: #F95924;
+      --orange-glow: rgba(249, 89, 36, 0.12);
+      --green-pass: #168050;
+      --green-glow: rgba(22, 128, 80, 0.12);
+      --amber-wait: #D97706;
+      --amber-glow: rgba(217, 119, 6, 0.12);
+      --red-fail: #D9383A;
+      --shadow-ambient: 0 4px 20px -2px rgba(24, 25, 27, 0.05), 0 2px 6px rgba(24, 25, 27, 0.02);
+      --shadow-elevated: 0 12px 32px -4px rgba(24, 25, 27, 0.1), 0 4px 12px rgba(24, 25, 27, 0.03);
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+      background: var(--bg-linen);
+      color: var(--ink-main);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* TOP APPLICATION BAR */
+    .top-app-bar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(251, 251, 249, 0.94);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 14px 36px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .brand-cluster {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .brand-crest {
+      width: 38px;
+      height: 38px;
+      background: var(--ink-main);
+      color: var(--orange-primary);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 16px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .brand-title {
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .brand-subtitle {
+      font-size: 11px;
+      color: var(--ink-secondary);
+      font-weight: 500;
+    }
+
+    /* APP CONTROLS */
+    .app-nav-tabs {
+      display: flex;
+      background: rgba(24, 25, 27, 0.04);
+      padding: 4px;
+      border-radius: 10px;
+      gap: 4px;
+    }
+    .nav-tab-btn {
+      background: transparent;
+      border: none;
+      padding: 8px 18px;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--ink-secondary);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: inherit;
+    }
+    .nav-tab-btn.active {
+      background: var(--bg-card);
+      color: var(--ink-main);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .app-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .btn {
+      padding: 8px 16px;
+      font-size: 12.5px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: inherit;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      color: var(--ink-main);
+    }
+    .btn:hover {
+      background: var(--bg-inset);
+    }
+    .btn-primary {
+      background: var(--orange-primary);
+      color: #FFF;
+      border-color: var(--orange-primary);
+      box-shadow: 0 2px 10px rgba(249, 89, 36, 0.25);
+    }
+    .btn-primary:hover {
+      background: #D94313;
+    }
+    .btn-simulate {
+      background: var(--bg-card);
+      color: var(--orange-primary);
+      border-color: rgba(249, 89, 36, 0.3);
+    }
+    .btn-simulate:hover {
+      background: var(--orange-glow);
+    }
+
+    /* MAIN CONTAINER */
+    .viewport-container {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 24px 36px 60px;
+    }
+
+    /* VIEW PANELS */
+    .view-panel { display: none; }
+    .view-panel.active { display: block; }
+
+    /* ========================================================
+       1. NETWORK WORKFLOW VIEW (THE LIVING INFOGRAPHIC CANVAS)
+       ======================================================== */
+    .infographic-canvas-wrapper {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 24px;
+      box-shadow: var(--shadow-ambient);
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 24px;
+      min-height: 720px;
+    }
+    .canvas-status-header {
+      padding: 20px 28px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: linear-gradient(180deg, #FFFFFF 0%, #FAFAF8 100%);
+    }
+    .status-indicator-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--orange-glow);
+      color: var(--orange-primary);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .status-dot-pulse {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--orange-primary);
+      animation: pulse-ring 2s infinite;
+    }
+    @keyframes pulse-ring {
+      0% { box-shadow: 0 0 0 0 rgba(249, 89, 36, 0.5); }
+      70% { box-shadow: 0 0 0 8px rgba(249, 89, 36, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(249, 89, 36, 0); }
+    }
+
+    /* SVG FLOW NETWORK LAYER */
+    .network-svg-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .network-flow-path {
+      fill: none;
+      stroke: #E8E5DD;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .network-flow-path.active {
+      stroke: var(--orange-primary);
+      stroke-width: 2.5;
+      stroke-dasharray: 6 10;
+      animation: flowStream 1.6s linear infinite;
+    }
+    .network-flow-path.remediation {
+      stroke: var(--amber-wait);
+      stroke-width: 2;
+      stroke-dasharray: 4 6;
+      animation: flowStreamReverse 1.4s linear infinite;
+    }
+    .network-flow-path.verified {
+      stroke: var(--green-pass);
+      stroke-width: 2.5;
+    }
+    @keyframes flowStream {
+      from { stroke-dashoffset: 32; }
+      to { stroke-dashoffset: 0; }
+    }
+    @keyframes flowStreamReverse {
+      from { stroke-dashoffset: 0; }
+      to { stroke-dashoffset: 32; }
+    }
+
+    /* NODES LAYER */
+    .network-nodes-layer {
+      position: relative;
+      z-index: 2;
+      height: 640px;
+    }
+
+    /* NODE COMPONENT BASE */
+    .infographic-node {
+      position: absolute;
+      cursor: pointer;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      user-select: none;
+    }
+    .infographic-node:hover {
+      transform: translateY(-3px) scale(1.02);
+    }
+
+    /* AVATAR NODE CONTAINER */
+    .avatar-ring {
+      width: 76px;
+      height: 76px;
+      border-radius: 50%;
+      background: #FFFFFF;
+      border: 2px solid #E2E0D8;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      transition: all 0.3s ease;
+      overflow: hidden;
+    }
+    .avatar-ring svg {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+    }
+    .infographic-node.active .avatar-ring {
+      border-color: var(--orange-primary);
+      box-shadow: 0 0 0 6px var(--orange-glow), 0 8px 24px rgba(249, 89, 36, 0.2);
+    }
+    .infographic-node.verifying .avatar-ring {
+      border-color: var(--amber-wait);
+      box-shadow: 0 0 0 6px var(--amber-glow);
+    }
+    .infographic-node.verified .avatar-ring {
+      border-color: var(--green-pass);
+      box-shadow: 0 0 0 6px var(--green-glow);
+    }
+    .infographic-node.idle {
+      opacity: 0.65;
+    }
+    .infographic-node.idle:hover {
+      opacity: 1;
+    }
+
+    /* NODE LABELS & BADGES */
+    .node-title-cluster {
+      margin-top: 8px;
+    }
+    .node-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--ink-main);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    .node-role-tag {
+      font-size: 11px;
+      color: var(--ink-secondary);
+      font-weight: 500;
+    }
+    .node-status-pill {
+      margin-top: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      background: #F0EFEA;
+      color: var(--ink-secondary);
+      display: inline-block;
+    }
+    .infographic-node.active .node-status-pill {
+      background: var(--orange-primary);
+      color: #FFF;
+    }
+    .infographic-node.verifying .node-status-pill {
+      background: var(--amber-wait);
+      color: #FFF;
+    }
+    .infographic-node.verified .node-status-pill {
+      background: var(--green-pass);
+      color: #FFF;
+    }
+
+    /* WORK & ARTIFACT NODES (INFOGRAPHIC BOXES) */
+    .work-data-node {
+      position: absolute;
+      background: #FFFFFF;
+      border: 1.5px solid #E2E0D8;
+      border-radius: 14px;
+      padding: 12px 18px;
+      box-shadow: var(--shadow-ambient);
+      cursor: pointer;
+      transition: all 0.25s ease;
+      z-index: 3;
+      max-width: 240px;
+    }
+    .work-data-node:hover {
+      border-color: var(--orange-primary);
+      box-shadow: var(--shadow-elevated);
+      transform: translateY(-2px);
+    }
+    .work-node-header {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--orange-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 2px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .work-node-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--ink-main);
+      line-height: 1.3;
+    }
+    .work-node-sub {
+      font-size: 11px;
+      color: var(--ink-secondary);
+      margin-top: 4px;
+    }
+
+    /* WAYPOINT LABEL (ON PATH CHIP) */
+    .waypoint-chip {
+      position: absolute;
+      background: #FFFFFF;
+      border: 1px solid var(--border-subtle);
+      border-radius: 20px;
+      padding: 3px 10px;
+      font-size: 10.5px;
+      font-weight: 600;
+      color: var(--ink-secondary);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+      z-index: 2;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+    }
+    .waypoint-chip.active {
+      color: var(--orange-primary);
+      border-color: rgba(249, 89, 36, 0.4);
+      font-weight: 700;
+    }
+
+    /* THOUGHT BUBBLES */
+    .contextual-thought-bubble {
+      position: absolute;
+      background: #FFFFFF;
+      border: 1px solid rgba(249, 89, 36, 0.3);
+      box-shadow: 0 6px 18px rgba(249, 89, 36, 0.1);
+      border-radius: 12px;
+      padding: 6px 12px;
+      font-size: 11.5px;
+      color: var(--ink-secondary);
+      font-style: italic;
+      white-space: nowrap;
+      pointer-events: none;
+      z-index: 10;
+      animation: floatThought 3.5s ease-in-out infinite;
+    }
+    .contextual-thought-bubble::after {
+      content: '';
+      position: absolute;
+      bottom: -6px;
+      left: 20px;
+      width: 10px;
+      height: 10px;
+      background: #FFFFFF;
+      border-right: 1px solid rgba(249, 89, 36, 0.3);
+      border-bottom: 1px solid rgba(249, 89, 36, 0.3);
+      transform: rotate(45deg);
+    }
+    @keyframes floatThought {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-4px); }
+    }
+
+    /* ========================================================
+       COLLABORATION & REMEDIATION STREAM (BELOW CANVAS)
+       ======================================================== */
+    .workflow-details-grid {
+      display: grid;
+      grid-template-columns: 62% 38%;
+      gap: 24px;
+    }
+    .detail-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: var(--shadow-ambient);
+    }
+    .detail-card-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .dialogue-stream-box {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .dialogue-bubble-row {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .dialogue-avatar-mini {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      border: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    .dialogue-content {
+      background: var(--bg-inset);
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-size: 13px;
+      line-height: 1.4;
+      flex: 1;
+    }
+    .dialogue-speaker {
+      font-weight: 700;
+      font-size: 11.5px;
+      color: var(--orange-primary);
+      margin-bottom: 2px;
+      display: block;
+    }
+
+    /* ========================================================
+       2. TEAM ROSTER & HIRING VIEW
+       ======================================================== */
+    .roster-header {
+      margin-bottom: 28px;
+    }
+    .roster-title {
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .roster-sub {
+      font-size: 14px;
+      color: var(--ink-secondary);
+      margin-top: 4px;
+    }
+    .roster-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 20px;
+    }
+    .roster-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: var(--shadow-ambient);
+      display: flex;
+      flex-direction: column;
+      transition: all 0.25s ease;
+    }
+    .roster-card:hover {
+      border-color: var(--orange-primary);
+      box-shadow: var(--shadow-elevated);
+      transform: translateY(-2px);
+    }
+    .roster-head-cluster {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .roster-avatar-lg {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      border: 2px solid var(--border-subtle);
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .roster-name {
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .roster-role-badge {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--orange-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .roster-capability-quote {
+      font-size: 13.5px;
+      color: var(--ink-main);
+      font-weight: 500;
+      line-height: 1.4;
+      margin-bottom: 12px;
+      background: var(--bg-inset);
+      padding: 10px 14px;
+      border-radius: 10px;
+      border-left: 3px solid var(--orange-primary);
+    }
+    .roster-traits-list {
+      font-size: 12px;
+      color: var(--ink-secondary);
+      margin-bottom: 18px;
+      flex: 1;
+    }
+    .roster-btn-toggle {
+      width: 100%;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
+      border: 1px solid var(--border-subtle);
+      background: #FFF;
+      color: var(--ink-main);
+      transition: all 0.2s;
+    }
+    .roster-btn-toggle.hired {
+      background: var(--green-glow);
+      color: var(--green-pass);
+      border-color: rgba(22, 128, 80, 0.3);
+    }
+
+    /* ========================================================
+       LEVEL 3 EVIDENCE DRAWER (MODAL SLIDE-OVER)
+       ======================================================== */
+    .drawer-backdrop {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(24, 25, 27, 0.4);
+      backdrop-filter: blur(4px);
+      z-index: 1000;
+      justify-content: flex-end;
+    }
+    .drawer-backdrop.open { display: flex; }
+    .evidence-sheet {
+      width: 660px;
+      height: 100%;
+      background: #FFFFFF;
+      box-shadow: -10px 0 40px rgba(0,0,0,0.15);
+      display: flex;
+      flex-direction: column;
+      padding: 36px;
+      overflow-y: auto;
+    }
+    .sheet-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .sheet-title {
+      font-size: 20px;
+      font-weight: 800;
+    }
+    .terminal-output-block {
+      background: #18191B;
+      color: #E2E8F0;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11.5px;
+      padding: 18px;
+      border-radius: 12px;
+      line-height: 1.6;
+      margin: 14px 0;
+      overflow-x: auto;
+    }
+    .terminal-pass { color: #34D399; font-weight: 600; }
+    .terminal-fail { color: #F87171; font-weight: 600; }
+  </style>
+</head>
+<body>
+
+  <!-- ========================================================
+       GLOBAL SVG DEFS: VECTOR AVATARS (ORIGINAL PORTRAITS)
+       ======================================================== -->
+  <svg style="display: none;">
+    <defs>
+      <!-- 1. CEO AVATAR (Mid-40s male, navy blazer, silver temples, composed) -->
+      <g id="avatar-ceo">
+        <rect width="100" height="100" fill="#E8EEF5"/>
+        <path d="M22 100 C22 74 38 68 50 68 C62 68 78 74 78 100 Z" fill="#1C2738"/>
+        <path d="M42 68 L50 82 L58 68 Z" fill="#FFFFFF"/>
+        <circle cx="50" cy="46" r="20" fill="#F8C8A5"/>
+        <!-- Hair with silver temples -->
+        <path d="M30 44 C29 30 36 22 50 22 C64 22 71 30 70 44 C67 33 60 27 50 27 C40 27 33 33 30 44 Z" fill="#22252A"/>
+        <path d="M29 44 C31 38 34 36 36 34" stroke="#A0A5AD" stroke-width="2" fill="none"/>
+        <path d="M71 44 C69 38 66 36 64 34" stroke="#A0A5AD" stroke-width="2" fill="none"/>
+        <!-- Facial features -->
+        <circle cx="43" cy="45" r="2.2" fill="#18191B"/>
+        <circle cx="57" cy="45" r="2.2" fill="#18191B"/>
+        <path d="M40 39 Q43 37 47 38" stroke="#18191B" stroke-width="1.6" fill="none"/>
+        <path d="M53 38 Q57 37 60 39" stroke="#18191B" stroke-width="1.6" fill="none"/>
+        <path d="M46 54 Q50 56 54 54" stroke="#A65B40" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+      </g>
+
+      <!-- 2. PRODUCT AVATAR (Early 30s female, tortoise glasses, dark moss mockneck) -->
+      <g id="avatar-product">
+        <rect width="100" height="100" fill="#F2EFE9"/>
+        <path d="M24 100 C24 74 36 68 50 68 C64 68 76 74 76 100 Z" fill="#2D3B36"/>
+        <circle cx="50" cy="46" r="19" fill="#F5CBA7"/>
+        <!-- Sleek Hair -->
+        <path d="M30 48 C28 26 40 22 50 22 C60 22 72 26 70 48 C72 58 68 64 66 68 L34 68 C32 64 28 58 30 48 Z" fill="#3D2B1F"/>
+        <!-- Glasses -->
+        <rect x="37" y="40" width="11" height="9" rx="2" fill="none" stroke="#6E4723" stroke-width="2"/>
+        <rect x="52" y="40" width="11" height="9" rx="2" fill="none" stroke="#6E4723" stroke-width="2"/>
+        <line x1="48" y1="44" x2="52" y2="44" stroke="#6E4723" stroke-width="2"/>
+        <!-- Eyes & Smile -->
+        <circle cx="42.5" cy="44.5" r="1.8" fill="#18191B"/>
+        <circle cx="57.5" cy="44.5" r="1.8" fill="#18191B"/>
+        <path d="M46 54 Q50 57 54 54" stroke="#B85D43" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+      </g>
+
+      <!-- 3. RESEARCH AVATAR (Mid-30s, mustard sweater, wireframe glasses) -->
+      <g id="avatar-research">
+        <rect width="100" height="100" fill="#F8F3EA"/>
+        <path d="M24 100 C24 74 36 70 50 70 C64 70 76 74 76 100 Z" fill="#C28728"/>
+        <circle cx="50" cy="47" r="19" fill="#EDC2A0"/>
+        <!-- Curly / textured hair -->
+        <circle cx="36" cy="30" r="9" fill="#3D3226"/>
+        <circle cx="50" cy="26" r="10" fill="#3D3226"/>
+        <circle cx="64" cy="30" r="9" fill="#3D3226"/>
+        <circle cx="32" cy="40" r="8" fill="#3D3226"/>
+        <circle cx="68" cy="40" r="8" fill="#3D3226"/>
+        <!-- Round wireframe glasses -->
+        <circle cx="42" cy="46" r="6" fill="none" stroke="#18191B" stroke-width="1.4"/>
+        <circle cx="58" cy="46" r="6" fill="none" stroke="#18191B" stroke-width="1.4"/>
+        <line x1="48" y1="46" x2="52" y2="46" stroke="#18191B" stroke-width="1.4"/>
+        <circle cx="42" cy="46" r="1.8" fill="#18191B"/>
+        <circle cx="58" cy="46" r="1.8" fill="#18191B"/>
+        <path d="M46 55 Q50 56 54 55" stroke="#9E5338" stroke-width="1.5" fill="none"/>
+      </g>
+
+      <!-- 4. UX AVATAR (Late 20s female, terracotta blouse, sharp bob, hoop earring) -->
+      <g id="avatar-ux">
+        <rect width="100" height="100" fill="#FBEFEA"/>
+        <path d="M24 100 C24 74 36 68 50 68 C64 68 76 74 76 100 Z" fill="#D36B46"/>
+        <circle cx="50" cy="46" r="19" fill="#F7D0B2"/>
+        <!-- Sleek asymmetrical bob -->
+        <path d="M28 42 C28 24 40 20 50 20 C62 20 72 24 72 44 L74 58 L68 56 C66 40 60 26 50 26 C40 26 32 38 30 52 Z" fill="#201C1A"/>
+        <!-- Small gold hoop -->
+        <circle cx="30" cy="50" r="3" fill="none" stroke="#E5A93C" stroke-width="1.5"/>
+        <circle cx="43" cy="45" r="2" fill="#18191B"/>
+        <circle cx="57" cy="45" r="2" fill="#18191B"/>
+        <path d="M45 54 Q50 57 55 54" stroke="#B34B30" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+      </g>
+
+      <!-- 5. MARKETING AVATAR (Early 30s male, open collar, styled swept hair, smile) -->
+      <g id="avatar-marketing">
+        <rect width="100" height="100" fill="#EEF2F6"/>
+        <path d="M22 100 C22 74 36 68 50 68 C64 68 78 74 78 100 Z" fill="#FFFFFF" stroke="#D1D7E0" stroke-width="1"/>
+        <path d="M44 68 L50 78 L56 68 Z" fill="#EEF2F6"/>
+        <circle cx="50" cy="46" r="19" fill="#F8CBA7"/>
+        <!-- Swept up brown hair -->
+        <path d="M32 38 C32 20 44 18 56 18 C64 18 70 24 68 34 C64 26 56 22 48 24 C40 26 34 32 32 38 Z" fill="#523B2A"/>
+        <circle cx="43" cy="45" r="2" fill="#18191B"/>
+        <circle cx="57" cy="45" r="2" fill="#18191B"/>
+        <path d="M44 54 Q50 60 56 54" stroke="#A84C32" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+      </g>
+
+      <!-- 6. DEVELOPER AVATAR (Late 20s male, charcoal hoodie, headset on shoulders) -->
+      <g id="avatar-developer">
+        <rect width="100" height="100" fill="#F0EFF2"/>
+        <path d="M22 100 C22 72 36 66 50 66 C64 66 78 72 78 100 Z" fill="#262A33"/>
+        <circle cx="50" cy="45" r="19" fill="#F8CBAB"/>
+        <!-- Headset resting on neck -->
+        <path d="M30 64 C30 76 70 76 70 64" fill="none" stroke="#F95924" stroke-width="4" stroke-linecap="round"/>
+        <rect x="26" y="60" width="8" height="12" rx="3" fill="#18191B"/>
+        <rect x="66" y="60" width="8" height="12" rx="3" fill="#18191B"/>
+        <!-- Tousled hair -->
+        <path d="M30 40 C30 22 42 20 50 20 C60 20 70 24 70 38 C66 30 58 26 50 26 C42 26 34 32 30 40 Z" fill="#1F242E"/>
+        <path d="M38 22 L40 18 L46 22" stroke="#1F242E" stroke-width="2" fill="none"/>
+        <circle cx="43" cy="44" r="2" fill="#18191B"/>
+        <circle cx="57" cy="44" r="2" fill="#18191B"/>
+        <path d="M46 54 Q50 53 54 54" stroke="#A6553B" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+      </g>
+
+      <!-- 7. QA AVATAR (~35 female, teal blazer, sharp dark bob, skeptical raised eyebrow) -->
+      <g id="avatar-qa">
+        <rect width="100" height="100" fill="#E6F2ED"/>
+        <path d="M22 100 C22 74 36 68 50 68 C64 68 78 74 78 100 Z" fill="#165B4C"/>
+        <path d="M42 68 L50 80 L58 68 Z" fill="#FFFFFF"/>
+        <circle cx="50" cy="46" r="19" fill="#F7CFB3"/>
+        <!-- Sharp angled dark bob -->
+        <path d="M28 44 C26 24 40 20 50 20 C60 20 74 24 72 44 L74 60 L68 54 C66 38 60 26 50 26 C40 26 34 38 32 54 L26 60 Z" fill="#1A1F24"/>
+        <!-- Eyes & Skeptical Eyebrow -->
+        <circle cx="43" cy="45" r="2" fill="#18191B"/>
+        <circle cx="57" cy="45" r="2" fill="#18191B"/>
+        <path d="M39 39 Q43 38 47 39" stroke="#18191B" stroke-width="1.8" fill="none"/>
+        <path d="M53 36 Q57 34 61 36" stroke="#18191B" stroke-width="2" fill="none"/><!-- Raised eyebrow -->
+        <path d="M46 55 Q50 54 54 55" stroke="#9E4D36" stroke-width="1.6" fill="none"/>
+      </g>
+
+      <!-- OWNER AVATAR (FOUNDER) -->
+      <g id="avatar-founder">
+        <rect width="100" height="100" fill="#18191B"/>
+        <circle cx="50" cy="50" r="38" fill="none" stroke="#F95924" stroke-width="2" stroke-dasharray="4 6"/>
+        <text x="50" y="58" font-family="'Plus Jakarta Sans', sans-serif" font-size="24" font-weight="800" fill="#FFFFFF" text-anchor="middle">YOU</text>
+      </g>
+    </defs>
+  </svg>
+
+
+  <!-- ========================================================
+       TOP NAVIGATION BAR
+       ======================================================== -->
+  <header class="top-app-bar">
+    <div class="brand-cluster">
+      <div class="brand-crest">J</div>
+      <div>
+        <div class="brand-title">JESTER AI COMPANY</div>
+        <div class="brand-subtitle">Interactive Workforce Infographic • Stage 27-D.3</div>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="app-nav-tabs">
+      <button class="nav-tab-btn active" onclick="switchView('network')">Living Network Workflow</button>
+      <button class="nav-tab-btn" onclick="switchView('roster')">Team Roster & Capabilities (7)</button>
+    </div>
+
+    <!-- Actions -->
+    <div class="app-actions">
+      <button class="btn btn-simulate" onclick="runRemediationLoop()">
+        <span>⚡</span> Simulate QA Remediation Loop
+      </button>
+      <button class="btn btn-primary" onclick="toggleDrawer(true)">
+        <span>🛡️</span> Level 3 Evidence Vault
+      </button>
+    </div>
+  </header>
+
+
+  <!-- ========================================================
+       MAIN VIEWPORT CONTAINER
+       ======================================================== -->
+  <main class="viewport-container">
+
+    <!-- ========================================================
+         VIEW 1: LIVING NETWORK WORKFLOW VIEW
+         ======================================================== -->
+    <div id="view-network" class="view-panel active">
+      
+      <!-- INFOGRAPHIC CANVAS -->
+      <div class="infographic-canvas-wrapper">
+        <div class="canvas-status-header">
+          <div>
+            <div style="font-size: 11px; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.1em;">
+              Current Company Mission
+            </div>
+            <div style="font-size: 18px; font-weight: 800; color: var(--ink-main); margin-top: 2px;">
+              Project: Restaurant Web Platform & Booking Engine
+            </div>
+          </div>
+          <div id="status-badge" class="status-indicator-badge">
+            <div class="status-dot-pulse"></div>
+            <span id="status-badge-text">ACTIVE: Developer building Navigation Header</span>
+          </div>
+        </div>
+
+        <!-- SVG DYNAMIC FLOW NETWORK LAYER -->
+        <svg class="network-svg-layer" viewBox="0 0 1360 640" preserveAspectRatio="none">
+          <!-- Flow 1: Owner to CEO -->
+          <path id="path-owner-ceo" class="network-flow-path active" d="M 680 70 L 680 150"/>
+
+          <!-- Flow 2: CEO to Active Task -->
+          <path id="path-ceo-task" class="network-flow-path active" d="M 680 230 L 680 280 L 480 280 L 480 340"/>
+
+          <!-- Flow 3: Task to Developer -->
+          <path id="path-task-dev" class="network-flow-path active" d="M 480 400 L 480 460"/>
+
+          <!-- Flow 4: Developer to Artifact -->
+          <path id="path-dev-artifact" class="network-flow-path active" d="M 520 500 L 680 500"/>
+
+          <!-- Flow 5: Artifact to QA -->
+          <path id="path-artifact-qa" class="network-flow-path active" d="M 760 500 L 880 500 L 880 460"/>
+
+          <!-- Flow 6: QA to Result -->
+          <path id="path-qa-result" class="network-flow-path" d="M 880 390 L 880 330 L 1080 330"/>
+
+          <!-- Flow 7 (Remediation Loop): QA back to Developer -->
+          <path id="path-remediation" class="network-flow-path" d="M 840 430 C 840 580 520 580 520 540" style="display: none;"/>
+
+          <!-- Passive Conduits to Idle Specialists -->
+          <path class="network-flow-path" d="M 640 190 C 400 190 240 190 200 240" stroke-dasharray="2 4"/>
+          <path class="network-flow-path" d="M 640 200 C 500 200 360 200 340 240" stroke-dasharray="2 4"/>
+          <path class="network-flow-path" d="M 720 200 C 860 200 1000 200 1020 240" stroke-dasharray="2 4"/>
+          <path class="network-flow-path" d="M 720 190 C 960 190 1140 190 1180 240" stroke-dasharray="2 4"/>
+        </svg>
+
+        <!-- NODES & WAYPOINTS LAYER -->
+        <div class="network-nodes-layer">
+
+          <!-- 1. OWNER NODE (AT THE TOP) -->
+          <div class="infographic-node active" style="top: 10px; left: 638px;" onclick="openNodeInspector('founder')">
+            <div class="avatar-ring">
+              <svg><use href="#avatar-founder"></use></svg>
+            </div>
+            <div class="node-title-cluster">
+              <div class="node-name">Founder (You)</div>
+              <div class="node-role-tag">Company Owner</div>
+            </div>
+          </div>
+          <div class="waypoint-chip active" style="top: 110px; left: 680px;">Sponsors Vision</div>
+
+          <!-- 2. CEO NODE -->
+          <div class="infographic-node active" style="top: 150px; left: 638px;" onclick="openNodeInspector('ceo')">
+            <div class="avatar-ring">
+              <svg><use href="#avatar-ceo"></use></svg>
+            </div>
+            <div class="node-title-cluster">
+              <div class="node-name">CEO Agent</div>
+              <div class="node-role-tag">Director of Execution</div>
+              <span class="node-status-pill">Coordinating</span>
+            </div>
+          </div>
+          <div class="waypoint-chip active" style="top: 280px; left: 580px;">Delegates Work</div>
+
+          <!-- 3. PASSIVE SPECIALIST NODES (IDLE) -->
+          <!-- Product -->
+          <div class="infographic-node idle" style="top: 240px; left: 160px;" onclick="openNodeInspector('product')">
+            <div class="avatar-ring">
+              <svg><use href="#avatar-product"></use></svg>
+            </div>
+            <div class="node-title-cluster">
+              <div class="node-name">Product</div>
+              <span class="node-status-pill">Available</span>
+            </div>
+          </div>
+
+          <!-- Research -->
+          <div class="infographic-node idle" style="top: 240px; left: 300px;" onclick="openNodeInspector('research')">
+            <div class="avatar-ring">
+              <svg><use href="#avatar-research"></use></svg>
+            </div>
+            <div class="node-title-cluster">
+              <div class="node-name">Research</div>
+              <span class="node-status-pill">Available</span>
+            </div>
+          </div>
+
+          <!-- UX -->
+          <div class="infographic-node idle" style="top: 240px; left: 980px;" onclick="openNodeInspector('ux')">
+            <div class="avatar-ring">
+              <svg><use href="#avatar-ux"></use></svg>
+            </div>
+            <div class="node-title-cluster">
+              <div class="node-name">UX</div>
+              <span class="node-status-pill">Available</span>
+            </div>
+          </div>
+
+          <!-- Marketing -->
+          <div class="infographic-node idle" style="top: 240px; left: 1140px;" onclick="openNodeInspector('marketing')">
+            <div class="avatar-ring">
+              <svg><use href="#avatar-marketing"></use></svg>
+            </div>
+            <div class="node-title-cluster">
+              <div class="node-name">Marketing</div>
+              <span class="node-status-pill">Available</span>
+            </div>
+          </div>
+
+          <!-- 4. ACTIVE WORK DATA NODE (TASK) -->
+          <div class="work-data-node" style="top: 330px; left: 370px;" onclick="toggleDrawer(true)">
+            <div class="work-node-header">
+              <span>●</span> Active Task Ref #12
+            </div>
+            <div class="work-node-title">Responsive Header & Mobile Menu</div>
+            <div class="work-node-sub">Vanilla HTML/CSS • Zero framework</div>
+          </div>
+
+          <!-- 5. DEVELOPER NODE (ACTIVE) -->
+          <div id="node-dev" class="infographic-node active" style="top: 450px; left: 438px;" onclick="openNodeInspector('developer')">
+            <div class="avatar-ring">
+              <svg><use href="#avatar-developer"></use></svg>
+            </div>
+            <div class="node-title-cluster">
+              <div class="node-name">Developer</div>
+              <span id="dev-status-pill" class="node-status-pill">● Building</span>
+            </div>
+          </div>
+          <!-- Contextual Thought Bubble -->
+          <div id="dev-thought-bubble" class="contextual-thought-bubble" style="top: 420px; left: 520px;">
+            💭 "One more breakpoint for 320px screens..."
+          </div>
+
+          <!-- 6. ARTIFACT NODE -->
+          <div id="node-artifact" class="work-data-node" style="top: 470px; left: 630px;" onclick="toggleDrawer(true)">
+            <div class="work-node-header" style="color: var(--ink-secondary);">
+              <span>📄</span> Deliverable
+            </div>
+            <div class="work-node-title">header.html & nav.css</div>
+            <div class="work-node-sub">Patch: 84 lines • Ready for QA</div>
+          </div>
+          <div class="waypoint-chip active" style="top: 500px; left: 810px;">Handoff to QA</div>
+
+          <!-- 7. QA NODE (VERIFYING) -->
+          <div id="node-qa" class="infographic-node verifying" style="top: 450px; left: 838px;" onclick="openNodeInspector('qa')">
+            <div class="avatar-ring">
+              <svg><use href="#avatar-qa"></use></svg>
+            </div>
+            <div class="node-title-cluster">
+              <div class="node-name">QA Agent</div>
+              <span id="qa-status-pill" class="node-status-pill">🛡️ Verifying</span>
+            </div>
+          </div>
+          <!-- QA Thought Bubble -->
+          <div id="qa-thought-bubble" class="contextual-thought-bubble" style="top: 420px; left: 920px; display: none;">
+            💭 "Exit code 1 on 320px viewport. Returning defect..."
+          </div>
+
+          <!-- 8. FINAL RESULT NODE -->
+          <div id="node-result" class="work-data-node" style="top: 300px; left: 1040px; border-color: var(--green-pass); background: #F6FBF8;" onclick="toggleDrawer(true)">
+            <div class="work-node-header" style="color: var(--green-pass);">
+              <span>✓</span> Output Result
+            </div>
+            <div class="work-node-title">Verified Web Component</div>
+            <div class="work-node-sub">Pending QA Final Stamp</div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- WORKFLOW COLLABORATION & REMEDIATION STREAM -->
+      <div class="workflow-details-grid">
+        <!-- Live Workplace Dialogue -->
+        <div class="detail-card">
+          <div class="detail-card-title">
+            <span>Workplace Collaboration & Handoff Stream</span>
+            <span style="font-size: 11px; font-weight: 600; color: var(--ink-muted);">Synchronized with Execution</span>
+          </div>
+
+          <div id="dialogue-stream" class="dialogue-stream-box">
+            <div class="dialogue-bubble-row">
+              <div class="dialogue-avatar-mini"><svg><use href="#avatar-ceo"></use></svg></div>
+              <div class="dialogue-content">
+                <span class="dialogue-speaker">CEO Agent</span>
+                Task #12 assigned to Developer. Mobile-first responsive navigation with clean semantic markup.
+              </div>
+            </div>
+
+            <div class="dialogue-bubble-row">
+              <div class="dialogue-avatar-mini"><svg><use href="#avatar-developer"></use></svg></div>
+              <div class="dialogue-content">
+                <span class="dialogue-speaker">Developer Agent</span>
+                Implemented <code>header.html</code> and responsive drawer in <code>nav.css</code>. Tests passing locally. Pushing to QA.
+              </div>
+            </div>
+
+            <div id="dialogue-qa-initial" class="dialogue-bubble-row">
+              <div class="dialogue-avatar-mini"><svg><use href="#avatar-qa"></use></svg></div>
+              <div class="dialogue-content">
+                <span class="dialogue-speaker">QA Agent</span>
+                Artifact received. Running independent test container verification against acceptance criteria...
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Real-Time Artifact Shelf -->
+        <div class="detail-card">
+          <div class="detail-card-title">
+            <span>Active Artifact Deliverables</span>
+            <span style="font-size: 11px; font-weight: 700; color: var(--orange-primary);">1 Ready</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <div style="border: 1px solid var(--border-subtle); border-radius: 12px; padding: 12px; display: flex; align-items: center; justify-content: space-between; background: var(--bg-inset);">
+              <div>
+                <div style="font-weight: 700; font-size: 13px;">📄 prd_spec.md</div>
+                <div style="font-size: 11px; color: var(--ink-secondary);">Product Agent • Scope & Acceptance Criteria</div>
+              </div>
+              <button class="btn" style="padding: 4px 10px; font-size: 11px;" onclick="toggleDrawer(true)">Read</button>
+            </div>
+
+            <div style="border: 1.5px solid var(--orange-primary); border-radius: 12px; padding: 12px; display: flex; align-items: center; justify-content: space-between; background: #FFF;">
+              <div>
+                <div style="font-weight: 700; font-size: 13px; color: var(--orange-primary);">💻 header.html (Patch #1)</div>
+                <div style="font-size: 11px; color: var(--ink-secondary);">Developer Agent • 84 LOC • Exit Code: 0</div>
+              </div>
+              <button class="btn btn-primary" style="padding: 4px 10px; font-size: 11px;" onclick="toggleDrawer(true)">Inspect Diff</button>
+            </div>
+          </div>
+
+          <div style="margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-subtle); font-size: 12px; color: var(--ink-secondary);">
+            💡 <strong>Infographic Note:</strong> Clicking any node or artifact opens the Level 3 Evidence Vault with raw terminal logs and approval buttons.
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+
+    <!-- ========================================================
+         VIEW 2: TEAM ROSTER & HIRING VIEW (7 PROFESSIONALS)
+         ======================================================== -->
+    <div id="view-roster" class="view-panel">
+      <div class="roster-header">
+        <h2 class="roster-title">Your Company Workforce</h2>
+        <p class="roster-sub">
+          7 permanent company specialists ready to execute missions. Characterized by authentic capability and mutual respect.
+        </p>
+      </div>
+
+      <div class="roster-grid">
+        <!-- 1. CEO -->
+        <div class="roster-card">
+          <div class="roster-head-cluster">
+            <div class="roster-avatar-lg"><svg><use href="#avatar-ceo"></use></svg></div>
+            <div>
+              <div class="roster-name">CEO Agent</div>
+              <div class="roster-role-badge">Chief Executive Officer</div>
+            </div>
+          </div>
+          <div class="roster-capability-quote">
+            "Turns vague goals into clear, actionable execution sequences. Holds the whole picture."
+          </div>
+          <div class="roster-traits-list">
+            • Calm, unshakeable operational coordinator<br>
+            • Enforces company principles and boundary gates<br>
+            • Never writes code; delegates to specialists
+          </div>
+          <button class="roster-btn-toggle hired">✓ In Company (Core Lead)</button>
+        </div>
+
+        <!-- 2. PRODUCT -->
+        <div class="roster-card">
+          <div class="roster-head-cluster">
+            <div class="roster-avatar-lg"><svg><use href="#avatar-product"></use></svg></div>
+            <div>
+              <div class="roster-name">Product Agent</div>
+              <div class="roster-role-badge">Product Manager</div>
+            </div>
+          </div>
+          <div class="roster-capability-quote">
+            "Good at turning fuzzy ideas into crisp acceptance criteria and ruthless scope boundaries."
+          </div>
+          <div class="roster-traits-list">
+            • Champions user value and problem definition<br>
+            • Decides what is strictly IN vs OUT of scope<br>
+            • Guards against speculative complexity
+          </div>
+          <button class="roster-btn-toggle hired">✓ In Company (Active)</button>
+        </div>
+
+        <!-- 3. RESEARCH -->
+        <div class="roster-card">
+          <div class="roster-head-cluster">
+            <div class="roster-avatar-lg"><svg><use href="#avatar-research"></use></svg></div>
+            <div>
+              <div class="roster-name">Research Agent</div>
+              <div class="roster-role-badge">Research Specialist</div>
+            </div>
+          </div>
+          <div class="roster-capability-quote">
+            "Finds the factual information and technical evidence others miss. Cites real data."
+          </div>
+          <div class="roster-traits-list">
+            • Deep investigation across code, docs, and APIs<br>
+            • Separates verified facts from assumptions<br>
+            • Uncovers hidden architectural bottlenecks
+          </div>
+          <button class="roster-btn-toggle hired">✓ In Company (Active)</button>
+        </div>
+
+        <!-- 4. UX -->
+        <div class="roster-card">
+          <div class="roster-head-cluster">
+            <div class="roster-avatar-lg"><svg><use href="#avatar-ux"></use></svg></div>
+            <div>
+              <div class="roster-name">UX Agent</div>
+              <div class="roster-role-badge">Experience Specialist</div>
+            </div>
+          </div>
+          <div class="roster-capability-quote">
+            "Eliminates cognitive friction. Ensures the system feels as good as it works."
+          </div>
+          <div class="roster-traits-list">
+            • Designs ergonomic interaction workflows<br>
+            • Identifies unhandled edge cases and dead ends<br>
+            • Bridges technical logic with human feeling
+          </div>
+          <button class="roster-btn-toggle hired">✓ In Company (Active)</button>
+        </div>
+
+        <!-- 5. MARKETING -->
+        <div class="roster-card">
+          <div class="roster-head-cluster">
+            <div class="roster-avatar-lg"><svg><use href="#avatar-marketing"></use></svg></div>
+            <div>
+              <div class="roster-name">Marketing Agent</div>
+              <div class="roster-role-badge">Positioning Specialist</div>
+            </div>
+          </div>
+          <div class="roster-capability-quote">
+            "Articulates core value without buzzwords. Positions your work with clarity."
+          </div>
+          <div class="roster-traits-list">
+            • Sharp, authentic communication strategy<br>
+            • Targets real audience pain points<br>
+            • Anti-hype; grounds messaging in true capability
+          </div>
+          <button class="roster-btn-toggle hired">✓ In Company (Active)</button>
+        </div>
+
+        <!-- 6. DEVELOPER -->
+        <div class="roster-card" style="border-color: var(--orange-primary);">
+          <div class="roster-head-cluster">
+            <div class="roster-avatar-lg" style="border-color: var(--orange-primary);"><svg><use href="#avatar-developer"></use></svg></div>
+            <div>
+              <div class="roster-name">Developer Agent</div>
+              <div class="roster-role-badge">Software Engineer</div>
+            </div>
+          </div>
+          <div class="roster-capability-quote">
+            "Builds fast. Gets things working. Doesn't stop until tests pass."
+          </div>
+          <div class="roster-traits-list">
+            • Technically formidable, intensely practical<br>
+            • Authentic workplace instinct ('ქეში გექნება გასაწმენდი')<br>
+            • Delivers lean, robust, verifiable code
+          </div>
+          <button class="roster-btn-toggle hired" style="background: var(--orange-primary); color: #FFF;">● Working on Mission</button>
+        </div>
+
+        <!-- 7. QA -->
+        <div class="roster-card" style="border-color: var(--green-pass);">
+          <div class="roster-head-cluster">
+            <div class="roster-avatar-lg" style="border-color: var(--green-pass);"><svg><use href="#avatar-qa"></use></svg></div>
+            <div>
+              <div class="roster-name">QA Agent</div>
+              <div class="roster-role-badge">Quality Assurance Specialist</div>
+            </div>
+          </div>
+          <div class="roster-capability-quote">
+            "Will find the bug. Completely comfortable saying 'No' until evidence proves it works."
+          </div>
+          <div class="roster-traits-list">
+            • Independent guardian of system integrity<br>
+            • Inspects test logs and runs verification harnesses<br>
+            • Authority derived from undeniable competence
+          </div>
+          <button class="roster-btn-toggle hired" style="background: var(--green-pass); color: #FFF;">🛡️ Verifying Deliverables</button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+
+  <!-- ========================================================
+       LEVEL 3 EVIDENCE VAULT (SLIDE-OVER DRAWER)
+       ======================================================== -->
+  <div id="drawer-evidence" class="drawer-backdrop" onclick="toggleDrawer(false)">
+    <div class="evidence-sheet" onclick="event.stopPropagation()">
+      <div class="sheet-header">
+        <div>
+          <span style="font-size: 11px; font-weight: 700; color: var(--orange-primary); text-transform: uppercase;">
+            Level 3 Technical Depth
+          </span>
+          <h3 class="sheet-title">Evidence & Verification Manifest</h3>
+          <div style="font-size: 12px; color: var(--ink-secondary); margin-top: 2px;">
+            TaskRun #12-R1 • Task: Responsive Navigation Header
+          </div>
+        </div>
+        <button class="btn" onclick="toggleDrawer(false)">✕ Close</button>
+      </div>
+
+      <!-- Execution Stats -->
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px;">
+        <div style="background: var(--bg-inset); padding: 12px; border-radius: 10px;">
+          <div style="font-size: 11px; color: var(--ink-muted);">EXIT CODE</div>
+          <div id="drawer-exit-code" style="font-size: 16px; font-weight: 800; color: var(--green-pass);">0 (SUCCESS)</div>
+        </div>
+        <div style="background: var(--bg-inset); padding: 12px; border-radius: 10px;">
+          <div style="font-size: 11px; color: var(--ink-muted);">EXECUTION TIME</div>
+          <div style="font-size: 16px; font-weight: 800;">0.64s</div>
+        </div>
+        <div style="background: var(--bg-inset); padding: 12px; border-radius: 10px;">
+          <div style="font-size: 11px; color: var(--ink-muted);">INSPECTION VERDICT</div>
+          <div id="drawer-verdict" style="font-size: 16px; font-weight: 800; color: var(--green-pass);">PASS</div>
+        </div>
+      </div>
+
+      <!-- QA Output Monospace Block -->
+      <div style="font-size: 13px; font-weight: 700;">Independent QA Verification Evidence</div>
+      <div id="drawer-terminal" class="terminal-output-block">
+$ python tools/verify_company.py --task 12<br>
+=== QA Verification Harness (Agent: @qa) ===<br>
+[PASS] Artifact 'header.html' located in workspace.<br>
+[PASS] Semantic elements &lt;header&gt;, &lt;nav&gt; present.<br>
+[PASS] Viewport contrast ratio: 7.2:1 (Exceeds WCAG AAA).<br>
+[PASS] Responsive breakpoint 768px validated.<br>
+------------------------------------------------<br>
+<span class="terminal-pass">VERIFICATION RESULT: ALL ACCEPTANCE CRITERIA MET.</span><br>
+Exit Status: 0
+      </div>
+
+      <!-- Delivered Code Excerpt -->
+      <div style="font-size: 13px; font-weight: 700; margin-top: 10px;">Delivered Artifact Patch (header.html)</div>
+      <div class="terminal-output-block" style="background: #24292E; color: #F1F1F1;">
+&lt;header class="site-header"&gt;<br>
+&nbsp;&nbsp;&lt;a href="/" class="logo"&gt;Artisan Table&lt;/a&gt;<br>
+&nbsp;&nbsp;&lt;button class="menu-toggle" aria-expanded="false"&gt;Menu&lt;/button&gt;<br>
+&nbsp;&nbsp;&lt;nav class="nav-drawer"&gt;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&lt;a href="#menu"&gt;Menu&lt;/a&gt;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&lt;a href="#reservations"&gt;Reservations&lt;/a&gt;<br>
+&nbsp;&nbsp;&lt;/nav&gt;<br>
+&lt;/header&gt;
+      </div>
+
+      <!-- Founder Sign-off Gate -->
+      <div style="margin-top: auto; padding-top: 24px; border-top: 1px solid var(--border-subtle); display: flex; gap: 12px;">
+        <button class="btn btn-primary" style="flex: 1; justify-content: center; padding: 12px;" onclick="approveDeliverable()">
+          ✓ Approve & Merge Deliverable
+        </button>
+        <button class="btn" style="flex: 1; justify-content: center; padding: 12px;" onclick="alert('Revision requested from team.')">
+          Request Adjustments
+        </button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ========================================================
+       INTERACTIVE PROTOTYPE SCRIPTING
+       ======================================================== -->
+  <script>
+    // VIEW SWITCHER
+    function switchView(viewName) {
+      document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.nav-tab-btn').forEach(b => b.classList.remove('active'));
+      
+      document.getElementById('view-' + viewName).classList.add('active');
+      event.target.classList.add('active');
+    }
+
+    // LEVEL 3 DRAWER TOGGLE
+    function toggleDrawer(open) {
+      const drawer = document.getElementById('drawer-evidence');
+      if (open) {
+        drawer.classList.add('open');
+      } else {
+        drawer.classList.remove('open');
+      }
+    }
+
+    function approveDeliverable() {
+      alert("🎉 Deliverable officially approved by Founder! Output merged into project.");
+      toggleDrawer(false);
+      const res = document.getElementById('node-result');
+      res.style.borderColor = "#168050";
+      res.style.background = "#DCFCE7";
+      res.querySelector('.work-node-title').innerHTML = "✓ APPROVED & MERGED";
+    }
+
+    // NODE INSPECTOR (CLICKABLE PROFILES)
+    function openNodeInspector(role) {
+      const names = {
+        founder: "You (Company Founder & Owner)",
+        ceo: "CEO Agent — Operational Coordinator",
+        product: "Product Agent — Scope & Requirements",
+        research: "Research Agent — Investigation & Benchmarks",
+        ux: "UX Agent — Ergonomics & Friction Elimination",
+        marketing: "Marketing Agent — Brand & Positioning",
+        developer: "Developer Agent — Software Engineer",
+        qa: "QA Agent — Quality Assurance & Verification"
+      };
+      alert("👤 Employee Selected: " + names[role] + "\n\nIn the final application, clicking this node will highlight their active workflow connections and recent execution traces.");
+    }
+
+    // INTERACTIVE REMEDIATION LOOP SIMULATION
+    let simulationState = 0; // 0 = normal, 1 = failed remediation, 2 = fixed & passed
+
+    function runRemediationLoop() {
+      const devNode = document.getElementById('node-dev');
+      const qaNode = document.getElementById('node-qa');
+      const devPill = document.getElementById('dev-status-pill');
+      const qaPill = document.getElementById('qa-status-pill');
+      const devThought = document.getElementById('dev-thought-bubble');
+      const qaThought = document.getElementById('qa-thought-bubble');
+      const badge = document.getElementById('status-badge');
+      const badgeText = document.getElementById('status-badge-text');
+      const remediationPath = document.getElementById('path-remediation');
+      const qaResultPath = document.getElementById('path-qa-result');
+      const dialogueStream = document.getElementById('dialogue-stream');
+
+      if (simulationState === 0) {
+        // STEP 1: QA DISCOVERS DEFECT & REJECTS
+        simulationState = 1;
+        badge.style.background = "rgba(217, 56, 58, 0.12)";
+        badge.style.color = "var(--red-fail)";
+        badgeText.innerHTML = "QA INSPECTION: Defect found at 320px viewport (Exit Code: 1)";
+
+        qaNode.classList.remove('verifying');
+        qaNode.style.borderColor = "var(--red-fail)";
+        qaPill.style.background = "var(--red-fail)";
+        qaPill.innerHTML = "❌ DEFECT FOUND";
+        qaThought.style.display = "block";
+
+        remediationPath.style.display = "block";
+        remediationPath.classList.add('remediation');
+
+        devNode.classList.add('active');
+        devPill.style.background = "var(--amber-wait)";
+        devPill.innerHTML = "● FIXING DEFECT";
+        devThought.innerHTML = "💭 'Wait... container padding overflow on small screens. Fixing line 42 now.'";
+
+        // Add dialogue
+        dialogueStream.innerHTML += `
+          <div class="dialogue-bubble-row" id="sim-dialogue-1">
+            <div class="dialogue-avatar-mini"><svg><use href="#avatar-qa"></use></svg></div>
+            <div class="dialogue-content" style="border-left: 3px solid var(--red-fail);">
+              <span class="dialogue-speaker" style="color: var(--red-fail);">QA Agent</span>
+              Mobile drawer navigation overflows on 320px viewport. Exit code 1. Returning patch to Developer.
+            </div>
+          </div>
+          <div class="dialogue-bubble-row" id="sim-dialogue-2">
+            <div class="dialogue-avatar-mini"><svg><use href="#avatar-developer"></use></svg></div>
+            <div class="dialogue-content" style="border-left: 3px solid var(--amber-wait);">
+              <span class="dialogue-speaker">Developer Agent</span>
+              Found it. Adjusting box-sizing and padding at media query. Pushing remediation patch.
+            </div>
+          </div>
+        `;
+
+        // Update Level 3 drawer terminal to show failure
+        document.getElementById('drawer-exit-code').innerHTML = "1 (DEFECT)";
+        document.getElementById('drawer-exit-code').style.color = "var(--red-fail)";
+        document.getElementById('drawer-verdict').innerHTML = "FAIL";
+        document.getElementById('drawer-verdict').style.color = "var(--red-fail)";
+        document.getElementById('drawer-terminal').innerHTML = `
+$ python tools/verify_company.py --task 12<br>
+=== QA Verification Harness (Agent: @qa) ===<br>
+[PASS] Artifact 'header.html' located.<br>
+<span class="terminal-fail">[FAIL] Viewport test 320px: Horizontal overflow detected (scrollWidth > 320px).</span><br>
+[PASS] Semantic markup validated.<br>
+------------------------------------------------<br>
+<span class="terminal-fail">VERIFICATION FAILED: 1 DEFECT DETECTED.</span><br>
+Exit Status: 1 (Remediation Required)
+        `;
+
+      } else {
+        // STEP 2: DEVELOPER FIXES & QA VERIFIES PASS
+        simulationState = 0;
+        badge.style.background = "rgba(22, 128, 80, 0.12)";
+        badge.style.color = "var(--green-pass)";
+        badgeText.innerHTML = "VERIFICATION PASSED: Developer fixed line 42. QA verified (Exit Code: 0)";
+
+        remediationPath.style.display = "none";
+        qaThought.style.display = "none";
+
+        qaNode.style.borderColor = "var(--green-pass)";
+        qaPill.style.background = "var(--green-pass)";
+        qaPill.innerHTML = "✓ VERIFIED PASS";
+
+        devPill.style.background = "#F0EFEA";
+        devPill.style.color = "var(--ink-secondary)";
+        devPill.innerHTML = "✓ Ready";
+        devThought.innerHTML = "💭 'Tests are green. Exit code 0.'";
+
+        qaResultPath.classList.add('active');
+        qaResultPath.classList.add('verified');
+
+        const res = document.getElementById('node-result');
+        res.style.borderColor = "var(--green-pass)";
+        res.style.background = "#F0FDF4";
+        res.querySelector('.work-node-header').innerHTML = "<span>✓</span> Verified Result";
+        res.querySelector('.work-node-title').innerHTML = "Responsive Header Deliverable";
+        res.querySelector('.work-node-sub').innerHTML = "Passed All Acceptance Tests (Ready for Owner)";
+
+        dialogueStream.innerHTML += `
+          <div class="dialogue-bubble-row">
+            <div class="dialogue-avatar-mini"><svg><use href="#avatar-qa"></use></svg></div>
+            <div class="dialogue-content" style="border-left: 3px solid var(--green-pass);">
+              <span class="dialogue-speaker" style="color: var(--green-pass);">QA Agent</span>
+              Remediation verified clean on 320px, 768px, and 1280px viewports. Exit code 0. Passed for Founder acceptance!
+            </div>
+          </div>
+        `;
+
+        // Update Level 3 drawer terminal back to pass
+        document.getElementById('drawer-exit-code').innerHTML = "0 (SUCCESS)";
+        document.getElementById('drawer-exit-code').style.color = "var(--green-pass)";
+        document.getElementById('drawer-verdict').innerHTML = "PASS";
+        document.getElementById('drawer-verdict').style.color = "var(--green-pass)";
+        document.getElementById('drawer-terminal').innerHTML = `
+$ python tools/verify_company.py --task 12<br>
+=== QA Verification Harness (Agent: @qa) ===<br>
+[PASS] Artifact 'header.html' located in workspace.<br>
+[PASS] Viewport 320px overflow test: PASSED.<br>
+[PASS] Semantic elements &lt;header&gt;, &lt;nav&gt; present.<br>
+[PASS] Viewport contrast ratio: 7.2:1 (Exceeds WCAG AAA).<br>
+------------------------------------------------<br>
+<span class="terminal-pass">VERIFICATION RESULT: ALL ACCEPTANCE CRITERIA MET.</span><br>
+Exit Status: 0
+        `;
+      }
+    }
+  </script>
+</body>
+</html>

@@ -33,6 +33,7 @@ from .service import (
 )
 
 DASHBOARD_HTML_PATH = Path(__file__).resolve().parent / "dashboard.html"
+FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 
 class ControlCenterHandler(BaseHTTPRequestHandler):
@@ -99,14 +100,41 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/")
         query = urllib.parse.parse_qs(parsed.query)
 
-        # 1. UI Root
+        # 1. UI Root (React SPA if built, fallback to dashboard.html)
         if path in ("", "/index.html"):
-            if DASHBOARD_HTML_PATH.is_file():
+            dist_index = FRONTEND_DIST_DIR / "index.html"
+            if dist_index.is_file():
+                content = dist_index.read_text(encoding="utf-8")
+                self._send_html(content)
+            elif DASHBOARD_HTML_PATH.is_file():
                 content = DASHBOARD_HTML_PATH.read_text(encoding="utf-8")
                 self._send_html(content)
             else:
                 self._send_html("<h1>Jester AI Company Control Center</h1><p>Dashboard HTML not found.</p>")
             return
+
+        # 1b. Static Assets (/assets/* or root public files)
+        if path.startswith("/assets/"):
+            asset_file = FRONTEND_DIST_DIR / path.lstrip("/")
+            if asset_file.is_file():
+                suffix = asset_file.suffix.lower()
+                content_types = {
+                    ".js": "application/javascript; charset=utf-8",
+                    ".css": "text/css; charset=utf-8",
+                    ".svg": "image/svg+xml",
+                    ".png": "image/png",
+                    ".ico": "image/x-icon",
+                    ".json": "application/json; charset=utf-8",
+                }
+                ctype = content_types.get(suffix, "application/octet-stream")
+                data = asset_file.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                self.end_headers()
+                self.wfile.write(data)
+                return
 
         # 2. Health Check
         if path == "/api/health":
@@ -227,7 +255,14 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
             self._send_text(content)
             return
 
-        # 12. 404 Fallback
+        # 12. Chat Messages (Stage 27-E.1)
+        if path == "/api/chat":
+            limit = int(query.get("limit", [50])[0])
+            msgs = [m.to_dict() for m in self.service.list_chat_messages(limit=limit)]
+            self._send_json(HTTPStatus.OK, {"messages": msgs})
+            return
+
+        # 13. 404 Fallback
         self._send_error_json(HTTPStatus.NOT_FOUND, f"Endpoint not found: {self.path}")
 
     # --------------------------------------------------------------------------
@@ -351,6 +386,29 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
                 return
+
+        # 5. Send Chat Message: POST /api/chat (Stage 27-E.1)
+        if path == "/api/chat":
+            content = payload.get("content")
+            sender_role = payload.get("sender_role", "owner")
+            project_id = payload.get("project_id")
+            task_id = payload.get("task_id")
+
+            if not content or not str(content).strip():
+                self._send_error_json(HTTPStatus.BAD_REQUEST, "Field 'content' is required.")
+                return
+
+            try:
+                result = self.service.send_chat_message(
+                    content=str(content),
+                    sender_role=sender_role,
+                    project_id=project_id,
+                    task_id=task_id,
+                )
+                self._send_json(HTTPStatus.OK, result)
+            except Exception as exc:
+                self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            return
 
         self._send_error_json(HTTPStatus.NOT_FOUND, f"POST endpoint not found: {self.path}")
 

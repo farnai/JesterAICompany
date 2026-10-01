@@ -109,6 +109,22 @@ class VerificationResult:
 
 
 @dataclass
+class ChatMessage:
+    """Represents a message in the company-wide communication thread between Owner and Employees."""
+    id: str
+    sender_role: str  # "owner", "ceo", "developer", "qa", etc.
+    sender_name: str
+    content: str
+    timestamp: str = field(default_factory=_utc_now_iso)
+    task_id: Optional[str] = None
+    project_id: Optional[str] = None
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class Approval:
     """Represents a human or policy decision gate for a milestone or action."""
     id: str
@@ -319,6 +335,7 @@ class Company:
     purpose: str
     employees: Dict[str, Employee] = field(default_factory=dict)
     projects: Dict[str, Project] = field(default_factory=dict)
+    messages: List[ChatMessage] = field(default_factory=list)
 
     def register_employee(self, employee: Employee) -> None:
         self.employees[employee.id] = employee
@@ -328,6 +345,28 @@ class Company:
 
     def get_employee(self, role_or_id: str) -> Optional[Employee]:
         return self.employees.get(role_or_id)
+
+    def add_message(
+        self,
+        sender_role: str,
+        sender_name: str,
+        content: str,
+        task_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> ChatMessage:
+        """Record a chat message in the company communication thread."""
+        msg = ChatMessage(
+            id=f"msg_{uuid.uuid4().hex[:8]}",
+            sender_role=sender_role,
+            sender_name=sender_name,
+            content=content,
+            task_id=task_id,
+            project_id=project_id,
+            meta=meta or {},
+        )
+        self.messages.append(msg)
+        return msg
 
     def execute_task(
         self,
@@ -359,6 +398,7 @@ class Company:
             "purpose": self.purpose,
             "employees": {k: e.to_dict() for k, e in self.employees.items()},
             "projects": {k: p.to_dict() for k, p in self.projects.items()},
+            "messages": [m.to_dict() for m in self.messages[-50:]],
         }
 
 
@@ -387,5 +427,12 @@ def create_default_company(repo_root: Optional[Path] = None) -> Company:
         if role_id == "ceo":
             emp.tools = ["invoke_subagent", "send_message", "manage_task"]
         company.register_employee(emp)
+
+    # Seed the initial CEO greeting in Company Chat
+    company.add_message(
+        sender_role="ceo",
+        sender_name="CEO Agent",
+        content="Welcome to your company workspace, Founder. I'm ready to organize the team for your next mission. What are we building today?",
+    )
 
     return company
