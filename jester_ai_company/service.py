@@ -23,14 +23,19 @@ Architecture:
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import uuid
 
 from .core import (
+    ALLOWED_HANDOFF_EDGES,
     Artifact,
+    ArtifactInputRef,
+    ArtifactVerificationError,
     ChatMessage,
     Company,
     Employee,
+    HandoffError,
+    HandoffPolicyError,
     Project,
     RunStatus,
     Task,
@@ -41,6 +46,20 @@ from .core import (
     create_default_company,
 )
 from .execution import TaskExecutor
+from .ux_result import (
+    UXResultParseError,
+    UXResultValidationError,
+    UXTaskResult,
+    build_ux_execution_prompt,
+    parse_and_validate_ux_result,
+)
+from .marketing_result import (
+    MarketingResultParseError,
+    MarketingResultValidationError,
+    MarketingTaskResult,
+    build_marketing_execution_prompt,
+    parse_and_validate_marketing_result,
+)
 from .product_result import (
     ProductResultParseError,
     ProductResultValidationError,
@@ -48,7 +67,11 @@ from .product_result import (
     build_product_execution_prompt,
     parse_and_validate_product_result,
 )
-from .materializer import materialize_specialist_artifact
+from .materializer import (
+    MAX_INPUT_ARTIFACT_SIZE_BYTES,
+    load_and_verify_input_artifact,
+    materialize_specialist_artifact,
+)
 from .research_result import (
     ResearchResultParseError,
     ResearchResultValidationError,
@@ -178,6 +201,7 @@ class CompanyService:
         constraints: Optional[List[str]] = None,
         required_roles: Optional[List[str]] = None,
         expected_output: Optional[List[str]] = None,
+        input_artifacts: Optional[List[ArtifactInputRef]] = None,
     ) -> Task:
         """Create and register a Task belonging to the specified Project."""
         project = self.get_project(project_id)
@@ -190,6 +214,7 @@ class CompanyService:
             constraints=list(constraints or []),
             required_roles=list(required_roles or []),
             expected_output=list(expected_output or []),
+            input_artifacts=list(input_artifacts or []),
         )
         return task
 
@@ -924,14 +949,116 @@ class CompanyService:
         return run
 
 
+    # --------------------------------------------------------------------------
+    # Artifact Handoff (STEP 10)
+    # --------------------------------------------------------------------------
+
+    def find_artifact(self, artifact_id: str) -> Optional[Tuple[Task, TaskRun, Artifact]]:
+        """Find an artifact by ID across all projects, tasks, and runs.
+
+        Returns (Task, TaskRun, Artifact) if found, else None.
+        """
+        for project in self.company.projects.values():
+            for task in project.tasks.values():
+                for run in task.runs:
+                    for art in run.artifacts:
+                        if art.id == artifact_id:
+                            return (task, run, art)
+        return None
+
+    def attach_input_artifact(
+        self,
+        target_task_id: str,
+        source_artifact_id: str,
+        project_id: Optional[str] = None,
+    ) -> ArtifactInputRef:
+        """Attach an existing verified upstream Artifact as input to a target Task (STEP 10).
+
+        Policy:
+        - Target task must exist and be in PENDING status.
+        - Target task required_roles must be exactly ['product'].
+        - Upstream artifact must exist.
+        - Upstream task must be COMPLETED.
+        - Upstream taskrun must be SUCCESS.
+        - Upstream artifact must be durable and have a valid sha256.
+        - Upstream artifact producer_role must be 'research'.
+        - No duplicate attachments of the same artifact to target task.
+        """
+        target_task = self.get_task(target_task_id, project_id=project_id)
+        if target_task.status != TaskStatus.PENDING.value:
+            raise InvalidTaskStateError(
+                f"Cannot attach input artifact: target task '{target_task.id}' status is '{target_task.status}', expected '{TaskStatus.PENDING.value}'."
+            )
+
+        # Policy: Consumer single role check (STEP 10 & 11)
+        target_roles = [r.strip().lower() for r in target_task.required_roles]
+        if len(target_roles) != 1:
+            raise HandoffPolicyError(
+                f"Handoff policy violation: target task '{target_task.id}' required_roles is {target_task.required_roles}, expected exactly single specialist role."
+            )
+        consumer = target_roles[0]
+
+        # Locate upstream lineage
+        lineage = self.find_artifact(source_artifact_id)
+        if not lineage:
+            raise HandoffError(f"Artifact not found: '{source_artifact_id}'.")
+
+        source_task, source_run, source_artifact = lineage
+
+        # Verify upstream task is COMPLETED
+        if source_task.status != TaskStatus.COMPLETED.value:
+            raise HandoffPolicyError(
+                f"Cannot consume artifact '{source_artifact.id}': upstream task '{source_task.id}' is '{source_task.status}', expected '{TaskStatus.COMPLETED.value}'."
+            )
+
+        # Verify upstream run is SUCCESS
+        if source_run.status != RunStatus.SUCCESS.value:
+            raise HandoffPolicyError(
+                f"Cannot consume artifact '{source_artifact.id}': upstream run '{source_run.id}' is '{source_run.status}', expected '{RunStatus.SUCCESS.value}'."
+            )
+
+        # Verify artifact durability and hash
+        if not source_artifact.durable:
+            raise HandoffPolicyError(
+                f"Cannot consume artifact '{source_artifact.id}': artifact is marked non-durable."
+            )
+        if not source_artifact.sha256:
+            raise HandoffPolicyError(
+                f"Cannot consume artifact '{source_artifact.id}': artifact has no recorded SHA-256."
+            )
+
+        # Policy: Check allowed handoff edges (STEP 10 & 11)
+        producer = (source_artifact.producer_role or "").strip().lower()
+        if (producer, consumer) not in ALLOWED_HANDOFF_EDGES:
+            raise HandoffPolicyError(
+                f"Handoff policy violation: handoff from '{producer}' to '{consumer}' is not permitted. Allowed edges: {sorted(ALLOWED_HANDOFF_EDGES)}."
+            )
+
+        # Duplicate check
+        for existing in target_task.input_artifacts:
+            if existing.artifact_id == source_artifact.id:
+                raise HandoffError(
+                    f"Artifact '{source_artifact.id}' is already attached to task '{target_task.id}'."
+                )
+
+        ref = ArtifactInputRef(
+            artifact_id=source_artifact.id,
+            run_id=source_run.id,
+            sha256=source_artifact.sha256,
+            producer_role=source_artifact.producer_role,
+        )
+        target_task.input_artifacts.append(ref)
+        return ref
+
     def execute_product_task(
         self,
         task_id: str,
         project_id: Optional[str] = None,
     ) -> TaskRun:
-        """Execute a registered PENDING Task assigned to Product Agent (STEP 6B).
+        """Execute a registered PENDING Task assigned to Product Agent (STEP 6B & STEP 10).
 
         Validates that the task is PENDING and required_roles == ['product'].
+        Validates and loads any declared input artifacts before run execution (preflight check).
         Constructs product execution prompt and delegates to generic execution mechanism.
         """
         task = self.get_task(task_id, project_id=project_id)
@@ -953,7 +1080,13 @@ class CompanyService:
                 f"Cannot execute task '{task.id}': Task is assigned to {task.required_roles}, expected exactly ['product']."
             )
 
-        prompt = build_product_execution_prompt(task)
+        # 2. Preflight validation & loading of input artifacts (STEP 10)
+        verified_artifacts = self._verify_and_load_input_artifacts(task)
+
+        prompt = build_product_execution_prompt(
+            task,
+            verified_artifacts=verified_artifacts if verified_artifacts else None,
+        )
         return self._execute_specialist_task(
             task=task,
             agent_name="product",
@@ -997,6 +1130,126 @@ class CompanyService:
             prompt=prompt,
             result_parser=parse_and_validate_research_result,
         )
+
+    def execute_ux_task(
+        self,
+        task_id: str,
+        project_id: Optional[str] = None,
+    ) -> TaskRun:
+        """Execute a registered PENDING Task assigned to UX Agent (STEP 11).
+
+        Validates that the task is PENDING and required_roles == ['ux'].
+        Validates and loads any declared input artifacts before run execution (preflight check).
+        Constructs UX execution prompt and delegates to generic execution mechanism.
+        """
+        task = self.get_task(task_id, project_id=project_id)
+
+        # 1. Eligibility validation
+        if task.status != TaskStatus.PENDING.value:
+            raise InvalidTaskStateError(
+                f"Cannot execute task '{task.id}': Task status is '{task.status}', expected '{TaskStatus.PENDING.value}'."
+            )
+
+        if not task.required_roles:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task has no required roles assigned."
+            )
+
+        normalized_roles = [r.strip().lower() for r in task.required_roles]
+        if normalized_roles != ["ux"]:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task is assigned to {task.required_roles}, expected exactly ['ux']."
+            )
+
+        # 2. Preflight validation & loading of input artifacts (STEP 10 & 11)
+        verified_artifacts = self._verify_and_load_input_artifacts(task)
+
+        prompt = build_ux_execution_prompt(
+            task,
+            verified_artifacts=verified_artifacts if verified_artifacts else None,
+        )
+        return self._execute_specialist_task(
+            task=task,
+            agent_name="ux",
+            prompt=prompt,
+            result_parser=parse_and_validate_ux_result,
+        )
+
+    def _verify_and_load_input_artifacts(self, task: Task) -> List[Tuple[ArtifactInputRef, str]]:
+        """Safely verify and load all declared input artifacts for a task (preflight check)."""
+        verified_artifacts: List[Tuple[ArtifactInputRef, str]] = []
+        for input_ref in task.input_artifacts:
+            lineage = self.find_artifact(input_ref.artifact_id)
+            if not lineage:
+                raise ArtifactVerificationError(
+                    f"Preflight failure: Input artifact '{input_ref.artifact_id}' could not be found in company state."
+                )
+            source_task, source_run, artifact = lineage
+
+            # Verify upstream task and run state
+            if source_task.status != TaskStatus.COMPLETED.value:
+                raise ArtifactVerificationError(
+                    f"Preflight failure: Upstream task '{source_task.id}' is '{source_task.status}', expected '{TaskStatus.COMPLETED.value}'."
+                )
+            if source_run.status != RunStatus.SUCCESS.value:
+                raise ArtifactVerificationError(
+                    f"Preflight failure: Upstream run '{source_run.id}' is '{source_run.status}', expected '{RunStatus.SUCCESS.value}'."
+                )
+
+            # Load and verify bytes, path, size, and hash
+            content = load_and_verify_input_artifact(
+                base_output_dir=Path(self.output_dir),
+                artifact=artifact,
+                expected_ref=input_ref,
+            )
+            verified_artifacts.append((input_ref, content))
+        return verified_artifacts
+
+    def execute_marketing_task(
+        self,
+        task_id: str,
+        project_id: Optional[str] = None,
+    ) -> TaskRun:
+        """Execute a registered PENDING Task assigned to Marketing Agent (STEP 12).
+
+        Validates that the task is PENDING and required_roles == ['marketing'].
+        Validates and loads any declared input artifacts before run execution (preflight check).
+        Constructs Marketing execution prompt and delegates to generic execution mechanism.
+        """
+        task = self.get_task(task_id, project_id=project_id)
+
+        # 1. Eligibility validation
+        if task.status != TaskStatus.PENDING.value:
+            raise InvalidTaskStateError(
+                f"Cannot execute task '{task.id}': Task status is '{task.status}', expected '{TaskStatus.PENDING.value}'."
+            )
+
+        if not task.required_roles:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task has no required roles assigned."
+            )
+
+        normalized_roles = [r.strip().lower() for r in task.required_roles]
+        if normalized_roles != ["marketing"]:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task is assigned to {task.required_roles}, expected exactly ['marketing']."
+            )
+
+        # 2. Preflight validation & loading of input artifacts (STEP 10, 11 & 12)
+        verified_artifacts = self._verify_and_load_input_artifacts(task)
+
+        prompt = build_marketing_execution_prompt(
+            task,
+            verified_artifacts=verified_artifacts if verified_artifacts else None,
+        )
+        return self._execute_specialist_task(
+            task=task,
+            agent_name="marketing",
+            prompt=prompt,
+            result_parser=parse_and_validate_marketing_result,
+        )
+
+
 
 
 

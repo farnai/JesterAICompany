@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 import uuid
 
 from .registry import RECOGNIZED_AGENTS, get_agent_inventory
@@ -37,7 +37,9 @@ class ArtifactType(str, Enum):
     VERIFICATION_REPORT = "VERIFICATION_REPORT"
     RESEARCH_REPORT = "RESEARCH_REPORT"
     UX_MOCKUP = "UX_MOCKUP"
+    UX_SPECIFICATION = "UX_SPECIFICATION"
     MARKETING_BRIEF = "MARKETING_BRIEF"
+    MARKETING_REPORT = "MARKETING_REPORT"
     SUMMARY = "SUMMARY"
     LOG = "LOG"
 
@@ -95,6 +97,41 @@ class Artifact:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ArtifactInputRef:
+    """Immutable reference to an upstream verified artifact consumed as input by a downstream task."""
+    artifact_id: str
+    run_id: str
+    sha256: str
+    producer_role: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class HandoffError(Exception):
+    """Base exception for artifact handoff and verification errors."""
+    pass
+
+
+class HandoffPolicyError(HandoffError):
+    """Raised when an artifact handoff violates role or state policy."""
+    pass
+
+
+class ArtifactVerificationError(HandoffError):
+    """Raised when artifact integrity, size, or path verification fails."""
+    pass
+
+
+# Deterministic specialist-to-specialist artifact handoff policy (STEP 10, 11 & 12)
+ALLOWED_HANDOFF_EDGES: Set[Tuple[str, str]] = {
+    ("research", "product"),
+    ("product", "ux"),
+    ("product", "marketing"),
+}
 
 
 @dataclass
@@ -239,6 +276,7 @@ class Task:
     runs: List[TaskRun] = field(default_factory=list)
     approvals: List[Approval] = field(default_factory=list)
     result: Optional[TaskResult] = None
+    input_artifacts: List[ArtifactInputRef] = field(default_factory=list)
 
     def create_run(self) -> TaskRun:
         attempt = len(self.runs) + 1
@@ -295,6 +333,7 @@ class Task:
         d["runs"] = [r.to_dict() for r in self.runs]
         d["approvals"] = [a.to_dict() for a in self.approvals]
         d["result"] = self.result.to_dict() if self.result else None
+        d["input_artifacts"] = [ref.to_dict() for ref in self.input_artifacts]
         return d
 
 
@@ -317,6 +356,7 @@ class Project:
         constraints: Optional[List[str]] = None,
         required_roles: Optional[List[str]] = None,
         expected_output: Optional[List[str]] = None,
+        input_artifacts: Optional[List[ArtifactInputRef]] = None,
     ) -> Task:
         task = Task(
             id=task_id,
@@ -326,6 +366,7 @@ class Project:
             constraints=constraints or [],
             required_roles=required_roles or [],
             expected_output=expected_output or [],
+            input_artifacts=input_artifacts or [],
         )
         self.tasks[task_id] = task
         return task

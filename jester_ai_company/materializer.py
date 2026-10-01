@@ -10,9 +10,18 @@ from pathlib import Path
 from typing import Any, List, Optional
 import uuid
 
-from .core import Artifact, ArtifactType, Task, TaskRun
+from .core import (
+    Artifact,
+    ArtifactInputRef,
+    ArtifactType,
+    ArtifactVerificationError,
+    Task,
+    TaskRun,
+)
 from .product_result import ProductTaskResult
 from .research_result import ResearchTaskResult
+from .ux_result import UXTaskResult
+from .marketing_result import MarketingTaskResult
 
 
 class MaterializationError(Exception):
@@ -30,7 +39,7 @@ def atomic_write_text(target_path: Path, content: str) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = target_path.with_name(f".tmp_{target_path.name}_{uuid.uuid4().hex[:8]}")
     try:
-        temp_path.write_text(content, encoding="utf-8")
+        temp_path.write_bytes(content.encode("utf-8"))
         temp_path.replace(target_path)
     except Exception as exc:
         if temp_path.exists():
@@ -158,6 +167,114 @@ def format_research_report(task: Task, result: ResearchTaskResult) -> str:
     )
 
 
+def format_ux_report(task: Task, result: UXTaskResult) -> str:
+    """Format validated UXTaskResult into a deterministic Markdown report."""
+    flows_sections: List[str] = []
+    for idx, flow in enumerate(result.flows, start=1):
+        steps_str = "\n".join(f"{s_idx}. {step}" for s_idx, step in enumerate(flow.steps, start=1))
+        flows_sections.append(
+            f"### Flow {idx}: {flow.name}\n\n"
+            f"{flow.description}\n\n"
+            f"**Steps:**\n{steps_str if steps_str else '_No steps specified._'}"
+        )
+    flows_content = "\n\n".join(flows_sections) if flows_sections else "_No user flows defined._"
+
+    screens_sections: List[str] = []
+    for idx, screen in enumerate(result.screens, start=1):
+        states_str = ", ".join(f"`{st}`" for st in screen.states)
+        screens_sections.append(
+            f"### Screen {idx}: {screen.name}\n\n"
+            f"- **Purpose:** {screen.purpose}\n"
+            f"- **States:** {states_str if states_str else '_Default only_'}"
+        )
+    screens_content = "\n\n".join(screens_sections) if screens_sections else "_No screens defined._"
+
+    interaction_rules_content = (
+        "\n".join(f"- {ir}" for ir in result.interaction_rules)
+        if result.interaction_rules
+        else "- None specified"
+    )
+
+    accessibility_content = (
+        "\n".join(f"- {ac}" for ac in result.accessibility_considerations)
+        if result.accessibility_considerations
+        else "- Standard guidelines apply"
+    )
+
+    open_questions_content = (
+        "\n".join(f"- {oq}" for oq in result.open_questions)
+        if result.open_questions
+        else "- None identified"
+    )
+
+    return (
+        f"# UX Report: {task.title}\n\n"
+        f"- **Task ID:** `{task.id}`\n"
+        f"- **Status:** `{result.status.upper()}`\n"
+        f"- **Schema Version:** `{result.schema_version}`\n\n"
+        f"## Executive Summary\n\n{result.summary}\n\n"
+        f"## Goal\n\n{task.goal}\n\n"
+        f"## User Flows\n\n{flows_content}\n\n"
+        f"## Screen & State Architecture\n\n{screens_content}\n\n"
+        f"## Interaction Rules\n\n{interaction_rules_content}\n\n"
+        f"## Accessibility Considerations\n\n{accessibility_content}\n\n"
+        f"## Open Questions\n\n{open_questions_content}\n"
+    )
+
+
+def format_marketing_report(task: Task, result: MarketingTaskResult) -> str:
+    """Format validated MarketingTaskResult into a deterministic Markdown report."""
+    audiences_sections: List[str] = []
+    for idx, aud in enumerate(result.target_audiences, start=1):
+        pain_points_str = "\n".join(f"- {pt}" for pt in aud.pain_points) if aud.pain_points else "- None identified"
+        audiences_sections.append(
+            f"### Audience {idx}: {aud.name}\n\n"
+            f"{aud.description}\n\n"
+            f"**Pain Points & Needs:**\n{pain_points_str}"
+        )
+    audiences_content = "\n\n".join(audiences_sections) if audiences_sections else "_No target audiences defined._"
+
+    messages_sections: List[str] = []
+    for km in result.key_messages:
+        messages_sections.append(f"- **{km.audience}:** {km.core_message}")
+    messages_content = "\n".join(messages_sections) if messages_sections else "_No key messages defined._"
+
+    tactics_sections: List[str] = []
+    for idx, ct in enumerate(result.channels_or_tactics, start=1):
+        tactics_sections.append(
+            f"### Channel {idx}: {ct.channel}\n\n"
+            f"**Tactic:** {ct.tactic}"
+        )
+    tactics_content = "\n\n".join(tactics_sections) if tactics_sections else "_No channels/tactics defined._"
+
+    assumptions_content = (
+        "\n".join(f"- {a}" for a in result.assumptions)
+        if result.assumptions
+        else "- None identified"
+    )
+
+    open_questions_content = (
+        "\n".join(f"- {oq}" for oq in result.open_questions)
+        if result.open_questions
+        else "- None identified"
+    )
+
+    return (
+        f"# Marketing Report: {task.title}\n\n"
+        f"- **Task ID:** `{task.id}`\n"
+        f"- **Status:** `{result.status.upper()}`\n"
+        f"- **Schema Version:** `{result.schema_version}`\n\n"
+        f"## Executive Summary\n\n{result.summary}\n\n"
+        f"## Goal\n\n{task.goal}\n\n"
+        f"## Core Positioning\n\n{result.positioning}\n\n"
+        f"## Target Audiences\n\n{audiences_content}\n\n"
+        f"## Key Messages\n\n{messages_content}\n\n"
+        f"## Channels & Tactics\n\n{tactics_content}\n\n"
+        f"## Assumptions & Uncertainties\n\n{assumptions_content}\n\n"
+        f"## Open Questions\n\n{open_questions_content}\n"
+    )
+
+
 def materialize_specialist_artifact(
     base_output_dir: Path,
     task: Task,
@@ -176,6 +293,14 @@ def materialize_specialist_artifact(
         filename = "research_report.md"
         artifact_type = ArtifactType.RESEARCH_REPORT.value
         content = format_research_report(task, typed_result)
+    elif agent_name == "ux":
+        filename = "ux_report.md"
+        artifact_type = ArtifactType.UX_SPECIFICATION.value
+        content = format_ux_report(task, typed_result)
+    elif agent_name == "marketing":
+        filename = "marketing_report.md"
+        artifact_type = ArtifactType.MARKETING_REPORT.value
+        content = format_marketing_report(task, typed_result)
     else:
         raise MaterializationError(f"Unsupported agent for artifact materialization: '{agent_name}'.")
 
@@ -202,3 +327,68 @@ def materialize_specialist_artifact(
     )
 
     return artifact
+
+
+MAX_INPUT_ARTIFACT_SIZE_BYTES: int = 100_000
+
+
+def load_and_verify_input_artifact(
+    base_output_dir: Path,
+    artifact: Artifact,
+    expected_ref: ArtifactInputRef,
+    max_bytes: int = MAX_INPUT_ARTIFACT_SIZE_BYTES,
+) -> str:
+    """Safely resolve, verify, and load an input artifact from disk (STEP 10).
+
+    Enforces:
+    1. Safe canonical path resolution under base_output_dir (no directory traversal).
+    2. File existence.
+    3. Maximum input size (non-truncating fail-safe).
+    4. Exact UTF-8 decoding.
+    5. Exact SHA-256 match against Artifact.sha256.
+    6. Exact SHA-256 match against ArtifactInputRef.sha256.
+    """
+    if not artifact.path or ".." in artifact.path:
+        raise ArtifactVerificationError(
+            f"Invalid artifact path '{artifact.path}': Directory traversal not allowed."
+        )
+
+    base_resolved = base_output_dir.resolve()
+    target_path = (base_resolved / artifact.path).resolve()
+
+    if not target_path.is_relative_to(base_resolved):
+        raise ArtifactVerificationError(
+            f"Path traversal detected: Artifact path '{target_path}' escapes root '{base_resolved}'."
+        )
+
+    if not target_path.is_file():
+        raise ArtifactVerificationError(
+            f"Artifact file not found at expected path: '{target_path}'."
+        )
+
+    raw_bytes = target_path.read_bytes()
+    if len(raw_bytes) > max_bytes:
+        raise ArtifactVerificationError(
+            f"Artifact '{artifact.id}' size ({len(raw_bytes)} bytes) exceeds maximum allowed size ({max_bytes} bytes)."
+        )
+
+    try:
+        content = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ArtifactVerificationError(
+            f"Artifact '{artifact.id}' at '{target_path}' is not valid UTF-8: {exc}"
+        ) from exc
+
+    computed_sha = hashlib.sha256(raw_bytes).hexdigest()
+    if computed_sha != artifact.sha256:
+        raise ArtifactVerificationError(
+            f"Artifact '{artifact.id}' SHA-256 integrity mismatch: computed '{computed_sha}' != recorded '{artifact.sha256}'."
+        )
+
+    if computed_sha != expected_ref.sha256:
+        raise ArtifactVerificationError(
+            f"ArtifactInputRef '{expected_ref.artifact_id}' SHA-256 mismatch: computed '{computed_sha}' != expected '{expected_ref.sha256}'."
+        )
+
+    return content
+
