@@ -218,6 +218,7 @@ class Task:
     goal: str
     constraints: List[str] = field(default_factory=list)
     required_roles: List[str] = field(default_factory=list)
+    expected_output: List[str] = field(default_factory=list)
     status: str = TaskStatus.PENDING.value
     created_at: str = field(default_factory=_utc_now_iso)
     runs: List[TaskRun] = field(default_factory=list)
@@ -298,6 +299,7 @@ class Project:
         goal: str,
         constraints: Optional[List[str]] = None,
         required_roles: Optional[List[str]] = None,
+        expected_output: Optional[List[str]] = None,
     ) -> Task:
         task = Task(
             id=task_id,
@@ -306,9 +308,11 @@ class Project:
             goal=goal,
             constraints=constraints or [],
             required_roles=required_roles or [],
+            expected_output=expected_output or [],
         )
         self.tasks[task_id] = task
         return task
+
 
     def to_dict(self) -> Dict[str, Any]:
         d = {

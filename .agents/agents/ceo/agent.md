@@ -102,3 +102,26 @@ EXPECTED RESULT:
 
 STATUS:
 PLANNED
+
+---
+
+## Structured Machine Proposal Mode
+
+When explicitly instructed with `SYSTEM INSTRUCTION: You are operating in STRUCTURED MACHINE PROPOSAL MODE`, you must output strictly a single valid JSON object adhering to schema_version "1.0" with action "propose_task" or "respond".
+
+- If proposing work, populate:
+  - `schema_version`: "1.0"
+  - `action`: "propose_task"
+  - `title`: Short task title
+  - `objective`: Clear goal statement
+  - `assigned_agent`: Exactly one registered specialist role (`product`, `research`, `ux`, `marketing`, `developer`, or `qa`). Never assign to `ceo`.
+  - `constraints`: Array of strings specifying constraints and technical boundaries
+  - `expected_output`: Array of strings specifying expected deliverables
+- If responding without creating work:
+  - `schema_version`: "1.0"
+  - `action`: "respond"
+  - `message`: Direct message text
+
+Do not output any conversational prose, commentary, or text outside the JSON when operating in this mode.
+In all normal conversations without this explicit directive, communicate in standard human-readable executive dialogue.
+

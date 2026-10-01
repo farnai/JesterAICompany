@@ -21,6 +21,7 @@ Architecture:
           VerificationResult & TaskResult
 """
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import uuid
@@ -40,6 +41,18 @@ from .core import (
     create_default_company,
 )
 from .execution import TaskExecutor
+from .proposal import (
+    CEOActionProposal,
+    ProposalError,
+    REGISTERED_SPECIALIST_ROLES,
+    build_task_proposal_prompt,
+    parse_and_validate_proposal,
+)
+from .runtime import AntigravityRuntime, InvalidAgentError
+
+logger = logging.getLogger(__name__)
+
+
 
 
 class CompanyServiceError(Exception):
@@ -85,11 +98,13 @@ class CompanyService:
         output_dir: str = ".runs",
         verbose: bool = False,
         repo_root: Optional[Path] = None,
+        runtime: Optional[AntigravityRuntime] = None,
     ):
         self.repo_root = repo_root or Path(__file__).resolve().parent.parent
         self.company = company or create_default_company(self.repo_root)
         self.output_dir = Path(output_dir)
         self.verbose = verbose
+        self.runtime = runtime or AntigravityRuntime(repo_root=self.repo_root)
         self.executor = TaskExecutor(
             company=self.company,
             output_dir=str(self.output_dir),
@@ -147,6 +162,7 @@ class CompanyService:
         task_id: Optional[str] = None,
         constraints: Optional[List[str]] = None,
         required_roles: Optional[List[str]] = None,
+        expected_output: Optional[List[str]] = None,
     ) -> Task:
         """Create and register a Task belonging to the specified Project."""
         project = self.get_project(project_id)
@@ -158,6 +174,7 @@ class CompanyService:
             goal=goal.strip() if goal else "",
             constraints=list(constraints or []),
             required_roles=list(required_roles or []),
+            expected_output=list(expected_output or []),
         )
         return task
 
@@ -631,99 +648,57 @@ class CompanyService:
 
         ceo_reply = None
         if sender_role == "owner":
-            lower_text = text.lower()
-            overview = self.get_overview()
-            counts = overview["counts"]
-
-            # 1. Status / Health query
-            if any(k in lower_text for k in ["status", "overview", "health", "how are we", "report"]):
-                projects = list(self.company.projects.values())
-                proj_names = ", ".join(f"'{p.name}'" for p in projects) if projects else "none yet"
-                ceo_text = (
-                    f"Operational report for the Founder:\n"
-                    f"• Registered Projects: {counts['total_projects']} ({proj_names})\n"
-                    f"• Active Tasks: {counts['in_progress_tasks']} in progress, {counts['completed_tasks']} completed\n"
-                    f"• QA Verifications: {counts['passed_verifications']} passed, {counts['failed_verifications']} failed\n"
-                    f"All 7 specialists are available and ready."
-                )
-
-            # 2. Team / People query
-            elif any(k in lower_text for k in ["team", "who is working", "employees", "specialists", "people"]):
-                ceo_text = (
-                    f"Here is your active workforce roster, Founder:\n"
-                    f"• CEO Agent (Leadership & Planning)\n"
-                    f"• Product Agent (Scope & Requirements)\n"
-                    f"• Research Agent (Investigation & Benchmarks)\n"
-                    f"• UX Agent (Design & Touch Ergonomics)\n"
-                    f"• Marketing Agent (Positioning & Communication)\n"
-                    f"• Developer Agent (Engineering & Implementation)\n"
-                    f"• QA Agent (Independent Verification & Integrity)\n"
-                    f"Give me a mission and I will organize the team."
-                )
-
-            # 3. New project or website commission (e.g. restaurant website)
-            elif any(k in lower_text for k in ["restaurant", "website", "project", "build a", "need a", "create", "launch"]):
-                target_proj = None
-                if project_id and project_id in self.company.projects:
-                    target_proj = self.company.projects[project_id]
-                else:
-                    target_proj = self.ensure_default_project()
-
-                new_task_title = "Responsive Web Platform"
-                if "restaurant" in lower_text:
-                    new_task_title = "Restaurant Website: Responsive Booking Platform"
-                elif "homepage" in lower_text or "nav" in lower_text:
-                    new_task_title = "Responsive Navigation Header"
-
-                existing = [t for t in target_proj.tasks.values() if new_task_title in t.title]
-                if not existing:
-                    created_task = target_proj.create_task(
-                        task_id=f"task_{uuid.uuid4().hex[:6]}",
-                        title=new_task_title,
-                        goal=f"Build and verify: {text}",
-                        constraints=["Zero external dependencies", "WCAG AAA compliant"],
-                        required_roles=["developer", "qa"],
+            # Milestone STEP 3: Chat endpoint invokes strictly the CEO agent via AntigravityRuntime
+            agent_to_invoke = "ceo"
+            try:
+                exec_result = self.runtime.execute(agent=agent_to_invoke, prompt=text)
+                if exec_result.success and exec_result.stdout and exec_result.stdout.strip():
+                    ceo_text = exec_result.stdout.strip()
+                elif exec_result.timed_out:
+                    logger.warning(
+                        "CEO runtime execution timed out after %.2fms for prompt: %s",
+                        exec_result.duration_ms,
+                        text[:60],
                     )
-                    task_info = f"I've registered Task '{created_task.title}' under '{target_proj.name}'."
+                    ceo_text = (
+                        "I apologize, Founder, but my response timed out. "
+                        "Please try again in a moment."
+                    )
+                elif exec_result.exit_code == 127 or "not found" in (exec_result.stderr or "").lower():
+                    logger.warning(
+                        "Antigravity CLI executable not found: %s",
+                        exec_result.stderr,
+                    )
+                    ceo_text = (
+                        "I apologize, Founder, but the executive runtime is currently "
+                        "unavailable on this system."
+                    )
+                elif not exec_result.success:
+                    logger.warning(
+                        "CEO runtime execution failed (exit_code=%s, duration=%.2fms): %s",
+                        exec_result.exit_code,
+                        exec_result.duration_ms,
+                        exec_result.stderr,
+                    )
+                    ceo_text = (
+                        "I apologize, Founder, but I encountered an internal issue "
+                        "processing your request. Please try again."
+                    )
                 else:
-                    task_info = f"We have Task '{existing[0].title}' queued under '{target_proj.name}'."
-
+                    # Non-zero output missing despite 0 exit code
+                    logger.warning(
+                        "CEO runtime completed with exit code 0 but produced empty output (duration=%.2fms)",
+                        exec_result.duration_ms,
+                    )
+                    ceo_text = (
+                        "I apologize, Founder, but I was unable to generate a response. "
+                        "Please try rephrasing your message."
+                    )
+            except Exception as exc:
+                logger.warning("Unexpected error communicating with CEO runtime: %s", exc)
                 ceo_text = (
-                    f"Understood, Founder. {task_info}\n"
-                    f"I am allocating Developer to build the clean markup and styles, with QA standing by to independently verify against acceptance criteria.\n"
-                    f"Say 'execute' or click the task in your workspace to initiate the run."
-                )
-
-            # 4. Execute / Run command
-            elif any(k in lower_text for k in ["execute", "run task", "start building", "go ahead"]):
-                all_tasks = []
-                for p in self.company.projects.values():
-                    all_tasks.extend(p.tasks.values())
-                executable = [t for t in all_tasks if t.status in (TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value)]
-
-                if executable:
-                    target_task = executable[0]
-                    try:
-                        run = self.execute_task(target_task.id, mock=True)
-                        has_passed = any(v.passed for v in run.verifications)
-                        verdict = "PASSED" if has_passed else "FAILED"
-                        ceo_text = (
-                            f"Run completed for Task '{target_task.title}' (Attempt #{run.attempt_number}):\n"
-                            f"• Status: {run.status}\n"
-                            f"• QA Verification: {verdict}\n"
-                            f"• Artifacts Produced: {len(run.artifacts)}\n"
-                            f"The output is delivered and ready for your inspection."
-                        )
-                    except Exception as e:
-                        ceo_text = f"Execution encountered an error: {str(e)}. Developer and QA are investigating."
-                else:
-                    ceo_text = "All registered tasks have already been completed. Commission a new task or project, and I will assemble the team."
-
-            # 5. General response
-            else:
-                ceo_text = (
-                    f"Received, Founder. I'm aligning our operational priorities accordingly. "
-                    f"Let me know if you would like to commission a new project, check QA verifications, or review active deliverables."
+                    "I apologize, Founder, but an unexpected error occurred while "
+                    "communicating with executive leadership."
                 )
 
             ceo_reply = self.company.add_message(
@@ -739,4 +714,107 @@ class CompanyService:
             "reply": ceo_reply.to_dict() if ceo_reply else None,
             "messages": [m.to_dict() for m in self.list_chat_messages(limit=50)],
         }
+
+    # --------------------------------------------------------------------------
+    # Structured Task Proposal Contract (STEP 4)
+    # --------------------------------------------------------------------------
+
+    def propose_task(self, founder_request: str) -> CEOActionProposal:
+        """Evaluate a founder request and return a structured CEOActionProposal.
+
+        This method translates natural-language founder intent into a machine-validated
+        task proposal without persisting any Task, creating any TaskRun, or executing
+        any specialist.
+
+        Args:
+            founder_request: Natural-language request from the founder.
+
+        Returns:
+            Validated CEOActionProposal adhering to schema_version '1.0'.
+
+        Raises:
+            ValueError: If founder_request is empty.
+            ProposalError: If runtime execution, JSON parsing, or schema validation fails.
+        """
+        text = (founder_request or "").strip()
+        if not text:
+            raise ValueError("Founder request must not be empty.")
+
+        prompt = build_task_proposal_prompt(text)
+        result = self.runtime.execute(agent="ceo", prompt=prompt)
+
+        if not result.success:
+            logger.warning(
+                "CEO runtime failed during propose_task (exit_code=%s, duration=%.2fms): %s",
+                result.exit_code,
+                result.duration_ms,
+                result.stderr,
+            )
+            raise ProposalError(
+                f"CEO runtime execution failed: {result.stderr or f'exit code {result.exit_code}'}"
+            )
+
+        return parse_and_validate_proposal(result.stdout)
+
+    def accept_task_proposal(
+        self,
+        proposal: CEOActionProposal,
+        project_id: str,
+        task_id: Optional[str] = None,
+    ) -> Task:
+        """Ingest a validated CEOActionProposal into a registered Task in the Project.
+
+        Converts an approved CEO proposal with action='propose_task' into a
+        concrete Task domain entity associated with the given Project.
+
+        This method is strictly deterministic:
+        - It does NOT call an LLM or Antigravity runtime.
+        - It does NOT execute the task or invoke any specialist.
+        - It does NOT create a TaskRun or Artifact.
+
+        Args:
+            proposal: Validated CEOActionProposal instance.
+            project_id: Identifier of an existing registered Project.
+            task_id: Optional explicit task ID override.
+
+        Returns:
+            The registered Task entity with status PENDING.
+
+        Raises:
+            ValueError: If proposal is None or proposal.action is not 'propose_task'.
+            ProjectNotFoundError: If project_id is not registered.
+            InvalidAgentError: If proposal.assigned_agent is not a recognized specialist.
+        """
+        if not isinstance(proposal, CEOActionProposal):
+            raise ValueError("Expected a valid CEOActionProposal instance.")
+
+        if proposal.action != "propose_task":
+            raise ValueError(
+                f"Only proposals with action 'propose_task' can be accepted as tasks. "
+                f"Received action: '{proposal.action}'."
+            )
+
+        # Ensure project exists (raises ProjectNotFoundError if unknown)
+        project = self.get_project(project_id)
+
+        # Validate specialist role against registered specialist roles
+        assigned = (proposal.assigned_agent or "").strip().lower()
+        if assigned not in REGISTERED_SPECIALIST_ROLES:
+            raise InvalidAgentError(
+                f"Cannot accept task proposal: assigned specialist '{proposal.assigned_agent}' "
+                f"is not one of registered specialists: {sorted(REGISTERED_SPECIALIST_ROLES)}."
+            )
+
+        # Ingest deterministically into existing Task model
+        task = self.create_task(
+            project_id=project.id,
+            title=proposal.title or "Untitled Task",
+            goal=proposal.objective or "",
+            task_id=task_id,
+            constraints=list(proposal.constraints or []),
+            required_roles=[assigned],
+            expected_output=list(proposal.expected_output or []),
+        )
+        return task
+
 

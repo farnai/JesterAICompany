@@ -43,6 +43,21 @@ from .status import (
 )
 
 from .control_center import ControlCenterHandler, create_server, run_control_center
+from .runtime import (
+    AgentExecutionResult,
+    AntigravityRuntime,
+    AntigravityRuntimeError,
+    InvalidAgentError,
+)
+from .proposal import (
+    CEOActionProposal,
+    ProposalError,
+    ProposalParseError,
+    ProposalValidationError,
+    build_task_proposal_prompt,
+    extract_json_text,
+    parse_and_validate_proposal,
+)
 
 __version__ = "0.1.0"
 
@@ -82,6 +97,17 @@ __all__ = [
     "format_status_console",
     "get_company_status",
     "get_pipeline_telemetry",
+    "AgentExecutionResult",
+    "AntigravityRuntime",
+    "AntigravityRuntimeError",
+    "InvalidAgentError",
+    "CEOActionProposal",
+    "ProposalError",
+    "ProposalParseError",
+    "ProposalValidationError",
+    "build_task_proposal_prompt",
+    "extract_json_text",
+    "parse_and_validate_proposal",
     "__version__",
 ]
 
