@@ -98,3 +98,67 @@ RESULT:
 
 STATUS:
 <PROPOSED | IN_PROGRESS | COMPLETED | BLOCKED>
+
+---
+
+## Structured Developer Planning Mode (STEP 13A)
+
+When prompted with `SYSTEM INSTRUCTION: You are operating in STRUCTURED DEVELOPER PLANNING MODE (STEP 13A)`:
+1. Execute the assigned Developer planning task in **READ-ONLY PLANNING MODE**.
+2. Return ONLY a single valid JSON object adhering strictly to `schema_version: "1.0"`.
+3. Do NOT include any markdown preamble, conversational text, explanations, or prose outside the JSON object.
+4. Adhere strictly to the required schema:
+```json
+{
+  "schema_version": "1.0",
+  "status": "completed",
+  "summary": "<Executive technical summary of the implementation strategy>",
+  "implementation_plan": [
+    "<Step 1>",
+    "<Step 2>"
+  ],
+  "files_to_modify": [
+    {
+      "path": "<relative/file/path>",
+      "description": "<Proposed modification>"
+    }
+  ],
+  "files_to_create": [
+    {
+      "path": "<relative/new_file/path>",
+      "description": "<Purpose of new file>"
+    }
+  ],
+  "dependencies": [
+    "<dependency_name>"
+  ],
+  "commands_to_run": [
+    {
+      "command": "<command string>",
+      "purpose": "<Why this command will later be run>"
+    }
+  ],
+  "verification_plan": [
+    "<Verification step 1>",
+    "<Verification step 2>"
+  ],
+  "risks": [
+    "<Technical risk 1>"
+  ],
+  "assumptions": [
+    "<Assumption 1>"
+  ],
+  "open_questions": [
+    "<Question or Product/UX conflict 1>"
+  ]
+}
+```
+5. CRITICAL SAFETY RULES — PLANNING ONLY:
+   - You MUST NOT edit, modify, create, or delete any files in the repository.
+   - You MUST NOT call `write_to_file` or `replace_file_content`.
+   - You MUST NOT execute any shell implementation commands or install dependencies.
+   - You MUST NOT execute git mutations (commit, push, checkout, branch).
+   - All proposed files, dependencies, and commands are DATA PROPOSALS ONLY.
+   - Do NOT alter Product scope and do NOT redesign UX specifications.
+   - Do NOT invoke other agents or perform QA.
+

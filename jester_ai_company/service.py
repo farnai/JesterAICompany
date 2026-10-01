@@ -21,8 +21,11 @@ Architecture:
           VerificationResult & TaskResult
 """
 
+from dataclasses import dataclass, field
+import json
 import logging
 from pathlib import Path
+import subprocess
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import uuid
 
@@ -60,6 +63,13 @@ from .marketing_result import (
     build_marketing_execution_prompt,
     parse_and_validate_marketing_result,
 )
+from .developer_result import (
+    DeveloperResultParseError,
+    DeveloperResultValidationError,
+    DeveloperTaskResult,
+    build_developer_execution_prompt,
+    parse_and_validate_developer_result,
+)
 from .product_result import (
     ProductResultParseError,
     ProductResultValidationError,
@@ -68,6 +78,7 @@ from .product_result import (
     parse_and_validate_product_result,
 )
 from .materializer import (
+    MAX_COMBINED_INPUT_ARTIFACT_SIZE_BYTES,
     MAX_INPUT_ARTIFACT_SIZE_BYTES,
     load_and_verify_input_artifact,
     materialize_specialist_artifact,
@@ -87,6 +98,45 @@ from .proposal import (
     parse_and_validate_proposal,
 )
 from .runtime import AntigravityRuntime, InvalidAgentError
+from .execution_grant import (
+    ExecutionGrant,
+    GrantError,
+    GrantValidationError,
+    MissingApprovalError,
+    PlanArtifactMismatchError,
+    ProtectedPathError,
+    StaleCommitError,
+    TestModificationForbiddenError,
+    VerificationAction,
+)
+from .developer_mutation import (
+    DeveloperMutationError,
+    DeveloperMutationParseError,
+    DeveloperMutationResult,
+    DeveloperMutationStatus,
+    DeveloperMutationValidationError,
+    build_developer_mutation_prompt,
+    parse_and_validate_developer_mutation_result,
+)
+from .policy_hook import (
+    WriteAuthorizationDecision,
+    authorize_tool_mutation,
+    install_execution_policy_hook,
+)
+from .worktree import (
+    WorktreeAuditRecord,
+    WorktreeConfinementError,
+    WorktreeDiffResult,
+    WorktreeError,
+    WorktreeGitError,
+    WorktreeManager,
+    WorktreeSession,
+    is_protected_path,
+    is_test_file,
+    resolve_repo_head_commit,
+    sanitize_execution_environment,
+    verify_workspace_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +171,32 @@ class InvalidTaskStateError(CompanyServiceError):
 class ExecutionError(CompanyServiceError):
     """Raised when task execution fails unrecoverably."""
     pass
+
+
+@dataclass
+class BoundedDeveloperExecutionOutcome:
+    """Outcome of a bounded Developer mutation execution within an isolated worktree."""
+    grant_id: str
+    status: str
+    summary: str
+    diff_result: Optional[WorktreeDiffResult] = None
+    mutation_result: Optional[DeveloperMutationResult] = None
+    audit_records: List[Dict[str, Any]] = field(default_factory=list)
+    error: Optional[str] = None
+    cleaned_up: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize outcome to dictionary."""
+        return {
+            "grant_id": self.grant_id,
+            "status": self.status,
+            "summary": self.summary,
+            "diff_result": self.diff_result.to_dict() if self.diff_result else None,
+            "mutation_result": self.mutation_result.to_dict() if self.mutation_result else None,
+            "audit_records": self.audit_records,
+            "error": self.error,
+            "cleaned_up": self.cleaned_up,
+        }
 
 
 class CompanyService:
@@ -1248,6 +1324,474 @@ class CompanyService:
             prompt=prompt,
             result_parser=parse_and_validate_marketing_result,
         )
+
+    def _get_repo_working_tree_state(self) -> str:
+        """Capture a deterministic lightweight status of repository working tree."""
+        try:
+            res = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(self.repo_root),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                shell=False,
+            )
+            return res.stdout.strip()
+        except Exception:
+            return ""
+
+    def execute_developer_planning_task(
+        self,
+        task_id: str,
+        project_id: Optional[str] = None,
+    ) -> TaskRun:
+        """Execute a registered PENDING Task assigned to Developer Agent in PLANNING MODE (STEP 13A).
+
+        Enforces:
+        1. Eligibility: Task status == PENDING, required_roles == ['developer'].
+        2. Exact Fan-In Shape: Exactly TWO input artifacts, exactly 1 Product and 1 UX, no duplicates.
+        3. Preflight Verification: Upstream tasks COMPLETED, runs SUCCESS, hashes matching, <=100KB per artifact.
+        4. Combined Size Limit: Sum of inputs <= MAX_COMBINED_INPUT_ARTIFACT_SIZE_BYTES (150KB).
+        5. Canonical Ordering: Product requirements presented before UX specification.
+        6. Read-Only Safety: Repository working tree verified before and after execution.
+        """
+        task = self.get_task(task_id, project_id=project_id)
+
+        # 1. Eligibility validation
+        if task.status != TaskStatus.PENDING.value:
+            raise InvalidTaskStateError(
+                f"Cannot execute task '{task.id}': Task status is '{task.status}', expected '{TaskStatus.PENDING.value}'."
+            )
+
+        if not task.required_roles:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task has no required roles assigned."
+            )
+
+        normalized_roles = [r.strip().lower() for r in task.required_roles]
+        if normalized_roles != ["developer"]:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task is assigned to {task.required_roles}, expected exactly ['developer']."
+            )
+
+        # 2. Exact Fan-In Shape Validation (STEP 13A)
+        if len(task.input_artifacts) != 2:
+            raise HandoffPolicyError(
+                f"Developer planning task '{task.id}' requires exactly 2 input artifacts (1 Product, 1 UX), found {len(task.input_artifacts)}."
+            )
+
+        ref1, ref2 = task.input_artifacts[0], task.input_artifacts[1]
+        if ref1.artifact_id == ref2.artifact_id:
+            raise HandoffPolicyError(
+                f"Developer planning task '{task.id}' contains duplicate references to artifact '{ref1.artifact_id}'."
+            )
+
+        lineage1 = self.find_artifact(ref1.artifact_id)
+        lineage2 = self.find_artifact(ref2.artifact_id)
+        if not lineage1 or not lineage2:
+            raise ArtifactVerificationError("One or more input artifacts could not be found in company state.")
+
+        producer_roles = {
+            (lineage1[2].producer_role or "").lower(),
+            (lineage2[2].producer_role or "").lower(),
+        }
+        if producer_roles != {"product", "ux"}:
+            raise HandoffPolicyError(
+                f"Developer planning task requires exactly one 'product' artifact and one 'ux' artifact. Found roles: {sorted(producer_roles)}."
+            )
+
+        # 3. Preflight validation & loading of input artifacts
+        verified_artifacts = self._verify_and_load_input_artifacts(task)
+
+        # 4. Combined Size Limit check
+        total_bytes = sum(len(content.encode("utf-8")) for _, content in verified_artifacts)
+        if total_bytes > MAX_COMBINED_INPUT_ARTIFACT_SIZE_BYTES:
+            raise ArtifactVerificationError(
+                f"Combined input artifact size ({total_bytes} bytes) exceeds maximum allowed limit ({MAX_COMBINED_INPUT_ARTIFACT_SIZE_BYTES} bytes)."
+            )
+
+        prompt = build_developer_execution_prompt(
+            task,
+            verified_artifacts=verified_artifacts,
+        )
+
+        repo_state_before = self._get_repo_working_tree_state()
+
+        run = self._execute_specialist_task(
+            task=task,
+            agent_name="developer",
+            prompt=prompt,
+            result_parser=parse_and_validate_developer_result,
+        )
+
+        repo_state_after = self._get_repo_working_tree_state()
+        if repo_state_before != repo_state_after:
+            raise ExecutionError(f"Repository mutation detected during Developer planning task '{task.id}'!")
+
+        return run
+
+    # --------------------------------------------------------------------------
+    # Execution Grant & Isolated Worktree Infrastructure (STEP 13B-1)
+    # --------------------------------------------------------------------------
+
+    def create_execution_grant(
+        self,
+        task_id: str,
+        plan_artifact_id: str,
+        founder_approval_id: str,
+        approved_files_to_modify: Optional[List[str]] = None,
+        approved_files_to_create: Optional[List[str]] = None,
+        verification_actions: Optional[List[VerificationAction]] = None,
+        allow_test_modifications: bool = False,
+        max_files_changed: int = 3,
+        max_bytes_written: int = 100_000,
+        max_verification_actions: int = 3,
+        max_duration_seconds: int = 120,
+        project_id: Optional[str] = None,
+        grant_id: Optional[str] = None,
+    ) -> ExecutionGrant:
+        """Create and validate an immutable ExecutionGrant bound to verified company state (STEP 13B-1).
+
+        Enforces:
+        1. Explicit founder approval id (no auto-approvals).
+        2. Task exists and is in registered state.
+        3. Plan artifact exists in company state and was produced by 'developer'.
+        4. Plan artifact is durable and has valid SHA-256 matching disk bytes.
+        5. Upstream planning task was COMPLETED and run was SUCCESS.
+        6. Base commit hash is resolved from target repo HEAD.
+        7. Approved paths satisfy confinement, protected-path, and test-file policies.
+        """
+        import hashlib
+
+        # 1. Founder approval check (Requirement 4)
+        if not founder_approval_id or not str(founder_approval_id).strip():
+            raise MissingApprovalError("Cannot create ExecutionGrant: founder_approval_id must not be empty.")
+
+        # 2. Task lookup
+        task = self.get_task(task_id, project_id=project_id)
+
+        # 3. Plan artifact lookup and validation (Requirement 3)
+        lineage = self.find_artifact(plan_artifact_id)
+        if not lineage:
+            raise PlanArtifactMismatchError(
+                f"Plan artifact '{plan_artifact_id}' could not be found in company state."
+            )
+
+        source_task, source_run, artifact = lineage
+
+        if (artifact.producer_role or "").lower() != "developer":
+            raise PlanArtifactMismatchError(
+                f"Plan artifact '{plan_artifact_id}' was produced by '{artifact.producer_role}', expected 'developer'."
+            )
+
+        if not artifact.durable:
+            raise PlanArtifactMismatchError(
+                f"Plan artifact '{plan_artifact_id}' is marked non-durable."
+            )
+
+        if source_task.status != TaskStatus.COMPLETED.value:
+            raise PlanArtifactMismatchError(
+                f"Upstream planning task '{source_task.id}' is '{source_task.status}', expected '{TaskStatus.COMPLETED.value}'."
+            )
+
+        if source_run.status != RunStatus.SUCCESS.value:
+            raise PlanArtifactMismatchError(
+                f"Upstream planning run '{source_run.id}' is '{source_run.status}', expected '{RunStatus.SUCCESS.value}'."
+            )
+
+        # 4. Verify disk bytes & SHA-256
+        target_path = (self.output_dir / artifact.path).resolve()
+        if not target_path.is_file():
+            raise PlanArtifactMismatchError(
+                f"Plan artifact file not found on disk at '{target_path}'."
+            )
+        computed_sha = hashlib.sha256(target_path.read_bytes()).hexdigest()
+        if computed_sha != artifact.sha256:
+            raise PlanArtifactMismatchError(
+                f"Plan artifact disk SHA mismatch: computed '{computed_sha}' != recorded '{artifact.sha256}'."
+            )
+
+        # 5. Resolve repo HEAD commit (Requirement 5)
+        base_commit = resolve_repo_head_commit(self.repo_root)
+
+        # 6. Generate unique grant_id if not provided
+        gid = grant_id or f"grant_{task.id}_{uuid.uuid4().hex[:8]}"
+
+        grant = ExecutionGrant(
+            grant_id=gid,
+            task_id=task.id,
+            plan_artifact_id=artifact.id,
+            plan_sha256=computed_sha,
+            base_commit_hash=base_commit,
+            approved_files_to_modify=tuple(approved_files_to_modify or []),
+            approved_files_to_create=tuple(approved_files_to_create or []),
+            verification_actions=tuple(verification_actions or []),
+            allow_test_modifications=allow_test_modifications,
+            max_files_changed=max_files_changed,
+            max_bytes_written=max_bytes_written,
+            max_verification_actions=max_verification_actions,
+            max_duration_seconds=max_duration_seconds,
+            network_enabled=False,
+            founder_approval_id=str(founder_approval_id).strip(),
+        )
+
+        # Validate approved paths against protected and test policies upfront
+        all_approved = list(grant.approved_files_to_modify) + list(grant.approved_files_to_create)
+        for rel_path in all_approved:
+            if is_protected_path(rel_path, protect_company_control=True):
+                raise ProtectedPathError(f"Approved path '{rel_path}' is protected by company policy.")
+            if is_test_file(rel_path) and not grant.allow_test_modifications:
+                raise TestModificationForbiddenError(
+                    f"Test file '{rel_path}' cannot be modified: grant.allow_test_modifications is False."
+                )
+
+        return grant
+
+    def create_worktree_session(
+        self,
+        grant: ExecutionGrant,
+        worktrees_dir: Optional[Path] = None,
+    ) -> WorktreeSession:
+        """Create an isolated Git worktree session bound to the approved ExecutionGrant."""
+        manager = WorktreeManager(
+            repo_root=self.repo_root,
+            worktrees_dir=worktrees_dir or (Path(self.output_dir) / "worktrees"),
+            protect_company_control=True,
+        )
+        return manager.create_worktree(grant)
+
+    def execute_bounded_developer_mutation(
+        self,
+        grant: ExecutionGrant,
+        instruction: str,
+        timeout: Optional[float] = None,
+        protect_company_control: bool = True,
+    ) -> "BoundedDeveloperExecutionOutcome":
+        """Execute real Developer agent for bounded code mutation inside an isolated worktree.
+
+        Enforces:
+        1. Base commit validation (current HEAD must equal grant.base_commit_hash).
+        2. Plan artifact existence, developer producer role, and disk SHA-256 match.
+        3. Detached isolated Git worktree creation (main repository untouched).
+        4. Execution-scoped PreToolUse hook installation (denies unauthorized writes/commands before execution).
+        5. Sanitized execution environment (secret-like tokens and keys stripped).
+        6. Subprocess execution with bounded timeout.
+        7. Structured output parsing into DeveloperMutationResult.
+        8. Independent application-owned Git diff capture.
+        9. Diff audit against ExecutionGrant (detects unauthorized modifications or deletions).
+        10. Resource budget enforcement (max_files_changed, max_bytes_written).
+        11. Guaranteed worktree cleanup on all exit paths.
+        """
+        # 1. Base commit check (Fail closed on stale repository)
+        current_head = resolve_repo_head_commit(self.repo_root)
+        if current_head != grant.base_commit_hash:
+            return BoundedDeveloperExecutionOutcome(
+                grant_id=grant.grant_id,
+                status=DeveloperMutationStatus.POLICY_DENIED.value,
+                summary="Execution denied: repository HEAD has moved since grant approval.",
+                error=f"Current HEAD '{current_head}' != grant base_commit_hash '{grant.base_commit_hash}'.",
+                cleaned_up=True,
+            )
+
+        # 2. Plan artifact validation
+        lineage = self.find_artifact(grant.plan_artifact_id)
+        if not lineage:
+            return BoundedDeveloperExecutionOutcome(
+                grant_id=grant.grant_id,
+                status=DeveloperMutationStatus.POLICY_DENIED.value,
+                summary="Execution denied: plan artifact not found in company service.",
+                error=f"Plan artifact '{grant.plan_artifact_id}' not found.",
+                cleaned_up=True,
+            )
+        source_task, source_run, plan_art = lineage
+        if plan_art.sha256 != grant.plan_sha256:
+            return BoundedDeveloperExecutionOutcome(
+                grant_id=grant.grant_id,
+                status=DeveloperMutationStatus.POLICY_DENIED.value,
+                summary="Execution denied: plan artifact SHA mismatch.",
+                error=f"Plan artifact SHA '{plan_art.sha256}' != grant SHA '{grant.plan_sha256}'.",
+                cleaned_up=True,
+            )
+
+        # 3. Create isolated worktree
+        manager = WorktreeManager(
+            repo_root=self.repo_root,
+            worktrees_dir=Path(self.output_dir) / "worktrees",
+            protect_company_control=protect_company_control,
+        )
+        session = manager.create_worktree(grant)
+        cleaned_up = False
+
+        try:
+            # 4. Ensure Developer agent definition is present in worktree
+            worktree_agent_md = session.worktree_path / ".agents" / "agents" / "developer" / "agent.md"
+            if not worktree_agent_md.exists():
+                source_agent_md = self.repo_root / ".agents" / "agents" / "developer" / "agent.md"
+                if source_agent_md.exists():
+                    worktree_agent_md.parent.mkdir(parents=True, exist_ok=True)
+                    worktree_agent_md.write_text(source_agent_md.read_text(encoding="utf-8"), encoding="utf-8")
+
+            # 5. Install execution-scoped policy hook
+            audit_log_path = install_execution_policy_hook(
+                session.worktree_path,
+                grant,
+                protect_company_control=protect_company_control,
+            )
+
+            # 6. Sanitize environment
+            sanitized_env = sanitize_execution_environment()
+
+            # 7. Build dedicated mutation prompt
+            prompt = build_developer_mutation_prompt(grant, instruction)
+
+            # 8. Execute runtime
+            exec_timeout = timeout or float(grant.max_duration_seconds)
+            exec_res = self.runtime.execute(
+                agent="developer",
+                prompt=prompt,
+                timeout=exec_timeout,
+                workspace_dir=session.worktree_path,
+                env=sanitized_env,
+            )
+
+            # 9. Read hook audit records
+            audit_records: List[Dict[str, Any]] = []
+            if audit_log_path.exists():
+                for line in audit_log_path.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        try:
+                            audit_records.append(json.loads(line))
+                        except Exception:
+                            pass
+
+            # 10. Check runtime exit status
+            if exec_res.timed_out:
+                outcome = BoundedDeveloperExecutionOutcome(
+                    grant_id=grant.grant_id,
+                    status=DeveloperMutationStatus.TIMEOUT.value,
+                    summary="Developer execution timed out.",
+                    audit_records=audit_records,
+                    error=exec_res.stderr or "Timed out.",
+                )
+            else:
+                # 11. Parse mutation result report
+                mutation_res: Optional[DeveloperMutationResult] = None
+                try:
+                    mutation_res = parse_and_validate_developer_mutation_result(exec_res.stdout)
+                except Exception as exc:
+                    mutation_res = DeveloperMutationResult(
+                        status="failed",
+                        summary=f"Failed to parse structured output: {exc}",
+                        raw_response=exec_res.stdout,
+                    )
+
+                # 12. Independent application-owned Git diff capture
+                diff_res = session.capture_diff()
+
+                # 13. Validate diff against ExecutionGrant
+                if len(diff_res.deleted_files) > 0:
+                    outcome = BoundedDeveloperExecutionOutcome(
+                        grant_id=grant.grant_id,
+                        status=DeveloperMutationStatus.UNAUTHORIZED_DIFF.value,
+                        summary=f"Diff validation failed: file deletion detected: {diff_res.deleted_files}",
+                        diff_result=diff_res,
+                        mutation_result=mutation_res,
+                        audit_records=audit_records,
+                        error=f"Deleted files in diff: {diff_res.deleted_files}",
+                    )
+                else:
+                    approved_mod = {f.strip("/").lower() for f in grant.approved_files_to_modify}
+                    approved_create = {f.strip("/").lower() for f in grant.approved_files_to_create}
+                    all_approved = approved_mod | approved_create
+
+                    unauthorized_files: List[str] = []
+                    for chg in diff_res.changed_files:
+                        norm_chg = chg.replace("\\", "/").strip("/").lower()
+                        if norm_chg not in all_approved:
+                            unauthorized_files.append(chg)
+
+                    if unauthorized_files:
+                        outcome = BoundedDeveloperExecutionOutcome(
+                            grant_id=grant.grant_id,
+                            status=DeveloperMutationStatus.UNAUTHORIZED_DIFF.value,
+                            summary=f"Diff validation failed: unauthorized file(s) modified: {unauthorized_files}",
+                            diff_result=diff_res,
+                            mutation_result=mutation_res,
+                            audit_records=audit_records,
+                            error=f"Unauthorized files in diff: {unauthorized_files}",
+                        )
+                    elif len(diff_res.changed_files) > grant.max_files_changed:
+                        outcome = BoundedDeveloperExecutionOutcome(
+                            grant_id=grant.grant_id,
+                            status=DeveloperMutationStatus.BUDGET_EXCEEDED.value,
+                            summary=f"Quota exceeded: {len(diff_res.changed_files)} files changed > limit {grant.max_files_changed}",
+                            diff_result=diff_res,
+                            mutation_result=mutation_res,
+                            audit_records=audit_records,
+                            error="Exceeded max_files_changed budget.",
+                        )
+                    elif len(diff_res.diff_bytes) > grant.max_bytes_written:
+                        outcome = BoundedDeveloperExecutionOutcome(
+                            grant_id=grant.grant_id,
+                            status=DeveloperMutationStatus.BUDGET_EXCEEDED.value,
+                            summary=f"Quota exceeded: {len(diff_res.diff_bytes)} bytes written > limit {grant.max_bytes_written}",
+                            diff_result=diff_res,
+                            mutation_result=mutation_res,
+                            audit_records=audit_records,
+                            error="Exceeded max_bytes_written budget.",
+                        )
+                    else:
+                        # 15. Check if any tool denial occurred
+                        any_denied = any(rec.get("decision") == "deny" for rec in audit_records)
+                        if diff_res.is_empty and any_denied:
+                            outcome = BoundedDeveloperExecutionOutcome(
+                                grant_id=grant.grant_id,
+                                status=DeveloperMutationStatus.POLICY_DENIED.value,
+                                summary="All attempted modifications were denied by PreToolUse policy.",
+                                diff_result=diff_res,
+                                mutation_result=mutation_res,
+                                audit_records=audit_records,
+                                error="PreToolUse hook denied unauthorized tool calls.",
+                            )
+                        elif not exec_res.success and diff_res.is_empty:
+                            outcome = BoundedDeveloperExecutionOutcome(
+                                grant_id=grant.grant_id,
+                                status=DeveloperMutationStatus.RUNTIME_FAILED.value,
+                                summary=f"Developer execution failed with exit code {exec_res.exit_code}.",
+                                diff_result=diff_res,
+                                mutation_result=mutation_res,
+                                audit_records=audit_records,
+                                error=exec_res.stderr or f"Exit code {exec_res.exit_code}",
+                            )
+                        else:
+                            # Success
+                            outcome = BoundedDeveloperExecutionOutcome(
+                                grant_id=grant.grant_id,
+                                status=DeveloperMutationStatus.SUCCESS.value,
+                                summary=f"Developer mutation succeeded. {len(diff_res.changed_files)} file(s) modified in isolated worktree.",
+                                diff_result=diff_res,
+                                mutation_result=mutation_res,
+                                audit_records=audit_records,
+                            )
+        finally:
+            cleanup_success = False
+            try:
+                session.remove()
+                cleanup_success = True
+            except Exception as clean_err:
+                logger.error("Failed to clean up worktree: %s", clean_err)
+                cleanup_success = False
+
+            if outcome is not None:
+                outcome.cleaned_up = cleanup_success
+                if not cleanup_success and outcome.status == DeveloperMutationStatus.SUCCESS.value:
+                    outcome.status = DeveloperMutationStatus.CLEANUP_FAILED.value
+                    outcome.error = "Worktree cleanup failed after execution."
+
+        return outcome
+
+
 
 
 

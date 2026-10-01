@@ -22,6 +22,7 @@ from .product_result import ProductTaskResult
 from .research_result import ResearchTaskResult
 from .ux_result import UXTaskResult
 from .marketing_result import MarketingTaskResult
+from .developer_result import DeveloperTaskResult
 
 
 class MaterializationError(Exception):
@@ -275,6 +276,80 @@ def format_marketing_report(task: Task, result: MarketingTaskResult) -> str:
     )
 
 
+def format_developer_plan_report(task: Task, result: DeveloperTaskResult) -> str:
+    """Format validated DeveloperTaskResult into a deterministic Markdown plan report."""
+    plan_sections: List[str] = []
+    for idx, step in enumerate(result.implementation_plan, start=1):
+        plan_sections.append(f"{idx}. {step}")
+    plan_content = "\n".join(plan_sections) if plan_sections else "_No implementation steps specified._"
+
+    mod_sections: List[str] = []
+    for f in result.files_to_modify:
+        desc_str = f": {f.description}" if f.description else ""
+        mod_sections.append(f"- `{f.path}`{desc_str}")
+    mod_content = "\n".join(mod_sections) if mod_sections else "- None proposed"
+
+    create_sections: List[str] = []
+    for f in result.files_to_create:
+        desc_str = f": {f.description}" if f.description else ""
+        create_sections.append(f"- `{f.path}`{desc_str}")
+    create_content = "\n".join(create_sections) if create_sections else "- None proposed"
+
+    deps_content = (
+        "\n".join(f"- `{dep}`" for dep in result.dependencies)
+        if result.dependencies
+        else "- None required"
+    )
+
+    cmd_sections: List[str] = []
+    for c in result.commands_to_run:
+        purpose_str = f" — _{c.purpose}_" if c.purpose else ""
+        cmd_sections.append(f"- `{c.command}`{purpose_str}")
+    cmd_content = "\n".join(cmd_sections) if cmd_sections else "- None proposed"
+
+    ver_content = (
+        "\n".join(f"- {vp}" for vp in result.verification_plan)
+        if result.verification_plan
+        else "- Standard test verification"
+    )
+
+    risks_content = (
+        "\n".join(f"- {r}" for r in result.risks)
+        if result.risks
+        else "- None identified"
+    )
+
+    assumptions_content = (
+        "\n".join(f"- {a}" for a in result.assumptions)
+        if result.assumptions
+        else "- None identified"
+    )
+
+    open_questions_content = (
+        "\n".join(f"- {oq}" for oq in result.open_questions)
+        if result.open_questions
+        else "- None identified"
+    )
+
+    return (
+        f"# Developer Plan Report: {task.title}\n\n"
+        f"- **Task ID:** `{task.id}`\n"
+        f"- **Status:** `{result.status.upper()}`\n"
+        f"- **Schema Version:** `{result.schema_version}`\n\n"
+        f"## Executive Technical Summary\n\n{result.summary}\n\n"
+        f"## Goal\n\n{task.goal}\n\n"
+        f"## Implementation Plan\n\n{plan_content}\n\n"
+        f"## Proposed File Modifications (Planning Only)\n\n{mod_content}\n\n"
+        f"## Proposed Files to Create (Planning Only)\n\n{create_content}\n\n"
+        f"## Dependencies\n\n{deps_content}\n\n"
+        f"## Proposed Commands to Run (Planning Only - Not Executed)\n\n{cmd_content}\n\n"
+        f"## Verification Plan\n\n{ver_content}\n\n"
+        f"## Technical Risks\n\n{risks_content}\n\n"
+        f"## Technical Assumptions\n\n{assumptions_content}\n\n"
+        f"## Open Questions & Conflicts\n\n{open_questions_content}\n"
+    )
+
+
 def materialize_specialist_artifact(
     base_output_dir: Path,
     task: Task,
@@ -301,6 +376,10 @@ def materialize_specialist_artifact(
         filename = "marketing_report.md"
         artifact_type = ArtifactType.MARKETING_REPORT.value
         content = format_marketing_report(task, typed_result)
+    elif agent_name == "developer":
+        filename = "developer_plan_report.md"
+        artifact_type = ArtifactType.DEVELOPER_PLAN_REPORT.value
+        content = format_developer_plan_report(task, typed_result)
     else:
         raise MaterializationError(f"Unsupported agent for artifact materialization: '{agent_name}'.")
 
@@ -330,6 +409,7 @@ def materialize_specialist_artifact(
 
 
 MAX_INPUT_ARTIFACT_SIZE_BYTES: int = 100_000
+MAX_COMBINED_INPUT_ARTIFACT_SIZE_BYTES: int = 150_000
 
 
 def load_and_verify_input_artifact(

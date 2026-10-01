@@ -40,6 +40,7 @@ class ArtifactType(str, Enum):
     UX_SPECIFICATION = "UX_SPECIFICATION"
     MARKETING_BRIEF = "MARKETING_BRIEF"
     MARKETING_REPORT = "MARKETING_REPORT"
+    DEVELOPER_PLAN_REPORT = "DEVELOPER_PLAN_REPORT"
     SUMMARY = "SUMMARY"
     LOG = "LOG"
 
@@ -126,11 +127,13 @@ class ArtifactVerificationError(HandoffError):
     pass
 
 
-# Deterministic specialist-to-specialist artifact handoff policy (STEP 10, 11 & 12)
+# Deterministic specialist-to-specialist artifact handoff policy (STEP 10, 11, 12 & 13A)
 ALLOWED_HANDOFF_EDGES: Set[Tuple[str, str]] = {
     ("research", "product"),
     ("product", "ux"),
     ("product", "marketing"),
+    ("product", "developer"),
+    ("ux", "developer"),
 }
 
 

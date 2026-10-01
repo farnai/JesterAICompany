@@ -112,7 +112,12 @@ class AntigravityRuntime:
 
         return normalized
 
-    def build_command(self, agent: str, prompt: str) -> List[str]:
+    def build_command(
+        self,
+        agent: str,
+        prompt: str,
+        workspace_dir: Optional[Path] = None,
+    ) -> List[str]:
         """Construct the verified agy command argument array.
 
         IMPORTANT SECURITY NOTE:
@@ -128,10 +133,14 @@ class AntigravityRuntime:
         if not cleaned_prompt:
             raise ValueError("Prompt must not be empty.")
 
+        target_workspace = (
+            Path(workspace_dir).resolve() if workspace_dir is not None else self.repo_root
+        )
+
         return [
             "agy",
             "--add-dir",
-            str(self.repo_root),
+            str(target_workspace),
             "--agent",
             validated_agent,
             "--dangerously-skip-permissions",
@@ -144,6 +153,8 @@ class AntigravityRuntime:
         agent: str,
         prompt: str,
         timeout: Optional[float] = None,
+        workspace_dir: Optional[Path] = None,
+        env: Optional[Dict[str, str]] = None,
     ) -> AgentExecutionResult:
         """Execute a validated agent prompt through the Antigravity CLI runtime.
 
@@ -151,20 +162,26 @@ class AntigravityRuntime:
             agent: Recognized agent role name (e.g. 'ceo').
             prompt: Text prompt instruction for the agent.
             timeout: Optional maximum seconds to wait before aborting (defaults to self.default_timeout).
+            workspace_dir: Optional isolated workspace directory (e.g. detached worktree).
+            env: Optional sanitized environment dictionary for child process execution.
 
         Returns:
             AgentExecutionResult containing stdout, stderr, exit code, duration, and success flag.
         """
         validated_agent = self.validate_agent(agent)
-        cmd = self.build_command(validated_agent, prompt)
+        cmd = self.build_command(validated_agent, prompt, workspace_dir=workspace_dir)
         exec_timeout = float(timeout) if timeout is not None else self.default_timeout
+        target_cwd = (
+            str(workspace_dir.resolve()) if workspace_dir is not None else str(self.repo_root)
+        )
 
         start_time = time.perf_counter()
         try:
             # Strictly NO shell=True; invoked as argument array
             proc = subprocess.run(
                 cmd,
-                cwd=str(self.repo_root),
+                cwd=target_cwd,
+                env=env,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
