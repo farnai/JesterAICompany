@@ -42,6 +42,7 @@ class ArtifactType(str, Enum):
     MARKETING_REPORT = "MARKETING_REPORT"
     DEVELOPER_PLAN_REPORT = "DEVELOPER_PLAN_REPORT"
     QA_REPORT = "QA_REPORT"
+    QA_EXECUTION_REPORT = "QA_EXECUTION_REPORT"
     SUMMARY = "SUMMARY"
     LOG = "LOG"
 
@@ -139,6 +140,7 @@ ALLOWED_HANDOFF_EDGES: Set[Tuple[str, str]] = {
     ("product", "qa"),
     ("ux", "qa"),
     ("developer", "qa"),
+    ("qa", "qa"),
 }
 
 

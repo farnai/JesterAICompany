@@ -74,7 +74,7 @@ The company recognizes seven distinct agent roles defined in `.agents/agents/<ro
 | **UX** | Designs user flows, interaction ergonomics, information hierarchy, screen states, and edge cases. | **Active / Structured** | Focuses on user journey and ergonomics; read-only; does not alter product scope or write code. |
 | **Marketing** | Evaluates positioning, target audience, messaging clarity, value propositions, and communication channels. | **Active / Structured** | Read-only; evidence-grounded messaging; does not alter product scope or write code. |
 | **Developer** | Technical implementation planning, bounded isolated mutation, verification, and CODE_PATCH artifact materialization. | **Active / BOUNDED ISOLATED MUTATION & VERIFIED CODE_PATCH ONLY** | **Strictly bounded mutation inside isolated worktree and verified CODE_PATCH materialization (STEP 13B-3).** Modifies/creates code only under a valid `ExecutionGrant` within an isolated disposable worktree. PreToolUse hook denies unauthorized writes before execution. `run_command` is strictly denied. Application-owned typed `VerificationAction` (pytest) execution under sanitized environment. Durable `CODE_PATCH` artifact materialized on disk with SHA-256 and lineage metadata. Worktree destroyed after execution. Zero real-repository mutation (application deferred to STEP 13C). |
-| **QA** | Independent verification against specifications and acceptance criteria. | **Organizational Definition Only** | Not yet active in structured execution. Independent validation contract deferred to future milestone. |
+| **QA** | Independent verification against specifications and acceptance criteria. | **Active / INDEPENDENT INSPECTION & ISOLATED QA EXECUTION (STEP 14A & 14B)** | **Read-only specialist.** No write authority, no `run_command` authority, no git mutation authority. Performs independent inspection of `CODE_PATCH` against Product/UX specs (STEP 14A). Evaluates bounded test execution in fresh disposable worktree created from exact `base_commit_hash` with application-owned patch apply and diff validation (STEP 14B). Application layer enforces deterministic verdict constraints (missing/unexecutable required actions forbid PASS -> `BLOCKED`; test execution failure forbids PASS -> `FAIL`; clean pass permits `PASS`). Materializes durable `QA_REPORT` and `QA_EXECUTION_REPORT` artifacts with SHA-256 integrity and complete lineage chain. Zero real-repository mutation. |
 
 ---
 
@@ -509,7 +509,8 @@ JesterAICompany/
 │   ├── test_runtime_adapter.py
 │   ├── test_ux_task_execution.py
 │   ├── test_verification_and_code_patch.py
-│   └── test_qa_inspection.py
+│   ├── test_qa_inspection.py
+│   └── test_qa_execution.py
 ├── BACKLOG.md                  # Deferred architecture & roadmap tracker
 └── README.md                   # System documentation (this file)
 ```
@@ -570,10 +571,11 @@ python -m pytest tests/test_artifact_handoff.py \
                  tests/test_runtime_adapter.py \
                  tests/test_ux_task_execution.py \
                  tests/test_verification_and_code_patch.py \
-                 tests/test_qa_inspection.py
+                 tests/test_qa_inspection.py \
+                 tests/test_qa_execution.py
 ```
 
-> **Note:** At the STEP 14A documentation checkpoint, the relevant regression suite reported **275 passing tests, 1 skipped**.
+> **Note:** At the STEP 14B documentation checkpoint, the relevant regression suite reported **300 passing tests, 1 skipped, 0 failed**.
 
 ---
 
@@ -596,7 +598,7 @@ python -m pytest tests/test_artifact_handoff.py \
 | **Durable Artifact Materialization** | **Implemented & Verified** | Atomic disk writes, SHA-256 hashes, Markdown report generation. |
 | **Preflight Integrity & Limits** | **Implemented & Verified** | 100KB per artifact limit, 150KB combined Developer input limit. |
 | **Workflow Primitives** (Sequential, Fan-out, Fan-in) | **Implemented & Verified** | Research → Product → (UX + Marketing) → Developer Planning. |
-| **Isolated QA Test Execution (STEP 14B)** | **NOT IMPLEMENTED YET** | Supervised execution of approved QA test cases against isolated worktrees. |
+| **Isolated QA Test Execution (STEP 14B)** | **Implemented & Verified** | Fresh isolated disposable Git worktree from base commit, application-owned patch apply and diff verification, typed action authorization (`pytest` only, path-confined, target verified), deterministic verdict constraints enforced by application layer (missing/unexecutable forbids PASS -> BLOCKED, test failure forbids PASS -> FAIL, clean pass permits PASS), read-only QA Agent evaluation, durable `QA_EXECUTION_REPORT` (`qa_execution_report.md` + `.meta.json`), guaranteed cleanup, zero main-repository mutation. |
 | **Developer ↔ QA Repair Loop (STEP 15)** | **NOT IMPLEMENTED YET** | Iterative feedback loop converting QA findings into developer fixes. |
 | **Human-Approved Real Repository Apply (STEP 16)** | **NOT IMPLEMENTED YET** | Applying verified `CODE_PATCH` back to the human owner's primary working tree is intentionally postponed until after independent QA. |
 | **Automatic CEO Orchestration (STEP 17)** | **NOT IMPLEMENTED YET** | Autonomous workflow chaining across all specialists. |
@@ -611,13 +613,12 @@ python -m pytest tests/test_artifact_handoff.py \
 
 ## 22. Next Architectural Boundary
 
-With **STEP 14A (Independent QA Inspection + Structured QA Plan)** verified, the immediate next boundary is:
+With **STEP 14B (Isolated QA Execution Against Verified CODE_PATCH)** verified, the immediate next boundary is:
 
-**STEP 14B — Isolated QA Execution Against Verified CODE_PATCH**
+**STEP 15 — Developer ↔ QA Repair Loop**
 
-In STEP 14B:
-1. Application converts approved typed QA test specifications into bounded, application-owned test executions.
-2. Independent test execution occurs in a clean, isolated worktree containing the verified patch.
-3. Produces independent QA execution results leading to the first valid release approval (`PASS` / `FAIL`).
-4. Iterative Developer ↔ QA repair loops remain deferred to **STEP 15**.
-5. Real repository patch application remains strictly deferred to **STEP 16**.
+In STEP 15:
+1. When QA issues a non-PASS verdict (`FAIL` or `BLOCKED`) with structured defect findings or unverified requirements, the system orchestrates a structured repair loop back to the Developer agent.
+2. The Developer agent receives the structured QA findings, formulates a repair plan, requests a new or amended `ExecutionGrant`, and produces an updated `CODE_PATCH`.
+3. The cycle repeats deterministically until QA verification passes or the configured iteration budget is reached.
+4. Real repository patch application remains strictly deferred to **STEP 16**.

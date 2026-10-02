@@ -56,19 +56,26 @@ In accordance with our core operating principles (*"Practical over complex"*, *"
 
 ### C. QA Agent Structured Execution (STEP 14 Roadmap)
 
-- **Implemented Foundation (Verified in STEP 14A):**
-  - **Independent QA Inspection:** Real QA Agent execution (`agy --agent qa`) inspecting verified `CODE_PATCH` and upstream Product/UX/Developer specifications.
+- **Implemented Foundation (Verified in STEP 14A & STEP 14B):**
+  - **Independent QA Inspection (STEP 14A):** Real QA Agent execution (`agy --agent qa`) inspecting verified `CODE_PATCH` and upstream Product/UX/Developer specifications.
   - **Strict Typed QA Contract ([`QAInspectionResult`](jester_ai_company/qa_result.py)):** Schema version 1.0, inspection-oriented verdicts (`READY_FOR_QA_EXECUTION`, `NEEDS_DEVELOPER_ATTENTION`, `BLOCKED`).
   - **Structured Findings:** Severity-rated defects (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`) citing requirement references, affected files, diff evidence, and recommendations.
   - **Requirements Coverage:** Deterministic mapping of product/UX requirements against implementation evidence (`COVERED`, `PARTIAL`, `NOT_COVERED`, `NOT_VERIFIABLE`).
   - **QA Test Planning:** Structured test case specifications (`QATestCase`) with objectives, preconditions, targets, and expected results.
   - **Recommended Verification Actions:** Proposals for future execution (`QARecommendedAction`) strictly without execution authority (proposal != permission).
   - **Durable QA Artifact Materialization:** `QA_REPORT` (`qa_report.md` + `.meta.json`) with cryptographic SHA-256 integrity and complete lineage chain back to Product, UX, Plan, Grant, Patch, Base Commit, and Verifications.
-  - **Source Immutability:** Pre- and post-inspection git assertions proving zero repository mutations.
+  - **Isolated QA Execution (STEP 14B):** Fresh disposable Git worktree created from exact `base_commit_hash`; application-owned patch applicability preflight (`git apply --check`) and apply (`git apply`) with `shell=False`; applied diff validation against `CODE_PATCH` authority.
+  - **Safe Typed Verification Action Authorization (STEP 14B):** Rigorous whitelist enforcement (`pytest` only), metacharacter rejection, path traversal rejection, protected path policy, physical file target existence verification, and budget limits.
+  - **Deterministic Verdict Constraints (STEP 14B):** Enforced strictly by the application layer:
+    - If required verification is unavailable/unexecutable -> PASS is forbidden -> normally `BLOCKED`.
+    - If required verification executes and fails -> PASS is forbidden -> `FAIL`.
+    - If required actions execute and pass with no blockers -> `PASS` permitted.
+    - QA Agent interprets evidence but cannot override these deterministic verdict constraints.
+  - **Read-Only QA Agent Release Verdict (STEP 14B):** QA Agent evaluates executed evidence and issues structured final release verdict (`PASS`, `FAIL`, `BLOCKED`).
+  - **Durable QA Execution Artifact Materialization (STEP 14B):** `QA_EXECUTION_REPORT` (`qa_execution_report.md` + `.meta.json`) with SHA-256 cryptographic verification and complete end-to-end lineage.
+  - **Guaranteed Worktree Cleanup & Repo Immutability (STEP 14B):** Worktree destroyed on all exit paths in `finally:` block; main repository remains 100% untouched.
 
 - **Still Deferred (Updated Roadmap Order):**
-  - **Isolated QA Execution (STEP 14B):** Supervised execution of approved QA test cases against isolated worktrees.
-  - **Final QA Release PASS (STEP 14B):** Release approval reserved until independent execution passes.
   - **Developer ↔ QA Repair Loop (STEP 15):** Iterative repair loop converting QA findings into developer fixes.
   - **Human-Approved Real Repository Apply (STEP 16):** Founder-approved application of verified patch to real working tree.
   - **CEO Orchestration (STEP 17):** Autonomous end-to-end task chaining.

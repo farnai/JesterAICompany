@@ -274,16 +274,19 @@ class WorktreeSession:
     def __init__(
         self,
         manager: "WorktreeManager",
-        grant: ExecutionGrant,
         worktree_path: Path,
+        grant: Optional[ExecutionGrant] = None,
+        base_commit_hash: Optional[str] = None,
+        session_id: Optional[str] = None,
     ):
         self.manager = manager
         self.grant = grant
         self.worktree_path = worktree_path
+        self.base_commit_hash = base_commit_hash or (grant.base_commit_hash if grant else "")
         self.audit = WorktreeAuditRecord(
-            grant_id=grant.grant_id,
-            task_id=grant.task_id,
-            base_commit=grant.base_commit_hash,
+            grant_id=grant.grant_id if grant else (session_id or "qa_session"),
+            task_id=grant.task_id if grant else (session_id or "qa_session"),
+            base_commit=self.base_commit_hash,
             worktree_path=str(worktree_path),
         )
         self._is_cleaned_up = False
@@ -348,7 +351,7 @@ class WorktreeSession:
 
         # 3. Capture full unified diff against base commit
         code, diff_out, diff_err = run_git(
-            ["diff", self.grant.base_commit_hash, "--", "."],
+            ["diff", self.base_commit_hash, "--", "."],
             cwd=self.worktree_path,
         )
         if code != 0:
@@ -470,3 +473,33 @@ class WorktreeManager:
             raise WorktreeGitError(f"Failed to create isolated git worktree: {stderr.strip() or stdout.strip()}")
 
         return WorktreeSession(manager=self, grant=grant, worktree_path=worktree_path)
+
+    def create_qa_worktree(
+        self,
+        base_commit_hash: str,
+        session_id: str,
+    ) -> WorktreeSession:
+        """Create a detached isolated Git worktree for QA execution directly from base_commit_hash."""
+        if not base_commit_hash or len(base_commit_hash) < 7:
+            raise WorktreeError(f"Invalid base_commit_hash for QA worktree: '{base_commit_hash}'.")
+
+        self.worktrees_dir.mkdir(parents=True, exist_ok=True)
+        worktree_path = (self.worktrees_dir / session_id).resolve()
+
+        if worktree_path.exists():
+            run_git(["worktree", "remove", "--force", str(worktree_path)], cwd=self.repo_root)
+            shutil.rmtree(worktree_path, ignore_errors=True)
+
+        code, stdout, stderr = run_git(
+            ["worktree", "add", "--detach", str(worktree_path), base_commit_hash],
+            cwd=self.repo_root,
+        )
+        if code != 0:
+            raise WorktreeGitError(f"Failed to create isolated QA worktree: {stderr.strip() or stdout.strip()}")
+
+        return WorktreeSession(
+            manager=self,
+            worktree_path=worktree_path,
+            base_commit_hash=base_commit_hash,
+            session_id=session_id,
+        )

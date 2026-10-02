@@ -662,6 +662,156 @@ def materialize_qa_report_artifact(
     return artifact
 
 
+def format_qa_execution_report(
+    task: Task,
+    typed_verdict: Any,
+    execution_evidence: List[Dict[str, Any]],
+) -> str:
+    """Render a validated QAExecutionVerdictResult into a clean, human-readable Markdown report (STEP 14B)."""
+    req_rows = []
+    for re_item in getattr(typed_verdict, "requirements_evaluations", []):
+        req_id = getattr(re_item, "requirement_id", "") if hasattr(re_item, "requirement_id") else re_item.get("requirement_id", "")
+        status = getattr(re_item, "status", "") if hasattr(re_item, "status") else re_item.get("status", "")
+        ev = getattr(re_item, "evidence", "") if hasattr(re_item, "evidence") else re_item.get("evidence", "")
+        notes = getattr(re_item, "notes", "") if hasattr(re_item, "notes") else re_item.get("notes", "")
+        req_rows.append(f"| `{req_id}` | **{status}** | {ev or 'N/A'} | {notes or ''} |")
+
+    req_table = (
+        "| Requirement ID | Execution Evaluation | Evidence | Notes |\n"
+        "| :--- | :--- | :--- | :--- |\n"
+        + "\n".join(req_rows)
+        if req_rows
+        else "_No individual requirements evaluated._"
+    )
+
+    exec_sections = []
+    for idx, ee in enumerate(execution_evidence, start=1):
+        act = ee.get("action", {})
+        act_str = f"{act.get('action_type', 'pytest')} `{act.get('target', '')}`"
+        st = ee.get("status", "UNKNOWN")
+        ec = ee.get("exit_code", -1)
+        dur = ee.get("duration_ms", 0)
+        stdout_snip = (ee.get("stdout") or "").strip()
+        stderr_snip = (ee.get("stderr") or "").strip()
+        logs = []
+        if stdout_snip:
+            logs.append(f"```text\n{stdout_snip[:1000]}\n```")
+        if stderr_snip:
+            logs.append(f"```text\n{stderr_snip[:1000]}\n```")
+        log_content = "\n".join(logs) if logs else "_No logs_"
+
+        exec_sections.append(
+            f"### Action {idx}: {act_str}\n"
+            f"- **Status:** `{st}` (exit code {ec})\n"
+            f"- **Duration:** {dur}ms\n"
+            f"**Output:**\n{log_content}"
+        )
+    exec_content = "\n\n".join(exec_sections) if exec_sections else "_No verification actions executed._"
+
+    blocking = getattr(typed_verdict, "blocking_issues", [])
+    blocking_content = "\n".join(f"- {b}" for b in blocking) if blocking else "_None (clean run)_"
+
+    override_note = ""
+    if getattr(typed_verdict, "deterministic_override_applied", False):
+        override_note = f"\n> [!WARNING]\n> **Deterministic Safety Override Applied:** {getattr(typed_verdict, 'override_reason', '')}\n"
+
+    verdict_val = getattr(typed_verdict, "verdict", "UNKNOWN")
+    rec_val = getattr(typed_verdict, "release_recommendation", "N/A")
+    summary_val = getattr(typed_verdict, "summary", "")
+
+    return (
+        f"# QA Execution Report: {task.title}\n\n"
+        f"- **Task ID:** `{task.id}`\n"
+        f"- **Final Verdict:** **{verdict_val}**\n"
+        f"- **Release Recommendation:** `{rec_val}`\n"
+        f"- **Schema Version:** `{getattr(typed_verdict, 'schema_version', '1.0')}`\n"
+        f"{override_note}\n"
+        f"## Executive Summary\n\n{summary_val}\n\n"
+        f"## Requirements Execution Evaluation\n\n{req_table}\n\n"
+        f"## Executed Test Verification Evidence\n\n{exec_content}\n\n"
+        f"## Blocking Issues & Defects\n\n{blocking_content}\n"
+    )
+
+
+def materialize_qa_execution_report_artifact(
+    base_output_dir: Path,
+    task: Task,
+    run: TaskRun,
+    typed_verdict: Any,
+    lineage_metadata: Dict[str, Any],
+    execution_evidence: Optional[List[Dict[str, Any]]] = None,
+    filename: str = "qa_execution_report.md",
+) -> Artifact:
+    """Materialize a durable, cryptographically verified QA_EXECUTION_REPORT artifact with complete provenance (STEP 14B).
+
+    Enforces:
+    1. Formats report via format_qa_execution_report.
+    2. Atomically writes report to safe run artifacts directory.
+    3. Recomputes SHA-256 on readback and validates integrity.
+    4. Attaches complete provenance lineage:
+       - product, ux, developer_plan, execution_grant, code_patch, qa_report
+       - base_commit_hash, worktree_diff_sha256, test execution outcomes
+       - final verdict and release recommendation
+    5. Persists companion .meta.json file.
+    6. Registers durable ArtifactType.QA_EXECUTION_REPORT on TaskRun.
+    """
+    target_dir = get_safe_run_artifacts_dir(base_output_dir, task.id, run.id)
+    target_file = target_dir / filename
+
+    content = format_qa_execution_report(
+        task=task,
+        typed_verdict=typed_verdict,
+        execution_evidence=execution_evidence or [],
+    )
+    sha256_hash = compute_sha256(content)
+
+    # Perform atomic write to disk
+    atomic_write_text(target_file, content)
+
+    # Read back and verify exact hash match
+    readback_bytes = target_file.read_bytes()
+    recomputed_sha = hashlib.sha256(readback_bytes).hexdigest()
+    if recomputed_sha != sha256_hash:
+        raise MaterializationError(
+            f"Artifact SHA-256 verification failed: computed '{sha256_hash}' != readback '{recomputed_sha}'."
+        )
+
+    try:
+        rel_path = str(target_file.relative_to(base_output_dir.resolve()))
+    except ValueError:
+        rel_path = str(target_file)
+
+    meta: Dict[str, Any] = dict(lineage_metadata)
+    meta.update({
+        "qa_task_id": task.id,
+        "qa_run_id": run.id,
+        "producer_role": "qa",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "verdict": getattr(typed_verdict, "verdict", ""),
+        "release_recommendation": getattr(typed_verdict, "release_recommendation", ""),
+        "schema_version": getattr(typed_verdict, "schema_version", "1.0"),
+        "deterministic_override_applied": getattr(typed_verdict, "deterministic_override_applied", False),
+        "override_reason": getattr(typed_verdict, "override_reason", None),
+        "execution_outcomes": execution_evidence or [],
+    })
+
+    # Persist companion .meta.json file
+    meta_file = target_dir / (filename + ".meta.json")
+    atomic_write_text(meta_file, json.dumps(meta, indent=2))
+
+    artifact = run.add_artifact(
+        name=filename,
+        artifact_type=ArtifactType.QA_EXECUTION_REPORT.value,
+        path=rel_path,
+        durable=True,
+        sha256=sha256_hash,
+        producer_role="qa",
+        metadata=meta,
+    )
+
+    return artifact
+
+
 MAX_INPUT_ARTIFACT_SIZE_BYTES: int = 100_000
 MAX_COMBINED_INPUT_ARTIFACT_SIZE_BYTES: int = 150_000
 
