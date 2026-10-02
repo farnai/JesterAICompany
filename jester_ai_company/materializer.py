@@ -997,3 +997,60 @@ def materialize_developer_qa_repair_report_artifact(
     )
     return artifact
 
+
+def materialize_real_repo_apply_report_artifact(
+    base_output_dir: Path,
+    task: Task,
+    run: TaskRun,
+    result: Any,
+    filename: str = "real_repo_apply_report.md",
+) -> Artifact:
+    """Materialize a durable REAL_REPO_APPLY_REPORT artifact on disk (STEP 16)."""
+    target_dir = get_safe_run_artifacts_dir(base_output_dir, task.id, run.id)
+    target_file = target_dir / filename
+
+    from .real_repo_apply import format_real_repo_apply_report
+    content = format_real_repo_apply_report(task, result)
+    sha256_hash = compute_sha256(content)
+    atomic_write_text(target_file, content)
+
+    readback_bytes = target_file.read_bytes()
+    recomputed_sha = hashlib.sha256(readback_bytes).hexdigest()
+    if recomputed_sha != sha256_hash:
+        raise MaterializationError(
+            f"Artifact SHA-256 verification failed: computed '{sha256_hash}' != readback '{recomputed_sha}'."
+        )
+
+    try:
+        rel_path = str(target_file.relative_to(base_output_dir.resolve()))
+    except ValueError:
+        rel_path = str(target_file)
+
+    meta = result.to_metadata() if hasattr(result, "to_metadata") else {
+        "grant_id": getattr(result, "grant_id", ""),
+        "proposal_id": getattr(result, "proposal_id", ""),
+        "target_repository_root": getattr(result, "target_repository_root", ""),
+        "status": getattr(result, "status", ""),
+        "summary": getattr(result, "summary", ""),
+        "pre_apply_head": getattr(result, "pre_apply_head", ""),
+        "post_apply_head": getattr(result, "post_apply_head", ""),
+        "expected_files": getattr(result, "expected_files", []),
+        "actual_files": getattr(result, "actual_files", []),
+        "error": getattr(result, "error", None),
+        "applied_at": getattr(result, "applied_at", datetime.now(timezone.utc).isoformat()),
+        "duration_ms": getattr(result, "duration_ms", 0.0),
+    }
+    meta_file = target_dir / (filename + ".meta.json")
+    atomic_write_text(meta_file, json.dumps(meta, indent=2))
+
+    artifact = run.add_artifact(
+        name=filename,
+        artifact_type=ArtifactType.REAL_REPO_APPLY_REPORT.value,
+        path=rel_path,
+        durable=True,
+        sha256=sha256_hash,
+        producer_role="company",
+        metadata=meta,
+    )
+    return artifact
+

@@ -561,7 +561,55 @@ Independent QA Re-execution (STEP 14B — fresh worktree, patch apply, real pyte
 
 ---
 
-## 20. Repository Structure
+## 20. Human-Approved Transactional Real Repository Apply (STEP 16)
+
+Following the Developer ↔ QA repair loop (STEP 15), applying an approved, verified `CODE_PATCH` back to the human founder's primary repository working tree is a critical security and integrity boundary. STEP 16 implements this boundary as an application-owned, transactional, human-gated workflow.
+
+```
+       Verified Candidate (QA_PASSED)
+                    │
+                    ▼
+     prepare_real_repo_apply(...)  ──► ZERO repo mutation
+                    │                  Generates RealRepoApplyProposal
+                    ▼
+     approve_real_repo_apply(...)  ──► ZERO repo mutation
+                    │                  Requires explicit founder_approval_id
+                    │                  Generates RealRepoApplyGrant
+                    ▼
+     execute_real_repo_apply(...)  ──► SOLE repo mutation boundary
+                    │                  • Obtains external repo lock (.runs/locks/)
+                    │                  • Checks crash recovery (fail-closed)
+                    │                  • Validates TOCTOU fingerprint (HEAD + status)
+                    │                  • Prechecks patch (git apply --check)
+                    │                  • Applies patch (git apply)
+                    │                  • Validates exact diff equivalence
+                    │                  • Safe rollback on diff mismatch (git apply --reverse)
+                    │                  • Materializes REAL_REPO_APPLY_REPORT
+                    ▼
+             [APPLY_SUCCEEDED]
+```
+
+### Key Architectural Invariants
+1. **External Repository Lock Outside Target `.git`:** Concurrency lock is acquired as a filesystem file in `.runs/locks/apply_<hash>.lock` within the JesterAICompany runtime state directory. The target repository's `.git` is never modified with locking primitives.
+2. **Simplified Local Repository Identity:** Repository identity is determined by canonical absolute root path, exact `HEAD` commit hash, current branch, and clean status (`git status --porcelain`). Root commit hash is not used as an authorization primitive.
+3. **Deterministic Crash Recovery Classification:** Prior to executing mutations, the target repository state against an unfinalized grant is deterministically classified:
+   - `NOT_APPLIED`: Working tree is clean and at base commit; apply proceeds safely.
+   - `EXACT_APPROVED_PATCH_PRESENT`: Approved patch is already cleanly applied; marked idempotent success without re-application.
+   - `PARTIAL_OR_UNKNOWN_STATE`: Unrecognized state, dirty working tree, or corrupted patch state; fails closed immediately with `CrashRecoveryBlockError`.
+4. **Fail-Closed Crash State Blocking:** Any unfinalized grant with unresolved or unknown crash state permanently blocks subsequent apply operations until explicitly resolved by a human operator.
+5. **Clean Working Tree Precondition for Apply and Rollback:** Target repository must be 100% clean (`git status --porcelain` empty) before any apply operation, and must remain clean before any rollback operation is attempted.
+6. **Exact Reverse Patch as Primary Rollback:** If post-apply verification detects diff mismatch, rollback is executed strictly via `git apply --reverse` without destructive operations (`git reset --hard` or `git clean -fd` are prohibited).
+7. **Zero Pytest/Application Tests in Real Repository (V1):** The real repository is never used to run test suites or arbitrary code in V1. Verification was already executed inside isolated QA worktrees in STEP 14B and STEP 15.
+8. **Exact Diff Equivalence as Final Commit Point:** Applied patch diff against real repository working tree must match the approved `CODE_PATCH` diff byte-for-byte; any divergence triggers immediate reverse rollback and `PostApplyDiffMismatchError`.
+9. **Mandatory Explicit Human Approval:** Every apply grant requires a distinct, valid human founder approval (`founder_approval_id`). Approvals are never synthesized or fabricated by agents.
+10. **Zero-Mutation Prepare and Approve Steps:** `prepare_real_repo_apply` and `approve_real_repo_apply` perform zero repository writes and zero working tree modifications.
+11. **Single Mutation Boundary:** `execute_real_repo_apply` is the sole entry point permitted to mutate the target working tree.
+12. **Zero Agent Runtime Invocation:** The agent runtime (`agy`) is not invoked during real repository apply; the process is strictly application-owned and deterministic.
+13. **Durable Reporting:** Materializes `REAL_REPO_APPLY_REPORT` (`real_repo_apply_report.md` + `.meta.json`) with cryptographic SHA-256 integrity and complete lineage chain.
+
+---
+
+## 21. Repository Structure
 
 ```
 JesterAICompany/
@@ -596,6 +644,7 @@ JesterAICompany/
 │   ├── ux_result.py            # UX result contract & schema validation
 │   ├── marketing_result.py     # Marketing result contract & schema validation
 │   ├── developer_result.py     # Developer planning result contract & validation
+│   ├── real_repo_apply.py      # Real repo transactional apply, lock, & rollback
 │   ├── status.py               # Company health & telemetry introspection
 │   └── control_center.py       # Local web control center server
 ├── tests/                      # Automated test suite
@@ -616,6 +665,7 @@ JesterAICompany/
 │   ├── test_product_task_execution.py
 │   ├── test_qa_execution.py
 │   ├── test_qa_inspection.py
+│   ├── test_real_repo_apply.py
 │   ├── test_repair_loop.py
 │   ├── test_research_task_execution.py
 │   ├── test_run_pipeline.py
@@ -629,7 +679,7 @@ JesterAICompany/
 
 ---
 
-## 21. Running Locally
+## 22. Running Locally
 
 ### Prerequisites
 - **Python:** 3.11 or later (verified on Python 3.13 on Windows).
@@ -656,9 +706,9 @@ JesterAICompany/
 
 ---
 
-## 22. Running Tests
+## 23. Running Tests
 
-The test suite covers domain models, schema validators, artifact materialization, SHA-256 integrity, handoff policies, preflight verifications, worktree isolation, pre-tool hook interception, verification execution, independent QA inspection, isolated QA execution, and the Developer ↔ QA repair loop.
+The test suite covers domain models, schema validators, artifact materialization, SHA-256 integrity, handoff policies, preflight verifications, worktree isolation, pre-tool hook interception, verification execution, independent QA inspection, isolated QA execution, the Developer ↔ QA repair loop, and transactional real repository apply.
 
 To run the relevant test suite:
 
@@ -680,6 +730,7 @@ python -m pytest tests/test_artifact_handoff.py \
                  tests/test_product_task_execution.py \
                  tests/test_qa_execution.py \
                  tests/test_qa_inspection.py \
+                 tests/test_real_repo_apply.py \
                  tests/test_repair_loop.py \
                  tests/test_research_task_execution.py \
                  tests/test_run_pipeline.py \
@@ -689,11 +740,11 @@ python -m pytest tests/test_artifact_handoff.py \
                  tests/test_verification_and_code_patch.py
 ```
 
-> **Note:** At the STEP 15 documentation checkpoint, the active regression suite reported **324 passing tests, 1 skipped, 0 failed**.
+> **Note:** At the STEP 16 documentation checkpoint, the active regression suite reported **350 passing tests, 1 skipped, 0 failed**.
 
 ---
 
-## 23. Implementation Status & Boundaries
+## 24. Implementation Status & Boundaries
 
 | Capability / Subsystem | Status | Notes |
 | :--- | :--- | :--- |
@@ -714,7 +765,7 @@ python -m pytest tests/test_artifact_handoff.py \
 | **Workflow Primitives** (Sequential, Fan-out, Fan-in) | **Implemented & Verified** | Research → Product → (UX + Marketing) → Developer Planning. |
 | **Isolated QA Test Execution (STEP 14B)** | **Implemented & Verified** | Fresh isolated disposable Git worktree from base commit, application-owned patch apply and diff verification, typed action authorization (`pytest` only, path-confined, target verified), deterministic verdict constraints enforced by application layer (missing/unexecutable forbids PASS -> BLOCKED, test failure forbids PASS -> FAIL, clean pass permits PASS), read-only QA Agent evaluation, durable `QA_EXECUTION_REPORT` (`qa_execution_report.md` + `.meta.json`), guaranteed cleanup, zero main-repository mutation. |
 | **Developer ↔ QA Repair Loop (STEP 15)** | **Implemented & Verified** | Automated application-owned repair loop, Clarification 1 (handoff != agent authority), Clarification 2 (mandatory human approval per iteration; never fabricated), fresh worktree reconstruction from base commit, cumulative `CODE_PATCH vN`, independent QA reinspection and re-execution, hard limit = 2 iterations, durable reports, zero main repo mutation. |
-| **Human-Approved Real Repository Apply (STEP 16)** | **NOT IMPLEMENTED YET** | Applying verified `CODE_PATCH` back to the human owner's primary working tree requires explicit founder review and approval. |
+| **Human-Approved Real Repository Apply (STEP 16)** | **Implemented & Verified** | External repository lock (`.runs/locks/`), canonical repo identity + exact HEAD, zero-mutation prepare/approve, fail-closed crash classification, exact reverse patch rollback under clean precondition, exact diff equivalence, zero agent runtime invocation, durable `REAL_REPO_APPLY_REPORT`. |
 | **Automatic CEO Orchestration (STEP 17)** | **NOT IMPLEMENTED YET** | Autonomous workflow chaining across all specialists. |
 | **Full End-to-End Company Proof (STEP 18)** | **NOT IMPLEMENTED YET** | Complete organizational validation. |
 | **Automatic Graph Scheduling / Autopilot** | **NOT IMPLEMENTED YET** | Speculative scheduling is intentionally deferred. |
@@ -725,14 +776,14 @@ python -m pytest tests/test_artifact_handoff.py \
 
 ---
 
-## 24. Next Architectural Boundary
+## 25. Next Architectural Boundary
 
-With **STEP 15 (Developer ↔ QA Controlled Repair Loop)** verified, the immediate next boundary is:
+With **STEP 16 (Human-Approved Transactional Real Repository Apply)** verified, the immediate next boundary is:
 
-**STEP 16 — Human-Approved Transactional Real Repository Apply**
+**STEP 17 — Automatic CEO Orchestration**
 
-In STEP 16:
-1. The human founder reviews the final verified `CODE_PATCH vN` and associated `QA_EXECUTION_REPORT` (verdict `PASS`).
-2. Upon explicit human sign-off, application infrastructure safely and transactionally applies the patch to the primary repository working tree.
-3. Preflight safety checks verify the primary tree is clean and matches the expected base commit before patch application.
-4. Automatic CEO orchestration remains strictly deferred to **STEP 17**.
+In STEP 17:
+1. The CEO agent autonomously plans and chains multi-specialist tasks across Research, Product, UX, Marketing, Developer, and QA based on high-level organizational goals.
+2. Strict stage gating, permission policies, and explicit human checkpoints are maintained throughout autonomous execution.
+3. Full organizational validation remains deferred to **STEP 18**.
+

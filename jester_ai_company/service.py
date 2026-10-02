@@ -22,6 +22,7 @@ Architecture:
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import hashlib
 import json
 import logging
@@ -90,7 +91,46 @@ from .materializer import (
     materialize_developer_qa_repair_report_artifact,
     materialize_qa_report_artifact,
     materialize_qa_execution_report_artifact,
+    materialize_real_repo_apply_report_artifact,
     materialize_specialist_artifact,
+)
+from .real_repo_apply import (
+    ApprovalInvalidError,
+    BaseCommitMismatchError,
+    CandidateNotEligibleError,
+    ConcurrentApplyError,
+    CrashRecoveryBlockError,
+    CrashStateClassification,
+    GrantExpiredError,
+    GrantReplayedError,
+    PatchApplyFailedError,
+    PatchPrecheckFailedError,
+    PostApplyDiffMismatchError,
+    ProposalMismatchError,
+    RealRepoApplyError,
+    RealRepoApplyGrant,
+    RealRepoApplyLock,
+    RealRepoApplyProposal,
+    RealRepoApplyResult,
+    RealRepoApplyStatus,
+    RepositoryStateChangedError,
+    RepositoryStateFingerprint,
+    RollbackFailedError,
+    TargetRepositoryDirtyError,
+    TargetRepositoryIdentity,
+    TargetRepositoryInvalidError,
+    apply_code_patch_to_real_repo,
+    build_real_repo_apply_proposal,
+    classify_crash_state,
+    compute_repo_fingerprint,
+    derive_real_repo_apply_grant,
+    format_real_repo_apply_proposal_report,
+    format_real_repo_apply_report,
+    precheck_code_patch_applicability,
+    rollback_real_repo_apply,
+    validate_candidate_eligibility,
+    validate_real_repo_diff,
+    verify_target_repo_cleanliness,
 )
 from .repair import (
     MAX_REPAIR_ITERATIONS,
@@ -299,6 +339,8 @@ class CompanyService:
             verbose=self.verbose,
             repo_root=self.repo_root,
         )
+        self._real_repo_apply_proposals: Dict[str, RealRepoApplyProposal] = {}
+        self._real_repo_apply_grants: Dict[str, RealRepoApplyGrant] = {}
 
     # --------------------------------------------------------------------------
     # Project Management
@@ -1399,12 +1441,13 @@ class CompanyService:
             result_parser=parse_and_validate_marketing_result,
         )
 
-    def _get_repo_working_tree_state(self) -> str:
+    def _get_repo_working_tree_state(self, repo_path: Optional[Path] = None) -> str:
         """Capture a deterministic lightweight status of repository working tree."""
         try:
+            target = repo_path or self.repo_root
             res = subprocess.run(
                 ["git", "status", "--porcelain"],
-                cwd=str(self.repo_root),
+                cwd=str(target),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -1414,6 +1457,7 @@ class CompanyService:
             return res.stdout.strip()
         except Exception:
             return ""
+
 
     def execute_developer_planning_task(
         self,
@@ -3371,6 +3415,316 @@ class CompanyService:
             repo_state_after = self._get_repo_working_tree_state()
             if repo_state_before != repo_state_after:
                 raise ExecutionError(f"Repository mutation detected during repair loop execution on task '{task_id}'!")
+
+    # --------------------------------------------------------------------------
+    # Human-Approved Real Repository Apply (STEP 16)
+    # --------------------------------------------------------------------------
+
+    def prepare_real_repo_apply(
+        self,
+        code_patch_artifact_id: str,
+        qa_execution_report_artifact_id: str,
+        target_repo_root: Optional[Path] = None,
+        project_id: Optional[str] = None,
+    ) -> RealRepoApplyProposal:
+        """Prepare an immutable proposal for human review before real repository mutation (STEP 16).
+
+        PERFORMS ZERO REPOSITORY MUTATION.
+        """
+        # 1. Resolve target repo root
+        resolved_repo = (target_repo_root or self.repo_root).resolve()
+        if not (resolved_repo / ".git").exists():
+            raise TargetRepositoryInvalidError(f"Target path '{resolved_repo}' is not a valid git repository.")
+
+        # Snapshot working tree state before
+        repo_state_before = self._get_repo_working_tree_state(resolved_repo)
+
+        try:
+            # 2. Locate CODE_PATCH artifact
+            patch_lineage = self.find_artifact(code_patch_artifact_id)
+            if not patch_lineage:
+                raise CandidateNotEligibleError(f"CODE_PATCH artifact '{code_patch_artifact_id}' not found in company state.")
+            patch_task, patch_run, patch_art = patch_lineage
+
+            patch_file_path = _resolve_artifact_file_path(Path(self.output_dir), patch_art)
+
+            # 3. Locate QA_EXECUTION_REPORT artifact
+            qa_exec_lineage = self.find_artifact(qa_execution_report_artifact_id)
+            if not qa_exec_lineage:
+                raise CandidateNotEligibleError(
+                    f"QA_EXECUTION_REPORT artifact '{qa_execution_report_artifact_id}' not found in company state."
+                )
+            qa_exec_task, qa_exec_run, qa_exec_art = qa_exec_lineage
+
+            qa_exec_file_path = _resolve_artifact_file_path(Path(self.output_dir), qa_exec_art)
+
+            # 4. Locate QA_REPORT artifact
+            qa_exec_meta = qa_exec_art.metadata or {}
+            qa_rep_id = qa_exec_meta.get("qa_report_artifact_id")
+            qa_rep_art = None
+            if qa_rep_id:
+                qa_rep_lineage = self.find_artifact(qa_rep_id)
+                if qa_rep_lineage:
+                    _, _, qa_rep_art = qa_rep_lineage
+
+            if not qa_rep_art:
+                # Fallback: search task/run for QA_REPORT matching code patch
+                for p in self.company.projects.values():
+                    for t in p.tasks.values():
+                        for r in t.runs:
+                            for art in r.artifacts:
+                                if art.artifact_type == ArtifactType.QA_REPORT.value:
+                                    m = art.metadata or {}
+                                    if m.get("code_patch_artifact_id") == code_patch_artifact_id:
+                                        qa_rep_art = art
+                                        break
+                            if qa_rep_art:
+                                break
+                        if qa_rep_art:
+                            break
+
+            if not qa_rep_art:
+                raise CandidateNotEligibleError(
+                    f"No QA_REPORT artifact found matching CODE_PATCH '{code_patch_artifact_id}'."
+                )
+
+            # 5. Build proposal (performs zero mutation)
+            proposal = build_real_repo_apply_proposal(
+                target_repo_root=resolved_repo,
+                code_patch_artifact=patch_art,
+                code_patch_file_path=patch_file_path,
+                qa_report_artifact=qa_rep_art,
+                qa_execution_report_artifact=qa_exec_art,
+                qa_execution_report_file_path=qa_exec_file_path,
+            )
+
+            # 6. Store in proposal registry
+            self._real_repo_apply_proposals[proposal.proposal_id] = proposal
+
+            return proposal
+
+        finally:
+            repo_state_after = self._get_repo_working_tree_state(resolved_repo)
+            if repo_state_before != repo_state_after:
+                raise ExecutionError(f"Target repository mutation detected during prepare_real_repo_apply in '{resolved_repo}'!")
+
+    def approve_real_repo_apply(
+        self,
+        proposal_id: str,
+        founder_approval_id: str,
+        approver: str = "Human Founder",
+        project_id: Optional[str] = None,
+    ) -> RealRepoApplyGrant:
+        """Explicitly approve a RealRepoApplyProposal by Human Founder (STEP 16).
+
+        PERFORMS ZERO REPOSITORY MUTATION.
+        """
+        if not proposal_id or not proposal_id.strip():
+            raise ProposalMismatchError("proposal_id must not be empty.")
+
+        proposal = self._real_repo_apply_proposals.get(proposal_id.strip())
+        if not proposal:
+            raise ProposalMismatchError(f"Proposal '{proposal_id}' not found in registered proposals.")
+
+        if not founder_approval_id or not founder_approval_id.strip():
+            raise MissingApprovalError("Explicit founder_approval_id is mandatory to approve real repo apply.")
+
+        # Snapshot working tree state before
+        repo_state_before = self._get_repo_working_tree_state(Path(proposal.target_repository_root))
+
+        try:
+            grant = derive_real_repo_apply_grant(
+                proposal=proposal,
+                founder_approval_id=founder_approval_id,
+                approver=approver,
+            )
+            self._real_repo_apply_grants[grant.grant_id] = grant
+            return grant
+        finally:
+            repo_state_after = self._get_repo_working_tree_state(Path(proposal.target_repository_root))
+            if repo_state_before != repo_state_after:
+                raise ExecutionError("Target repository mutation detected during approve_real_repo_apply!")
+
+    def execute_real_repo_apply(
+        self,
+        grant_id: str,
+        project_id: Optional[str] = None,
+    ) -> RealRepoApplyResult:
+        """Execute transactional application of approved CODE_PATCH to real repository (STEP 16).
+
+        Safety & Integrity Invariants:
+        1. Single-use replay protection: consumed grants cannot be re-executed.
+        2. External lock: stored in company runtime state, never target .git.
+        3. Double TOCTOU pre-mutation check under lock (cleanliness + exact HEAD).
+        4. Crash state classification: PARTIAL_OR_UNKNOWN_STATE fails closed.
+        5. Zero agent runtime invocation: purely deterministic code execution.
+        6. Post-apply diff equivalence: exact correspondence between git status and expected files.
+        7. Non-destructive rollback: reverse patch apply restores clean state if validation fails.
+        8. Durable receipt: materializes REAL_REPO_APPLY_REPORT artifact.
+        """
+        if not grant_id or not grant_id.strip():
+            raise ApprovalInvalidError("grant_id must not be empty.")
+
+        clean_grant_id = grant_id.strip()
+        grant = self._real_repo_apply_grants.get(clean_grant_id)
+        if not grant:
+            raise ApprovalInvalidError(f"Grant '{grant_id}' not found in registered grants.")
+
+        if grant.status == "CONSUMED":
+            raise GrantReplayedError(f"Grant '{grant_id}' has already been consumed.")
+        if grant.status != "ISSUED":
+            raise ApprovalInvalidError(f"Grant '{grant_id}' status is '{grant.status}', expected 'ISSUED'.")
+
+        # Expiry check
+        approved_dt = datetime.fromisoformat(grant.approved_at)
+        now_dt = datetime.now(timezone.utc)
+        elapsed = (now_dt - approved_dt).total_seconds()
+        if elapsed > grant.validity_duration_seconds:
+            raise GrantExpiredError(f"Grant '{grant_id}' has expired ({elapsed:.1f}s > {grant.validity_duration_seconds}s).")
+
+        # Target repo check
+        target_repo = Path(grant.target_repository_root).resolve()
+        if not (target_repo / ".git").exists():
+            raise TargetRepositoryInvalidError(f"Target directory '{target_repo}' is not a valid Git repository.")
+
+        # Resolve code patch artifact and physical file
+        patch_lineage = self.find_artifact(grant.code_patch_artifact_id)
+        if not patch_lineage:
+            raise CandidateNotEligibleError(f"CODE_PATCH artifact '{grant.code_patch_artifact_id}' not found.")
+        patch_task, patch_run, patch_art = patch_lineage
+
+        patch_file_path = _resolve_artifact_file_path(Path(self.output_dir), patch_art)
+        patch_bytes = patch_file_path.read_bytes()
+        actual_sha = hashlib.sha256(patch_bytes).hexdigest()
+        if actual_sha != grant.code_patch_sha256:
+            raise CandidateNotEligibleError(
+                f"CODE_PATCH SHA mismatch: computed '{actual_sha}' != grant '{grant.code_patch_sha256}'."
+            )
+        patch_text = patch_bytes.decode("utf-8")
+
+        start_time = datetime.now(timezone.utc)
+
+        # External lock in company runtime state (Principle 1)
+        locks_dir = Path(self.output_dir) / "locks"
+        lock = RealRepoApplyLock(locks_dir=locks_dir, repo_root=target_repo)
+        lock.acquire(grant.proposal_id)
+
+        try:
+            # Under external lock: Double pre-mutation TOCTOU check (Principle 4)
+            # 1. Cleanliness & Crash State check
+            is_clean, dirty_stdout = verify_target_repo_cleanliness(target_repo)
+            if not is_clean:
+                crash_state = classify_crash_state(target_repo, patch_text, grant.expected_changed_files)
+                if crash_state == CrashStateClassification.PARTIAL_OR_UNKNOWN_STATE:
+                    raise CrashRecoveryBlockError(
+                        f"Target repository '{target_repo}' has an unresolved crash/partial apply state ({crash_state.value}). "
+                        f"Fails closed and blocks new apply.\nStatus:\n{dirty_stdout}"
+                    )
+                raise TargetRepositoryDirtyError(
+                    f"Target repository '{target_repo}' is dirty before mutation:\n{dirty_stdout}"
+                )
+
+            # 2. Exact HEAD commit match
+            current_head = resolve_repo_head_commit(target_repo)
+            if current_head != grant.expected_head_hash:
+                raise RepositoryStateChangedError(
+                    f"TOCTOU violation: repository HEAD changed from approved '{grant.expected_head_hash}' "
+                    f"to '{current_head}' before apply. Aborting mutation."
+                )
+
+            # 3. Non-mutating precheck under lock
+            precheck_code_patch_applicability(target_repo, patch_text)
+
+            # 4. Purely deterministic mutation boundary (Principle 11 & 12)
+            # No agent runtime / LLM invocations occur!
+            try:
+                apply_code_patch_to_real_repo(target_repo, patch_text)
+            except PatchApplyFailedError as exc:
+                logger.warning("Patch apply failed (%s). Triggering rollback.", exc)
+                rollback_real_repo_apply(target_repo, patch_text, grant.expected_changed_files)
+                raise
+
+            # 5. Exact diff equivalence validation (Principle 8)
+            try:
+                actual_files = validate_real_repo_diff(target_repo, grant.expected_changed_files)
+            except PostApplyDiffMismatchError as val_exc:
+                logger.warning("Post-apply diff validation failed (%s). Triggering rollback.", val_exc)
+                rollback_real_repo_apply(target_repo, patch_text, grant.expected_changed_files)
+                raise
+
+            # 6. Consume the grant (single-use protection)
+            updated_grant = RealRepoApplyGrant(
+                schema_version=grant.schema_version,
+                grant_id=grant.grant_id,
+                proposal_id=grant.proposal_id,
+                proposal_sha256=grant.proposal_sha256,
+                target_repository_root=grant.target_repository_root,
+                expected_head_hash=grant.expected_head_hash,
+                code_patch_artifact_id=grant.code_patch_artifact_id,
+                code_patch_sha256=grant.code_patch_sha256,
+                qa_execution_report_artifact_id=grant.qa_execution_report_artifact_id,
+                qa_execution_report_sha256=grant.qa_execution_report_sha256,
+                expected_changed_files=grant.expected_changed_files,
+                human_approval_id=grant.human_approval_id,
+                approver=grant.approver,
+                approved_at=grant.approved_at,
+                status="CONSUMED",
+                validity_duration_seconds=grant.validity_duration_seconds,
+            )
+            self._real_repo_apply_grants[clean_grant_id] = updated_grant
+
+            end_time = datetime.now(timezone.utc)
+            duration_ms = (end_time - start_time).total_seconds() * 1000.0
+
+            result = RealRepoApplyResult(
+                grant_id=grant.grant_id,
+                proposal_id=grant.proposal_id,
+                target_repository_root=grant.target_repository_root,
+                status=RealRepoApplyStatus.APPLIED_SUCCESSFULLY.value,
+                summary=f"Successfully applied CODE_PATCH '{grant.code_patch_artifact_id}' to real repository working tree.",
+                pre_apply_head=grant.expected_head_hash,
+                post_apply_head=current_head,
+                expected_files=list(grant.expected_changed_files),
+                actual_files=actual_files,
+                duration_ms=duration_ms,
+            )
+
+            # Materialize durable receipt artifact REAL_REPO_APPLY_REPORT
+            apply_run = patch_task.create_run()
+            apply_run.status = RunStatus.SUCCESS.value
+            report_art = materialize_real_repo_apply_report_artifact(
+                base_output_dir=Path(self.output_dir),
+                task=patch_task,
+                run=apply_run,
+                result=result,
+                filename="real_repo_apply_report.md",
+            )
+            apply_run.complete(status=RunStatus.SUCCESS.value)
+            result.report_artifact_id = report_art.id
+
+            return result
+
+        finally:
+            lock.release()
+
+
+def _resolve_artifact_file_path(base_output_dir: Path, artifact: Artifact) -> Path:
+    """Resolve an artifact's physical path on disk, preventing directory traversal."""
+    if not artifact.path or ".." in artifact.path:
+        raise CandidateNotEligibleError(
+            f"Invalid artifact path '{artifact.path}': Directory traversal not allowed."
+        )
+    base_resolved = base_output_dir.resolve()
+    target_path = (base_resolved / artifact.path).resolve()
+    if not target_path.is_relative_to(base_resolved):
+        raise CandidateNotEligibleError(
+            f"Path traversal detected: Artifact path '{target_path}' escapes root '{base_resolved}'."
+        )
+    if not target_path.is_file():
+        raise CandidateNotEligibleError(
+            f"Artifact file does not exist at '{target_path}'."
+        )
+    return target_path
 
 
 

@@ -47,16 +47,14 @@ In accordance with our core operating principles (*"Practical over complex"*, *"
   - **Verification Execution & CODE_PATCH Artifact (STEP 13B-3):** Application-owned typed verification (`pytest`), fail-closed validation, canonical patch capture (including approved new files), durable `CODE_PATCH` artifact materialization (`developer_changes.patch` + companion `.meta.json`), readback SHA-256 byte-for-byte check, full audit lineage retention, and worktree destruction in `finally:` block.
 
 - **Still Deferred:**
-  - **Real Repository Patch Application (Next: STEP 13C):** Applying verified `CODE_PATCH` back to the human owner's primary working tree after founder review.
-  - **QA Agent & Automated Repair Loop (STEP 14):** Deferred until real repository patch application is complete.
   - **Dependency Management:** Safe installation of project dependencies.
   - **Git Operations:** Automated commits or branch manipulation (Git remains strictly application-owned).
 
 ---
 
-### C. QA Agent Structured Execution (STEP 14 Roadmap)
+### C. QA Agent Structured Execution & Repair Loop (STEP 14 & STEP 15 Roadmap)
 
-- **Implemented Foundation (Verified in STEP 14A & STEP 14B):**
+- **Implemented Foundation (Verified in STEP 14A, STEP 14B & STEP 15):**
   - **Independent QA Inspection (STEP 14A):** Real QA Agent execution (`agy --agent qa`) inspecting verified `CODE_PATCH` and upstream Product/UX/Developer specifications.
   - **Strict Typed QA Contract ([`QAInspectionResult`](jester_ai_company/qa_result.py)):** Schema version 1.0, inspection-oriented verdicts (`READY_FOR_QA_EXECUTION`, `NEEDS_DEVELOPER_ATTENTION`, `BLOCKED`).
   - **Structured Findings:** Severity-rated defects (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`) citing requirement references, affected files, diff evidence, and recommendations.
@@ -86,14 +84,32 @@ In accordance with our core operating principles (*"Practical over complex"*, *"
     - **Durable Repair Artifacts:** `DEVELOPER_REPAIR_PLAN_REPORT` (`developer_repair_plan_v{N}.md`) and `DEVELOPER_QA_REPAIR_REPORT` (`developer_qa_repair_report.md` + `.meta.json`).
     - **Zero Real Repository Mutation:** All repairs execute inside isolated disposable worktrees; main repository remains 100% untouched.
 
+---
+
+### D. Human-Approved Transactional Real Repository Apply (STEP 16 Roadmap)
+
+- **Implemented Foundation (Verified in STEP 16):**
+  - **External Concurrency Lock Outside Target `.git`:** Lock acquired as `.runs/locks/apply_<hash>.lock` in JesterAICompany runtime state, leaving target `.git` untouched.
+  - **Simplified Local Repository Identity:** Canonical absolute root path + exact `HEAD` commit hash + clean status (no root commit authorization primitive).
+  - **Deterministic Crash Recovery Classification:** `NOT_APPLIED`, `EXACT_APPROVED_PATCH_PRESENT`, `PARTIAL_OR_UNKNOWN_STATE`.
+  - **Fail-Closed Crash State Blocking:** Any unfinalized grant in unresolved or unknown state permanently blocks subsequent apply via `CrashRecoveryBlockError`.
+  - **Clean Working Tree Precondition:** Target working tree must be 100% clean (`git status --porcelain` empty) before any apply operation and before any rollback operation.
+  - **Exact Reverse Patch Rollback:** Non-destructive rollback via `git apply --reverse`; zero `git reset --hard` or `git clean -fd`.
+  - **Zero Real Repository Pytest/Application Tests (V1):** Real repository never executes test suites or arbitrary code in V1.
+  - **Exact Diff Equivalence as Final Commit Point:** Applied patch diff against real repository working tree must match approved `CODE_PATCH` byte-for-byte; any divergence triggers immediate reverse rollback.
+  - **Mandatory Explicit Human Approval:** Valid, distinct human founder approval (`founder_approval_id`) strictly required; zero agent synthesis.
+  - **Zero-Mutation Prepare & Approve:** `prepare_real_repo_apply` and `approve_real_repo_apply` perform zero repository writes and zero working tree modifications.
+  - **Single Mutation Boundary:** `execute_real_repo_apply` is the sole entry point permitted to mutate the target working tree.
+  - **Zero Agent Runtime Invocation:** No `agy` invocation during real repository apply; process is strictly application-owned.
+  - **Durable `REAL_REPO_APPLY_REPORT` Artifact:** Cryptographic SHA-256 integrity and complete lineage chain.
+
 - **Still Deferred (Updated Roadmap Order):**
-  - **Human-Approved Transactional Real Repository Apply (STEP 16):** Founder-approved application of verified patch to real working tree.
-  - **CEO Orchestration (STEP 17):** Autonomous end-to-end task chaining.
-  - **Full End-to-End Company Proof (STEP 18):** Full organizational validation.
+  - **Automatic CEO Orchestration (STEP 17):** Autonomous end-to-end task chaining across specialists.
+  - **Full End-to-End Company Proof (STEP 18):** Complete organizational validation.
 
 ---
 
-### D. Automated CEO Orchestration & Autonomous Autopilot
+### E. Automated CEO Orchestration & Autonomous Autopilot (STEP 17 Roadmap)
 
 - **Implemented Foundation:**
   - CEO structured action proposals ([`CEOActionProposal`](jester_ai_company/proposal.py)) translating user goals into validated specialist tasks.
@@ -106,7 +122,7 @@ In accordance with our core operating principles (*"Practical over complex"*, *"
 
 ---
 
-### E. Permissions, Sandboxing & OS-Level Isolation
+### F. Permissions, Sandboxing & OS-Level Isolation
 
 - **Implemented Foundation (Verified in STEP 13B-1):**
   - Path traversal protection ensuring all artifact reads and writes are strictly confined under the configured output directory.
@@ -122,7 +138,7 @@ In accordance with our core operating principles (*"Practical over complex"*, *"
 
 ---
 
-### F. Persistent Company Storage & Long-Term Memory
+### G. Persistent Company Storage & Long-Term Memory
 
 - **Implemented Foundation:**
   - In-memory service state (`CompanyService`) for projects, tasks, runs, and verifications.
@@ -135,7 +151,7 @@ In accordance with our core operating principles (*"Practical over complex"*, *"
 
 ---
 
-### G. Decision Systems & Human Approval Gates
+### H. Decision Systems & Human Approval Gates
 
 - **Implemented Foundation:**
   - `Approval` entity in core domain model with `PENDING`, `APPROVED`, and `REJECTED` states.
