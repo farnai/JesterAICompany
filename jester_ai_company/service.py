@@ -80,7 +80,9 @@ from .product_result import (
 from .materializer import (
     MAX_COMBINED_INPUT_ARTIFACT_SIZE_BYTES,
     MAX_INPUT_ARTIFACT_SIZE_BYTES,
+    MaterializationError,
     load_and_verify_input_artifact,
+    materialize_code_patch_artifact,
     materialize_specialist_artifact,
 )
 from .research_result import (
@@ -117,6 +119,11 @@ from .developer_mutation import (
     DeveloperMutationValidationError,
     build_developer_mutation_prompt,
     parse_and_validate_developer_mutation_result,
+)
+from .verification import (
+    VerificationExecutionResult,
+    VerificationStatus,
+    execute_verification_action,
 )
 from .policy_hook import (
     WriteAuthorizationDecision,
@@ -182,6 +189,8 @@ class BoundedDeveloperExecutionOutcome:
     diff_result: Optional[WorktreeDiffResult] = None
     mutation_result: Optional[DeveloperMutationResult] = None
     audit_records: List[Dict[str, Any]] = field(default_factory=list)
+    verification_results: List[Any] = field(default_factory=list)
+    patch_artifact: Optional[Artifact] = None
     error: Optional[str] = None
     cleaned_up: bool = False
 
@@ -194,6 +203,11 @@ class BoundedDeveloperExecutionOutcome:
             "diff_result": self.diff_result.to_dict() if self.diff_result else None,
             "mutation_result": self.mutation_result.to_dict() if self.mutation_result else None,
             "audit_records": self.audit_records,
+            "verification_results": [
+                vr.to_dict() if hasattr(vr, "to_dict") else vr
+                for vr in self.verification_results
+            ],
+            "patch_artifact": self.patch_artifact.to_dict() if self.patch_artifact else None,
             "error": self.error,
             "cleaned_up": self.cleaned_up,
         }
@@ -1741,6 +1755,16 @@ class CompanyService:
                             audit_records=audit_records,
                             error="Exceeded max_bytes_written budget.",
                         )
+                    elif diff_res.is_binary:
+                        outcome = BoundedDeveloperExecutionOutcome(
+                            grant_id=grant.grant_id,
+                            status=DeveloperMutationStatus.PATCH_CAPTURE_FAILED.value,
+                            summary="Binary changes detected in diff; binary files are not supported in CODE_PATCH V1.",
+                            diff_result=diff_res,
+                            mutation_result=mutation_res,
+                            audit_records=audit_records,
+                            error="Binary files cannot be represented in CODE_PATCH.",
+                        )
                     else:
                         # 15. Check if any tool denial occurred
                         any_denied = any(rec.get("decision") == "deny" for rec in audit_records)
@@ -1764,16 +1788,127 @@ class CompanyService:
                                 audit_records=audit_records,
                                 error=exec_res.stderr or f"Exit code {exec_res.exit_code}",
                             )
-                        else:
-                            # Success
+                        elif diff_res.is_empty:
                             outcome = BoundedDeveloperExecutionOutcome(
                                 grant_id=grant.grant_id,
-                                status=DeveloperMutationStatus.SUCCESS.value,
-                                summary=f"Developer mutation succeeded. {len(diff_res.changed_files)} file(s) modified in isolated worktree.",
+                                status=DeveloperMutationStatus.RUNTIME_FAILED.value,
+                                summary="No modifications were produced by Developer Agent in worktree.",
                                 diff_result=diff_res,
                                 mutation_result=mutation_res,
                                 audit_records=audit_records,
+                                error="No changes produced in diff.",
                             )
+                        else:
+                            # 16. Verification Action Execution (STEP 13B-3)
+                            veri_results: List[VerificationExecutionResult] = []
+                            veri_actions = list(getattr(grant, "verification_actions", []))
+                            max_veri = getattr(grant, "max_verification_actions", 3)
+
+                            if len(veri_actions) > max_veri:
+                                outcome = BoundedDeveloperExecutionOutcome(
+                                    grant_id=grant.grant_id,
+                                    status=DeveloperMutationStatus.VERIFICATION_FAILED.value,
+                                    summary=f"Verification budget exceeded: {len(veri_actions)} actions > limit {max_veri}",
+                                    diff_result=diff_res,
+                                    mutation_result=mutation_res,
+                                    audit_records=audit_records,
+                                    error="Exceeded max_verification_actions budget.",
+                                )
+                            else:
+                                all_passed = True
+                                failure_outcome: Optional[BoundedDeveloperExecutionOutcome] = None
+
+                                for va in veri_actions:
+                                    vr = execute_verification_action(
+                                        action=va,
+                                        worktree_path=session.worktree_path,
+                                        timeout=float(getattr(grant, "max_duration_seconds", 30.0)),
+                                        sanitized_env=sanitized_env,
+                                    )
+                                    veri_results.append(vr)
+
+                                    if vr.status == VerificationStatus.TIMEOUT.value:
+                                        all_passed = False
+                                        failure_outcome = BoundedDeveloperExecutionOutcome(
+                                            grant_id=grant.grant_id,
+                                            status=DeveloperMutationStatus.VERIFICATION_TIMEOUT.value,
+                                            summary=f"Verification timed out on {va.action_type}: {va.target}",
+                                            diff_result=diff_res,
+                                            mutation_result=mutation_res,
+                                            audit_records=audit_records,
+                                            verification_results=veri_results,
+                                            error=vr.error or "Verification timed out.",
+                                        )
+                                        break
+                                    elif vr.status == VerificationStatus.EXECUTION_ERROR.value:
+                                        all_passed = False
+                                        failure_outcome = BoundedDeveloperExecutionOutcome(
+                                            grant_id=grant.grant_id,
+                                            status=DeveloperMutationStatus.VERIFICATION_EXECUTION_ERROR.value,
+                                            summary=f"Verification execution error on {va.action_type}: {va.target}",
+                                            diff_result=diff_res,
+                                            mutation_result=mutation_res,
+                                            audit_records=audit_records,
+                                            verification_results=veri_results,
+                                            error=vr.error or vr.stderr or "Verification execution error.",
+                                        )
+                                        break
+                                    elif not vr.passed:
+                                        all_passed = False
+                                        failure_outcome = BoundedDeveloperExecutionOutcome(
+                                            grant_id=grant.grant_id,
+                                            status=DeveloperMutationStatus.VERIFICATION_FAILED.value,
+                                            summary=f"Verification failed on {va.action_type}: {va.target} with exit code {vr.exit_code}",
+                                            diff_result=diff_res,
+                                            mutation_result=mutation_res,
+                                            audit_records=audit_records,
+                                            verification_results=veri_results,
+                                            error=vr.stderr or vr.stdout or f"Verification failed with exit code {vr.exit_code}.",
+                                        )
+                                        break
+
+                                if not all_passed and failure_outcome is not None:
+                                    outcome = failure_outcome
+                                else:
+                                    # 17. Patch Materialization (STEP 13B-3)
+                                    try:
+                                        patch_artifact = materialize_code_patch_artifact(
+                                            base_output_dir=self.output_dir,
+                                            task=source_task,
+                                            run=source_run,
+                                            grant=grant,
+                                            patch_text=diff_res.diff_text,
+                                            changed_files=diff_res.changed_files,
+                                            verifications=veri_results,
+                                            filename="developer_changes.patch",
+                                        )
+                                        outcome = BoundedDeveloperExecutionOutcome(
+                                            grant_id=grant.grant_id,
+                                            status=DeveloperMutationStatus.SUCCESS.value,
+                                            summary=f"Developer mutation succeeded and verified. CODE_PATCH artifact materialized: {patch_artifact.path}",
+                                            diff_result=diff_res,
+                                            mutation_result=mutation_res,
+                                            audit_records=audit_records,
+                                            verification_results=veri_results,
+                                            patch_artifact=patch_artifact,
+                                        )
+                                    except MaterializationError as mat_err:
+                                        err_str = str(mat_err)
+                                        status_val = (
+                                            DeveloperMutationStatus.ARTIFACT_HASH_MISMATCH.value
+                                            if "mismatch" in err_str
+                                            else DeveloperMutationStatus.ARTIFACT_MATERIALIZATION_FAILED.value
+                                        )
+                                        outcome = BoundedDeveloperExecutionOutcome(
+                                            grant_id=grant.grant_id,
+                                            status=status_val,
+                                            summary=f"Failed to materialize CODE_PATCH artifact: {mat_err}",
+                                            diff_result=diff_res,
+                                            mutation_result=mutation_res,
+                                            audit_records=audit_records,
+                                            verification_results=veri_results,
+                                            error=err_str,
+                                        )
         finally:
             cleanup_success = False
             try:

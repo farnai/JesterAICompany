@@ -73,7 +73,7 @@ The company recognizes seven distinct agent roles defined in `.agents/agents/<ro
 | **Product** | Defines product requirements, IN/OUT scope boundaries, feature trade-offs, and acceptance criteria. | **Active / Structured** | Defines *what* and *why*; never writes code, designs UI wireframes, or invents research data. |
 | **UX** | Designs user flows, interaction ergonomics, information hierarchy, screen states, and edge cases. | **Active / Structured** | Focuses on user journey and ergonomics; read-only; does not alter product scope or write code. |
 | **Marketing** | Evaluates positioning, target audience, messaging clarity, value propositions, and communication channels. | **Active / Structured** | Read-only; evidence-grounded messaging; does not alter product scope or write code. |
-| **Developer** | Technical implementation planning and bounded code mutation. | **Active / BOUNDED ISOLATED MUTATION ONLY** | **Strictly bounded mutation inside isolated worktree (STEP 13B-2).** Modifies/creates code only under a valid `ExecutionGrant` within an isolated disposable worktree. PreToolUse hook denies unauthorized writes before execution. `run_command` is strictly denied. Zero real-repository mutation. |
+| **Developer** | Technical implementation planning, bounded isolated mutation, verification, and CODE_PATCH artifact materialization. | **Active / BOUNDED ISOLATED MUTATION & VERIFIED CODE_PATCH ONLY** | **Strictly bounded mutation inside isolated worktree and verified CODE_PATCH materialization (STEP 13B-3).** Modifies/creates code only under a valid `ExecutionGrant` within an isolated disposable worktree. PreToolUse hook denies unauthorized writes before execution. `run_command` is strictly denied. Application-owned typed `VerificationAction` (pytest) execution under sanitized environment. Durable `CODE_PATCH` artifact materialized on disk with SHA-256 and lineage metadata. Worktree destroyed after execution. Zero real-repository mutation (application deferred to STEP 13C). |
 | **QA** | Independent verification against specifications and acceptance criteria. | **Organizational Definition Only** | Not yet active in structured execution. Independent validation contract deferred to future milestone. |
 
 ---
@@ -363,21 +363,98 @@ While the execution runtime and prompts strictly mandate read-only behavior duri
 
 ---
 
-## 17. Bounded Developer Mutation inside Isolated Worktree (STEP 13B-2)
+## 17. Developer Execution Pipeline (STEP 13B-1 through STEP 13B-3)
 
-In **STEP 13B-2**, the real Developer Agent is authorized to modify code for the first time, but under strict, fail-closed isolation:
+JesterAICompany implements a strict, stage-gated developer execution lifecycle where LLM reasoning is strictly bounded by deterministic application infrastructure:
 
-- **Isolated Disposable Git Worktree:** All mutation executes strictly within a detached worktree initialized from the approved `base_commit_hash`. The user's primary working tree remains completely untouched.
-- **ExecutionGrant Defines Authority:** Mutation is permitted only on explicitly approved paths in `approved_files_to_modify` and `approved_files_to_create`. No permissions are derived from LLM proposals or comments.
-- **Synchronous Pre-Tool Interception:** An execution-scoped Antigravity `PreToolUse` hook intercepts all tool calls (`write_to_file`, `replace_file_content`, `run_command`) **before execution**. Unapproved writes and all shell commands are denied before filesystem modification.
-- **Protected Paths & Policy Guards:** `.git`, `.agents`, `.env*`, keys, credentials, and company control files are strictly denied. Test files are denied by default unless `allow_test_modifications=True`.
-- **Environment Sanitization:** Sensitive environment variables (`*_KEY`, `*_TOKEN`, `*_SECRET`) are stripped from the execution process.
-- **Independent Application Diff Inspection:** Upon completion, application-owned Git diff inspection validates that only approved paths were touched, no files were deleted, and resource quotas (`max_files_changed`, `max_bytes_written`) were respected.
-- **Zero Real-Repository Modification:** Developer changes are NOT applied to the real repository (deferred to STEP 13C), and changes are not yet persisted as a `CODE_PATCH` artifact (deferred to STEP 13B-3). The worktree is discarded after evidence capture.
+```
+Human Founder / Project Owner
+              ↓
+Developer Planning Task (STEP 13A - Read-Only, files/commands are inert data)
+              ↓
+Developer Plan Artifact (`developer_plan_report.md` + SHA-256)
+              ↓
+Explicit Founder Approval (`founder_approval_id`)
+              ↓
+Immutable ExecutionGrant (STEP 13B-1 - approved paths, quotas, base commit binding)
+              ↓
+Isolated Disposable Git Worktree (`.runs/worktrees/<grant_id>`)
+              ↓
+Bounded Developer Mutation (STEP 13B-2 - real Developer agent invoked in worktree)
+  * PreToolUse hook synchronously blocks unauthorized writes BEFORE filesystem change
+  * run_command is unconditionally denied (Developer has ZERO shell authority)
+  * Environment is sanitized (all API keys/tokens stripped)
+              ↓
+Application-Owned Diff Audit (STEP 13B-2 - independent git diff inspection)
+  * Validates only approved files were modified or created
+  * Intent-to-add (`git add -N -- <untracked>`) captures approved new files
+  * Rejects binary files / null bytes
+  * Asserts zero deletions and enforces byte/file quotas
+              ↓
+Typed VerificationActions (STEP 13B-3 - application infrastructure execution)
+  * Target path confinement (relative, within worktree, no traversal, exists on disk)
+  * Deterministic translation (e.g., pytest → [sys.executable, "-m", "pytest", target])
+  * Executed with shell=False, sanitized env, and timeout budget
+              ↓
+        Verification Decision
+       /                     \
+   [PASS: exit 0]        [FAIL / TIMEOUT / ERROR]
+          │                          │
+          │                          ▼
+          │                Fail-closed termination:
+          │                - Set VERIFICATION_FAILED / TIMEOUT status
+          │                - ZERO successful CODE_PATCH artifact created
+          │                - Worktree destroyed in finally block
+          │                - Main repository remains clean
+          ▼
+Capture Canonical Git Patch (application-owned git diff against base commit)
+          ↓
+Materialize Durable CODE_PATCH Artifact (`developer_changes.patch` in `.runs/.../artifacts/`)
+          ↓
+Cryptographic Lineage Metadata (`developer_changes.patch.meta.json`)
+  * artifact ID, type (CODE_PATCH), SHA-256
+  * producer role (developer), task ID, run ID
+  * plan artifact ID & plan SHA-256
+  * execution grant ID & base commit hash
+  * changed files & typed verification evidence
+          ↓
+Content-Addressed SHA-256 Verification (read back from disk, verified against memory)
+          ↓
+Worktree Destruction (always in finally block; zero stale worktrees)
+          ↓
+WAITING FOR HUMAN APPLICATION APPROVAL (STEP 13C - STRICTLY DEFERRED)
+```
+
+### 17.1 Immutable Execution Grant (STEP 13B-1)
+Authority to touch files originates exclusively from an [`ExecutionGrant`](jester_ai_company/execution_grant.py). The grant is cryptographically bound to the upstream `developer_plan_artifact_id`, its `developer_plan_sha256`, the `base_commit_hash`, and explicit lists of `approved_files_to_modify` and `approved_files_to_create`. No permissions are inferred from LLM output.
+
+### 17.2 Isolated Disposable Worktree Lifecycle (STEP 13B-1)
+Execution occurs inside a dedicated, detached Git worktree (`.runs/worktrees/<grant_id>`) checked out at `base_commit_hash`. The user's primary working tree is completely untouched. Worktree cleanup is guaranteed via `finally:` blocks on success, failure, timeout, or exception.
+
+### 17.3 Synchronous PreToolUse Hook Enforcement (STEP 13B-2)
+An execution-scoped Antigravity `PreToolUse` hook intercepts all tool calls (`write_to_file`, `replace_file_content`, `run_command`) **before execution**. Unapproved writes and all shell commands are denied before any filesystem modification can occur.
+
+### 17.4 Independent Diff Audit & Quota Enforcement (STEP 13B-2)
+Upon Developer agent completion, application software independently captures the Git diff, stages approved untracked files via intent-to-add (`git add -N --`), verifies zero deletions occurred, confirms no unapproved files entered the changeset, and rejects binary changes.
+
+### 17.5 Application-Owned Verification Execution (STEP 13B-3)
+Verification is owned strictly by application infrastructure:
+- **Supported Verifiers:** `pytest`. Raw shell commands (`shell=True`, pipes, redirects, `&&`) are strictly rejected.
+- **Deterministic Translation:** Typed `VerificationAction(type="pytest", target="tests/...")` translates deterministically to `[sys.executable, "-m", "pytest", action.target]`.
+- **Target Confinement:** Targets must be relative paths inside the worktree, must physically exist, must not escape via symlink/traversal, and must classify as a test file.
+- **Sanitized Environment:** Subprocess runs with stripped secrets (`*_KEY`, `*_TOKEN`, `*_SECRET`) and no network access.
+- **Deterministic Outcome:** Exit code 0 = `PASS`; non-zero = `FAIL`; timeouts and execution errors are captured with typed statuses (`VERIFICATION_FAILED`, `VERIFICATION_TIMEOUT`, `VERIFICATION_EXECUTION_ERROR`).
+- **Fail-Closed Invariant:** If any verification action fails, **NO** `CODE_PATCH` artifact is materialized.
+
+### 17.6 Durable CODE_PATCH Artifact & Cryptographic Lineage (STEP 13B-3)
+- **Materialization:** Canonical patch bytes are written atomically to disk as `developer_changes.patch` in `.runs/<task_id>/<run_id>/artifacts/`.
+- **SHA-256 Readback Assertion:** The file is immediately read back from disk to verify that `recomputed_sha256 == stored_sha256`.
+- **Companion Lineage Record:** An accompanying `developer_changes.patch.meta.json` persists full audit provenance: `artifact_id`, `artifact_sha256`, `producer_role`, `task_id`, `run_id`, `plan_artifact_id`, `plan_artifact_sha256`, `execution_grant_id`, `base_commit_hash`, `changed_files`, `verification_results`, and timestamps.
+- **Patch Is Not Authority to Apply:** The existence of a `CODE_PATCH` artifact does **NOT** authorize application to the human owner's repository. Applying changes to the real repository requires explicit human review and approval in **STEP 13C**.
 
 ---
 
-## 17. Repository Structure
+## 18. Repository Structure
 
 ```
 JesterAICompany/
@@ -388,14 +465,19 @@ JesterAICompany/
 │       ├── product/agent.md    # Product manager (requirements, scope)
 │       ├── ux/agent.md         # UX specialist (interaction, flows)
 │       ├── marketing/agent.md  # Marketing specialist (positioning, messaging)
-│       ├── developer/agent.md  # Developer specialist (planning mode)
+│       ├── developer/agent.md  # Developer specialist (planning & bounded mutation)
 │       └── qa/agent.md         # QA specialist (organizational definition)
 ├── jester_ai_company/          # Python core package
 │   ├── __init__.py             # Public package exports
 │   ├── core.py                 # Core domain models (Task, Run, Artifact, InputRef)
 │   ├── service.py              # Application service & specialist execution APIs
 │   ├── runtime.py              # Antigravity CLI (agy) runtime adapter
-│   ├── materializer.py         # Artifact materialization, SHA-256, & preflight
+│   ├── execution_grant.py      # ExecutionGrant schema, quotas, and action types
+│   ├── worktree.py             # Isolated Git worktree lifecycle & diff capture
+│   ├── developer_mutation.py   # Bounded mutation runner & outcome schemas
+│   ├── policy_hook.py          # PreToolUse hook generator & policy rules
+│   ├── verification.py         # Application-owned verification execution & translation
+│   ├── materializer.py         # Artifact materialization, CODE_PATCH, SHA-256, & preflight
 │   ├── registry.py             # Agent registry & inventory inspection
 │   ├── execution.py            # Local process execution engine
 │   ├── proposal.py             # CEO action proposal contract & validation
@@ -409,6 +491,8 @@ JesterAICompany/
 ├── tests/                      # Automated test suite
 │   ├── test_artifact_handoff.py
 │   ├── test_artifact_materialization.py
+│   ├── test_bounded_developer_mutation.py
+│   ├── test_ceo_runtime_integration.py
 │   ├── test_ceo_task_proposal.py
 │   ├── test_company_chat.py
 │   ├── test_company_info.py
@@ -417,19 +501,21 @@ JesterAICompany/
 │   ├── test_core_models.py
 │   ├── test_developer_planning.py
 │   ├── test_execution_engine.py
+│   ├── test_execution_grant_and_worktree.py
 │   ├── test_marketing_task_execution.py
 │   ├── test_product_task_execution.py
 │   ├── test_research_task_execution.py
 │   ├── test_run_pipeline.py
 │   ├── test_runtime_adapter.py
-│   └── test_ux_task_execution.py
+│   ├── test_ux_task_execution.py
+│   └── test_verification_and_code_patch.py
 ├── BACKLOG.md                  # Deferred architecture & roadmap tracker
 └── README.md                   # System documentation (this file)
 ```
 
 ---
 
-## 18. Running Locally
+## 19. Running Locally
 
 ### Prerequisites
 - **Python:** 3.11 or later (verified on Python 3.13 on Windows).
@@ -456,37 +542,40 @@ JesterAICompany/
 
 ---
 
-## 19. Running Tests
+## 20. Running Tests
 
-The test suite covers domain models, schema validators, artifact materialization, SHA-256 integrity, handoff policies, preflight verifications, and agent execution.
+The test suite covers domain models, schema validators, artifact materialization, SHA-256 integrity, handoff policies, preflight verifications, worktree isolation, pre-tool hook interception, and verification execution.
 
 To run the relevant test suite:
 
 ```bash
 python -m pytest tests/test_artifact_handoff.py \
                  tests/test_artifact_materialization.py \
+                 tests/test_bounded_developer_mutation.py \
+                 tests/test_ceo_runtime_integration.py \
                  tests/test_ceo_task_proposal.py \
                  tests/test_company_chat.py \
                  tests/test_company_info.py \
                  tests/test_company_service.py \
                  tests/test_control_center.py \
                  tests/test_core_models.py \
+                 tests/test_developer_planning.py \
                  tests/test_execution_engine.py \
+                 tests/test_execution_grant_and_worktree.py \
+                 tests/test_marketing_task_execution.py \
                  tests/test_product_task_execution.py \
                  tests/test_research_task_execution.py \
                  tests/test_run_pipeline.py \
                  tests/test_runtime_adapter.py \
                  tests/test_ux_task_execution.py \
-                 tests/test_marketing_task_execution.py \
-                 tests/test_developer_planning.py \
-                 tests/test_execution_grant_and_worktree.py
+                 tests/test_verification_and_code_patch.py
 ```
 
-> **Note:** At the STEP 13B-1 documentation checkpoint, the relevant regression suite reported **196 passing tests**.
+> **Note:** At the STEP 13B-3 documentation checkpoint, the relevant regression suite reported **252 passing tests, 1 skipped**.
 
 ---
 
-## 20. Implementation Status & Boundaries
+## 21. Implementation Status & Boundaries
 
 | Capability / Subsystem | Status | Notes |
 | :--- | :--- | :--- |
@@ -497,13 +586,14 @@ python -m pytest tests/test_artifact_handoff.py \
 | **Product Specialist Execution** | **Implemented & Verified** | Requirements, IN/OUT scope boundaries, acceptance criteria. |
 | **UX Specialist Execution** | **Implemented & Verified** | User flows, interaction patterns, screen states, usability. |
 | **Marketing Specialist Execution** | **Implemented & Verified** | Positioning, messaging, target audiences, channel tactics. |
-| **Developer Specialist Execution** | **Implemented & Verified (PLANNING ONLY)** | Read-only implementation planning; proposed files/commands are data. |
-| **ExecutionGrant & Isolated Worktree (STEP 13B-1)** | **Implemented & Verified (FOUNDATION ONLY)** | Immutable grant schema, plan artifact binding, base commit binding, detached worktree lifecycle, diff capture, path confinement, protected-path policy, environment sanitization. Developer mutation is STILL NOT enabled. |
+| **Developer Planning Execution (STEP 13A)** | **Implemented & Verified** | Read-only implementation planning; proposed files/commands are data. |
+| **ExecutionGrant & Isolated Worktree (STEP 13B-1)** | **Implemented & Verified** | Immutable grant schema, plan artifact binding, base commit binding, detached worktree lifecycle, diff capture, path confinement, protected-path policy, environment sanitization. |
+| **Bounded Developer Mutation (STEP 13B-2)** | **Implemented & Verified** | Bounded code mutation inside isolated worktree under ExecutionGrant; synchronous PreToolUse hook denies unauthorized writes before mutation; run_command denied; zero real-repository mutation. |
+| **Verification Execution & CODE_PATCH Artifact (STEP 13B-3)** | **Implemented & Verified** | Application-owned typed verification (`pytest`), fail-closed validation, canonical patch capture (including approved new files), durable `CODE_PATCH` artifact materialization (`developer_changes.patch` + `.meta.json`), readback SHA-256 assertion, and worktree destruction. |
 | **Durable Artifact Materialization** | **Implemented & Verified** | Atomic disk writes, SHA-256 hashes, Markdown report generation. |
 | **Preflight Integrity & Limits** | **Implemented & Verified** | 100KB per artifact limit, 150KB combined Developer input limit. |
 | **Workflow Primitives** (Sequential, Fan-out, Fan-in) | **Implemented & Verified** | Research → Product → (UX + Marketing) → Developer Planning. |
-| **Developer Code Implementation / Mutation** | **Implemented & Verified (ISOLATED WORKTREE ONLY — STEP 13B-2)** | Bounded code mutation inside isolated worktree under ExecutionGrant; synchronous PreToolUse hook denies unauthorized writes before mutation; run_command denied; zero real-repository mutation. |
-| **Real Repository Patch Application** | **NOT IMPLEMENTED YET** | Applying verified diffs back to the user's repository is strictly deferred to STEP 13C. Main working tree remains untouched. |
+| **Real Repository Patch Application** | **NOT IMPLEMENTED YET** | Applying verified `CODE_PATCH` back to the user's repository is strictly deferred to **STEP 13C**. Main working tree remains untouched. |
 | **QA Structured Execution** | **NOT IMPLEMENTED YET** | Organizational definition only; no typed execution contract yet. |
 | **Developer ↔ QA Repair Loop** | **NOT IMPLEMENTED YET** | Deferred until Developer implementation and QA verification exist. |
 | **Automatic CEO Orchestration** | **NOT IMPLEMENTED YET** | All specialist chaining is currently manual and explicit. |
@@ -515,13 +605,14 @@ python -m pytest tests/test_artifact_handoff.py \
 
 ---
 
-## 21. Next Architectural Boundary
+## 22. Next Architectural Boundary
 
-With **STEP 13B-2 (Bounded Developer Mutation inside Isolated Workspace)** verified, the immediate next boundary is:
+With **STEP 13B-3 (Verification Execution + Durable CODE_PATCH Artifact)** verified, the immediate next boundary is:
 
-**STEP 13B-3 — Verification Execution + Durable CODE_PATCH Artifact**
+**STEP 13C — Human-Approved Application of Verified CODE_PATCH to Real Repository**
 
-In STEP 13B-3:
-1. Application-owned execution of approved `VerificationAction` items.
-2. Durable materialization of the application-owned `CODE_PATCH` artifact with cryptographic SHA-256 binding.
-3. Patch application to the human owner's primary working tree remains strictly deferred to **STEP 13C**.
+In STEP 13C:
+1. Human / Founder explicitly reviews and approves the durable `CODE_PATCH` artifact.
+2. Application validates that the current real repository commit matches `grant.base_commit_hash` (or is clean and compatible).
+3. Application infrastructure safely applies `developer_changes.patch` to the human owner's primary working tree.
+4. QA Agent execution and automated repair loops remain deferred to **STEP 14**.

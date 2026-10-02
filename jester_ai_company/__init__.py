@@ -131,7 +131,18 @@ from .materializer import (
     format_developer_plan_report,
     get_safe_run_artifacts_dir,
     load_and_verify_input_artifact,
+    materialize_code_patch_artifact,
     materialize_specialist_artifact,
+)
+from .verification import (
+    TargetValidationError,
+    UnsupportedActionTypeError,
+    VerificationError,
+    VerificationExecutionResult,
+    VerificationStatus,
+    execute_verification_action,
+    translate_verification_action,
+    validate_verification_target,
 )
 from .execution_grant import (
     ExecutionGrant,
@@ -324,6 +335,15 @@ __all__ = [
     "authorize_tool_mutation",
     "install_execution_policy_hook",
     "BoundedDeveloperExecutionOutcome",
+    "materialize_code_patch_artifact",
+    "VerificationStatus",
+    "VerificationExecutionResult",
+    "VerificationError",
+    "TargetValidationError",
+    "UnsupportedActionTypeError",
+    "validate_verification_target",
+    "translate_verification_action",
+    "execute_verification_action",
     "__version__",
 ]
 

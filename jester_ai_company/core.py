@@ -95,6 +95,7 @@ class Artifact:
     sha256: Optional[str] = None
     run_id: Optional[str] = None
     producer_role: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -217,6 +218,7 @@ class TaskRun:
         durable: bool = True,
         sha256: Optional[str] = None,
         producer_role: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Artifact:
         art = Artifact(
             id=str(uuid.uuid4())[:8],
@@ -227,6 +229,7 @@ class TaskRun:
             sha256=sha256,
             run_id=self.id,
             producer_role=producer_role,
+            metadata=metadata or {},
         )
         self.artifacts.append(art)
         return art

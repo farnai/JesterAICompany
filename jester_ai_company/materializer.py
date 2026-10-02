@@ -5,9 +5,11 @@ into deterministic, durable Markdown files and registers canonical Artifact reco
 with SHA-256 integrity checksums and traceable lineage.
 """
 
+from datetime import datetime, timezone
 import hashlib
+import json
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 import uuid
 
 from .core import (
@@ -403,6 +405,108 @@ def materialize_specialist_artifact(
         durable=True,
         sha256=sha256_hash,
         producer_role=agent_name,
+    )
+
+    return artifact
+
+
+def materialize_code_patch_artifact(
+    base_output_dir: Path,
+    task: Task,
+    run: TaskRun,
+    patch_text: str,
+    grant: Any,
+    changed_files: List[str],
+    verifications: Optional[List[Any]] = None,
+    filename: str = "developer_changes.patch",
+) -> Artifact:
+    """Materialize a durable, cryptographically verified CODE_PATCH artifact with full lineage (STEP 13B-3).
+
+    Enforces:
+    1. Rejects binary patches or null bytes.
+    2. Atomic write of patch text to run artifacts directory.
+    3. Exact SHA-256 calculation and post-write verification.
+    4. Complete provenance lineage attached in Artifact metadata:
+       - founder_approval_id
+       - execution_grant_id
+       - plan_artifact_id
+       - plan_sha256
+       - base_commit_hash
+       - changed_files
+       - verification_actions
+       - verification_outcomes
+       - created_at
+    5. Registration on TaskRun as durable ArtifactType.CODE_PATCH.
+    """
+    if "\x00" in patch_text or "Binary files" in patch_text:
+        raise MaterializationError("Binary changes are not supported in CODE_PATCH V1.")
+
+    if not patch_text or not patch_text.strip():
+        raise MaterializationError("Cannot materialize empty CODE_PATCH artifact.")
+
+    target_dir = get_safe_run_artifacts_dir(base_output_dir, task.id, run.id)
+    target_file = target_dir / filename
+
+    # Compute expected SHA-256
+    sha256_hash = compute_sha256(patch_text)
+
+    # Perform atomic write to disk
+    atomic_write_text(target_file, patch_text)
+
+    # Read back and verify exact hash match
+    readback_bytes = target_file.read_bytes()
+    recomputed_sha = hashlib.sha256(readback_bytes).hexdigest()
+    if recomputed_sha != sha256_hash:
+        raise MaterializationError(
+            f"Artifact SHA-256 verification failed: computed '{sha256_hash}' != readback '{recomputed_sha}'."
+        )
+
+    # Calculate relative storage path from base_output_dir
+    try:
+        rel_path = str(target_file.relative_to(base_output_dir.resolve()))
+    except ValueError:
+        rel_path = str(target_file)
+
+    veri_actions = []
+    if hasattr(grant, "verification_actions") and grant.verification_actions:
+        for va in grant.verification_actions:
+            veri_actions.append(va.to_dict() if hasattr(va, "to_dict") else dict(va))
+
+    veri_outcomes = []
+    if verifications:
+        for v in verifications:
+            if hasattr(v, "to_dict"):
+                veri_outcomes.append(v.to_dict())
+            elif isinstance(v, dict):
+                veri_outcomes.append(v)
+
+    metadata: Dict[str, Any] = {
+        "founder_approval_id": getattr(grant, "founder_approval_id", ""),
+        "execution_grant_id": getattr(grant, "grant_id", ""),
+        "plan_artifact_id": getattr(grant, "plan_artifact_id", ""),
+        "plan_sha256": getattr(grant, "plan_sha256", ""),
+        "base_commit_hash": getattr(grant, "base_commit_hash", ""),
+        "changed_files": list(changed_files),
+        "verification_actions": veri_actions,
+        "verification_outcomes": veri_outcomes,
+        "task_id": task.id,
+        "run_id": run.id,
+        "producer_role": "developer",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Also persist companion metadata JSON file for convenience and auditability
+    meta_file = target_dir / (filename + ".meta.json")
+    atomic_write_text(meta_file, json.dumps(metadata, indent=2))
+
+    artifact = run.add_artifact(
+        name=filename,
+        artifact_type=ArtifactType.CODE_PATCH.value,
+        path=rel_path,
+        durable=True,
+        sha256=sha256_hash,
+        producer_role="developer",
+        metadata=metadata,
     )
 
     return artifact

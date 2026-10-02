@@ -33,7 +33,7 @@ In accordance with our core operating principles (*"Practical over complex"*, *"
 
 ### B. Developer Implementation & Repository Mutation (STEP 13B Roadmap)
 
-- **Implemented Foundation (Verified in STEP 13A, 13B-1 & 13B-2):**
+- **Implemented Foundation (Verified in STEP 13A, 13B-1, 13B-2 & 13B-3):**
   - Developer Agent activated in **READ-ONLY PLANNING MODE** (STEP 13A).
   - Typed planning contract ([`DeveloperTaskResult`](jester_ai_company/developer_result.py)) with proposed files, dependencies, commands, risks, and verification strategies.
   - Proposed commands and file paths treated strictly as inert data.
@@ -44,11 +44,11 @@ In accordance with our core operating principles (*"Practical over complex"*, *"
   - **Main Repository Immutability (STEP 13B-1):** Proven invariant that dirty main working tree changes are not leaked into isolated worktree and main repository is 100% untouched.
   - **Security Primitives (STEP 13B-1):** Path confinement engine rejecting traversal/escapes, protected-path policies (`.git`, `.agents`, `.env*`, etc.), test modification gating, and environment variable sanitization.
   - **Bounded Developer Mutation (STEP 13B-2):** Real Developer agent mutation inside isolated disposable worktree bounded strictly by `ExecutionGrant`; synchronous `PreToolUse` hook denies unauthorized writes and `run_command` calls before tool execution; independent diff validation enforces zero deletions, approved file limits, and byte budgets; worktree discarded after execution; zero real-repository changes.
+  - **Verification Execution & CODE_PATCH Artifact (STEP 13B-3):** Application-owned typed verification (`pytest`), fail-closed validation, canonical patch capture (including approved new files), durable `CODE_PATCH` artifact materialization (`developer_changes.patch` + companion `.meta.json`), readback SHA-256 byte-for-byte check, full audit lineage retention, and worktree destruction in `finally:` block.
 
 - **Still Deferred:**
-  - **Developer Verification Execution & Durable CODE_PATCH Artifact (Next: STEP 13B-3):** Application-owned conversion of typed `VerificationAction` to subprocess execution and durable materialization of `CODE_PATCH` artifact with cryptographic SHA-256 binding.
-  - **Real Repository Patch Application (STEP 13C):** Applying verified `CODE_PATCH` back to the human owner's primary working tree after founder review.
-  - **QA Agent & Automated Repair Loop:** Deferred until Developer mutation and verification are complete.
+  - **Real Repository Patch Application (Next: STEP 13C):** Applying verified `CODE_PATCH` back to the human owner's primary working tree after founder review.
+  - **QA Agent & Automated Repair Loop (STEP 14):** Deferred until real repository patch application is complete.
   - **Dependency Management:** Safe installation of project dependencies.
   - **Git Operations:** Automated commits or branch manipulation (Git remains strictly application-owned).
 

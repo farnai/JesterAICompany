@@ -237,6 +237,7 @@ class WorktreeDiffResult:
     untracked_files: List[str]
     is_empty: bool
     deleted_files: List[str] = field(default_factory=list)
+    is_binary: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize diff result to dictionary."""
@@ -247,6 +248,7 @@ class WorktreeDiffResult:
             "untracked_files": self.untracked_files,
             "deleted_files": self.deleted_files,
             "is_empty": self.is_empty,
+            "is_binary": self.is_binary,
         }
 
 
@@ -324,9 +326,9 @@ class WorktreeSession:
             filename = line[3:].strip()
             norm_fn = filename.replace("\\", "/")
             if (
-                norm_fn.startswith(".agents/hook")
-                or norm_fn == ".agents/hooks.json"
-                or norm_fn == ".agents/policy_config.json"
+                norm_fn == ".agents"
+                or norm_fn.startswith(".agents/")
+                or norm_fn == ".runs"
                 or norm_fn.startswith(".runs/")
             ):
                 continue
@@ -342,7 +344,7 @@ class WorktreeSession:
 
         # 2. Stage intent to add (-N) for untracked files so git diff includes them
         if untracked_files:
-            run_git(["add", "-N", "."], cwd=self.worktree_path)
+            run_git(["add", "-N", "--"] + untracked_files, cwd=self.worktree_path)
 
         # 3. Capture full unified diff against base commit
         code, diff_out, diff_err = run_git(
@@ -355,6 +357,7 @@ class WorktreeSession:
         diff_bytes = diff_out.encode("utf-8")
         diff_sha256 = hashlib.sha256(diff_bytes).hexdigest()
         is_empty = (len(diff_bytes) == 0)
+        is_binary = ("Binary files" in diff_out) or ("GIT binary patch" in diff_out) or (b"\x00" in diff_bytes)
 
         self.audit.diff_sha256 = diff_sha256
 
@@ -366,6 +369,7 @@ class WorktreeSession:
             untracked_files=sorted(untracked_files),
             deleted_files=sorted(deleted_files),
             is_empty=is_empty,
+            is_binary=is_binary,
         )
 
     def remove(self) -> None:
