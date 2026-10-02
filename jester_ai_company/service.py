@@ -22,6 +22,7 @@ Architecture:
 """
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -33,6 +34,7 @@ from .core import (
     ALLOWED_HANDOFF_EDGES,
     Artifact,
     ArtifactInputRef,
+    ArtifactType,
     ArtifactVerificationError,
     ChatMessage,
     Company,
@@ -81,9 +83,29 @@ from .materializer import (
     MAX_COMBINED_INPUT_ARTIFACT_SIZE_BYTES,
     MAX_INPUT_ARTIFACT_SIZE_BYTES,
     MaterializationError,
+    format_qa_report,
     load_and_verify_input_artifact,
     materialize_code_patch_artifact,
+    materialize_qa_report_artifact,
     materialize_specialist_artifact,
+)
+from .qa_result import (
+    QAFailureReason,
+    QAFinding,
+    QAFindingSeverity,
+    QAInputInvalidError,
+    QAInspectionResult,
+    QAInspectionStatus,
+    QALineageMismatchError,
+    QAPatchIntegrityError,
+    QARecommendedAction,
+    QAResultParseError,
+    QAResultValidationError,
+    QATestCase,
+    RequirementCoverage,
+    RequirementCoverageStatus,
+    build_qa_inspection_prompt,
+    parse_and_validate_qa_result,
 )
 from .research_result import (
     ResearchResultParseError,
@@ -1925,6 +1947,315 @@ class CompanyService:
                     outcome.error = "Worktree cleanup failed after execution."
 
         return outcome
+
+    # --------------------------------------------------------------------------
+    # QA Independent Inspection Execution (STEP 14A)
+    # --------------------------------------------------------------------------
+
+    def execute_qa_inspection_task(
+        self,
+        task_id: str,
+        project_id: Optional[str] = None,
+        code_patch_artifact_id: Optional[str] = None,
+    ) -> TaskRun:
+        """Execute an independent QA Agent inspection of a verified CODE_PATCH against upstream requirements (STEP 14A).
+
+        Enforces:
+        1. Role & Eligibility: Task status == PENDING, required_roles == ['qa'].
+        2. Input Resolution & Lineage Validation:
+           - Resolves canonical Product, optional UX, Developer Plan, and CODE_PATCH artifacts.
+           - Rejects missing, duplicate, or mismatched inputs (fail closed).
+           - Verifies Developer Plan was derived from the same Product (and UX) artifacts.
+           - Verifies CODE_PATCH was produced under the matching Developer Plan.
+        3. CODE_PATCH Integrity & Preflight Verification:
+           - Verifies physical file existence on disk.
+           - Recomputes SHA-256 and validates match against recorded and reference hashes.
+           - Validates base commit metadata is non-empty.
+           - Validates that Developer verification outcomes are present and 100% PASS.
+           - Fails closed on tampered, unverified, or failed patch.
+        4. Independent Inspection Execution:
+           - Constructs prompt with clear prompt-injection boundary (patch/source as UNTRUSTED DATA).
+           - Verifies repository working tree state before execution.
+           - Executes real `agy --agent qa`.
+           - Enforces zero repository mutation (working tree before == working tree after).
+        5. Deterministic Parsing & Validation:
+           - Strict parsing into QAInspectionResult (schema_version "1.0").
+           - Status must be one of: READY_FOR_QA_EXECUTION, NEEDS_DEVELOPER_ATTENTION, BLOCKED.
+           - Structured findings with controlled severities.
+        6. Durable QA Artifact Materialization:
+           - Materializes QA_REPORT ("qa_report.md") with companion ".meta.json".
+           - Attaches complete provenance lineage back to Product, UX, Plan, Grant, Patch, Commit.
+           - Validates readback SHA-256.
+        """
+        task = self.get_task(task_id, project_id=project_id)
+
+        # 1. Eligibility validation
+        if task.status != TaskStatus.PENDING.value:
+            raise InvalidTaskStateError(
+                f"[{QAFailureReason.QA_INPUT_INVALID.value}] Cannot execute task '{task.id}': Task status is '{task.status}', expected '{TaskStatus.PENDING.value}'."
+            )
+
+        if not task.required_roles:
+            raise ValueError(
+                f"[{QAFailureReason.QA_INPUT_INVALID.value}] Cannot execute task '{task.id}': Task has no required roles assigned."
+            )
+
+        normalized_roles = [r.strip().lower() for r in task.required_roles]
+        if normalized_roles != ["qa"]:
+            raise ValueError(
+                f"[{QAFailureReason.QA_INPUT_INVALID.value}] Cannot execute task '{task.id}': Task is assigned to {task.required_roles}, expected exactly ['qa']."
+            )
+
+        # 2. Input Artifacts Categorization & Resolution
+        if code_patch_artifact_id:
+            already_attached = any(inp.artifact_id == code_patch_artifact_id for inp in task.input_artifacts)
+            if not already_attached:
+                self.attach_input_artifact(task.id, code_patch_artifact_id, project_id=project_id)
+
+        if not task.input_artifacts:
+            raise QAInputInvalidError(
+                f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA task '{task.id}' has no input artifacts attached."
+            )
+
+        product_inputs = []
+        ux_inputs = []
+        plan_inputs = []
+        patch_inputs = []
+
+        for ref in task.input_artifacts:
+            lineage = self.find_artifact(ref.artifact_id)
+            if not lineage:
+                raise QAInputInvalidError(
+                    f"[{QAFailureReason.QA_INPUT_INVALID.value}] Input artifact '{ref.artifact_id}' could not be found in company state."
+                )
+            src_task, src_run, art = lineage
+
+            # Classify artifact
+            if art.artifact_type == ArtifactType.SPECIFICATION.value or (art.producer_role or "").lower() == "product":
+                product_inputs.append((ref, art, src_task))
+            elif art.artifact_type == ArtifactType.UX_SPECIFICATION.value or (art.producer_role or "").lower() == "ux":
+                ux_inputs.append((ref, art, src_task))
+            elif art.artifact_type == ArtifactType.DEVELOPER_PLAN_REPORT.value or art.name == "developer_plan_report.md":
+                plan_inputs.append((ref, art, src_task))
+            elif art.artifact_type == ArtifactType.CODE_PATCH.value or art.name.endswith(".patch"):
+                patch_inputs.append((ref, art, src_task))
+            else:
+                raise QAInputInvalidError(
+                    f"[{QAFailureReason.QA_INPUT_INVALID.value}] Unrecognized input artifact type '{art.artifact_type}' for QA task."
+                )
+
+        if len(product_inputs) != 1:
+            raise QAInputInvalidError(
+                f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA task requires exactly 1 Product specification artifact, found {len(product_inputs)}."
+            )
+        prod_ref, prod_art, prod_task = product_inputs[0]
+
+        if len(plan_inputs) != 1:
+            raise QAInputInvalidError(
+                f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA task requires exactly 1 Developer Plan artifact, found {len(plan_inputs)}."
+            )
+        plan_ref, plan_art, plan_task = plan_inputs[0]
+
+        if len(patch_inputs) != 1:
+            raise QAInputInvalidError(
+                f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA task requires exactly 1 CODE_PATCH artifact, found {len(patch_inputs)}."
+            )
+        patch_ref, patch_art, patch_task = patch_inputs[0]
+
+        if len(ux_inputs) > 1:
+            raise QAInputInvalidError(
+                f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA task cannot have more than 1 UX artifact, found {len(ux_inputs)}."
+            )
+        ux_ref, ux_art, ux_task = ux_inputs[0] if ux_inputs else (None, None, None)
+
+        # 3. Lineage Validation
+        plan_consumed_prods = {inp.artifact_id for inp in plan_task.input_artifacts if (inp.producer_role or "").lower() == "product"}
+        if prod_art.id not in plan_consumed_prods:
+            raise QALineageMismatchError(
+                f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] Product artifact '{prod_art.id}' does not match the Developer Plan's upstream Product artifact '{sorted(plan_consumed_prods)}'."
+            )
+
+        plan_consumed_ux = {inp.artifact_id for inp in plan_task.input_artifacts if (inp.producer_role or "").lower() == "ux"}
+        if plan_consumed_ux:
+            if ux_art is None:
+                raise QALineageMismatchError(
+                    f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] Developer Plan consumed UX artifact '{sorted(plan_consumed_ux)}', but no UX artifact was provided to QA task."
+                )
+            if ux_art.id not in plan_consumed_ux:
+                raise QALineageMismatchError(
+                    f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] UX artifact '{ux_art.id}' does not match the Developer Plan's upstream UX artifact '{sorted(plan_consumed_ux)}'."
+                )
+        else:
+            if ux_art is not None:
+                raise QALineageMismatchError(
+                    f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] QA task was provided UX artifact '{ux_art.id}', but Developer Plan did not consume any UX artifact."
+                )
+
+        patch_meta = patch_art.metadata or {}
+        patch_plan_id = patch_meta.get("plan_artifact_id")
+        patch_plan_sha = patch_meta.get("plan_sha256")
+        if not patch_plan_id or patch_plan_id != plan_art.id:
+            raise QALineageMismatchError(
+                f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] CODE_PATCH was not created from Developer Plan '{plan_art.id}' (recorded: '{patch_plan_id}')."
+            )
+        if not patch_plan_sha or patch_plan_sha != plan_art.sha256:
+            raise QALineageMismatchError(
+                f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] CODE_PATCH plan_sha256 mismatch: recorded '{patch_plan_sha}' != actual '{plan_art.sha256}'."
+            )
+
+        # 4. CODE_PATCH Integrity & Preflight Verification
+        if patch_ref.sha256 != patch_art.sha256:
+            raise QAPatchIntegrityError(
+                f"[{QAFailureReason.PATCH_INTEGRITY_FAILED.value}] CODE_PATCH input reference SHA '{patch_ref.sha256}' != recorded SHA '{patch_art.sha256}'."
+            )
+
+        patch_path = (Path(self.output_dir) / patch_art.path).resolve()
+        if not patch_path.is_file():
+            raise QAPatchIntegrityError(
+                f"[{QAFailureReason.PATCH_INTEGRITY_FAILED.value}] CODE_PATCH file not found on disk at '{patch_path}'."
+            )
+
+        patch_bytes = patch_path.read_bytes()
+        actual_sha = hashlib.sha256(patch_bytes).hexdigest()
+        if actual_sha != patch_art.sha256:
+            raise QAPatchIntegrityError(
+                f"[{QAFailureReason.PATCH_INTEGRITY_FAILED.value}] CODE_PATCH physical file tampered: actual SHA '{actual_sha}' != recorded SHA '{patch_art.sha256}'."
+            )
+
+        base_commit = patch_meta.get("base_commit_hash")
+        if not base_commit or not isinstance(base_commit, str) or not base_commit.strip():
+            raise QAPatchIntegrityError(
+                f"[{QAFailureReason.PATCH_INTEGRITY_FAILED.value}] CODE_PATCH metadata missing valid base_commit_hash."
+            )
+
+        veri_outcomes = patch_meta.get("verification_outcomes", [])
+        if not veri_outcomes or not isinstance(veri_outcomes, list):
+            raise QAPatchIntegrityError(
+                f"[{QAFailureReason.PATCH_INTEGRITY_FAILED.value}] CODE_PATCH is unverified: metadata contains no verification outcomes."
+            )
+
+        for idx, vo in enumerate(veri_outcomes):
+            vo_status = vo.get("status") if isinstance(vo, dict) else getattr(vo, "status", None)
+            vo_exit = vo.get("exit_code") if isinstance(vo, dict) else getattr(vo, "exit_code", -1)
+            if vo_status != "PASS" or vo_exit != 0:
+                raise QAPatchIntegrityError(
+                    f"[{QAFailureReason.PATCH_INTEGRITY_FAILED.value}] CODE_PATCH verification failed at index {idx} (status='{vo_status}', exit_code={vo_exit}). Cannot inspect unverified or failing patch."
+                )
+
+        # 5. Load and verify input contents
+        product_content = load_and_verify_input_artifact(Path(self.output_dir), prod_art, prod_ref)
+        plan_content = load_and_verify_input_artifact(Path(self.output_dir), plan_art, plan_ref)
+        ux_content = load_and_verify_input_artifact(Path(self.output_dir), ux_art, ux_ref) if ux_art and ux_ref else None
+        patch_text = patch_bytes.decode("utf-8")
+        changed_files = patch_meta.get("changed_files", [])
+        dev_summary = plan_task.result.summary if plan_task.result else None
+
+        prompt = build_qa_inspection_prompt(
+            task=task,
+            product_content=product_content,
+            developer_plan_content=plan_content,
+            code_patch_text=patch_text,
+            changed_files=changed_files,
+            verification_evidence=veri_outcomes,
+            ux_content=ux_content,
+            developer_summary=dev_summary,
+        )
+
+        lineage_metadata: Dict[str, Any] = {
+            "product_artifact_id": prod_art.id,
+            "product_sha256": prod_art.sha256,
+            "ux_artifact_id": ux_art.id if ux_art else None,
+            "ux_sha256": ux_art.sha256 if ux_art else None,
+            "developer_plan_artifact_id": plan_art.id,
+            "developer_plan_sha256": plan_art.sha256,
+            "execution_grant_id": patch_meta.get("execution_grant_id", ""),
+            "code_patch_artifact_id": patch_art.id,
+            "code_patch_sha256": patch_art.sha256,
+            "base_commit_hash": base_commit,
+            "verification_evidence": veri_outcomes,
+        }
+
+        # 6. Execute QA Agent under zero-mutation invariant
+        repo_state_before = self._get_repo_working_tree_state()
+
+        run = self._execute_qa_specialist_task(
+            task=task,
+            prompt=prompt,
+            lineage_metadata=lineage_metadata,
+        )
+
+        repo_state_after = self._get_repo_working_tree_state()
+        if repo_state_before != repo_state_after:
+            raise ExecutionError(f"Repository mutation detected during QA inspection task '{task.id}'!")
+
+        return run
+
+    def _execute_qa_specialist_task(
+        self,
+        task: Task,
+        prompt: str,
+        lineage_metadata: Dict[str, Any],
+    ) -> TaskRun:
+        """Internal execution lifecycle for QA Agent inspection (STEP 14A)."""
+        run = task.create_run()
+        run.status = RunStatus.RUNNING.value
+
+        exec_result = self.runtime.execute(agent="qa", prompt=prompt)
+
+        # 1. Handle runtime failures
+        if not exec_result.success:
+            if exec_result.timed_out:
+                error_msg = f"[{QAFailureReason.QA_RUNTIME_FAILED.value}] QA runtime execution timed out after {exec_result.duration_ms:.0f}ms."
+            else:
+                error_msg = f"[{QAFailureReason.QA_RUNTIME_FAILED.value}] QA runtime execution failed with exit code {exec_result.exit_code}."
+            logger.warning("QA task %s execution failed: %s", task.id, error_msg)
+            run.complete(status=RunStatus.FAILED.value, error=error_msg)
+            task.complete(status=TaskStatus.FAILED.value, summary=f"Task execution failed: {error_msg}")
+            return run
+
+        # 2. Handle empty output
+        raw_stdout = (exec_result.stdout or "").strip()
+        if not raw_stdout:
+            error_msg = f"[{QAFailureReason.QA_OUTPUT_INVALID.value}] QA runtime execution produced empty output."
+            logger.warning("QA task %s produced empty output", task.id)
+            run.complete(status=RunStatus.FAILED.value, error=error_msg)
+            task.complete(status=TaskStatus.FAILED.value, summary=f"Task execution failed: {error_msg}")
+            return run
+
+        # 3. Deterministic parsing and schema validation
+        try:
+            typed_result = parse_and_validate_qa_result(raw_stdout)
+        except Exception as parse_err:
+            error_msg = f"[{QAFailureReason.QA_OUTPUT_INVALID.value}] QA output validation failed: {parse_err}"
+            logger.warning("QA task %s validation failed: %s", task.id, error_msg)
+            run.complete(status=RunStatus.FAILED.value, error=error_msg)
+            task.complete(status=TaskStatus.FAILED.value, summary=f"Task execution failed: {error_msg}")
+            return run
+
+        # 4. Materialize durable QA_REPORT artifact
+        try:
+            materialize_qa_report_artifact(
+                base_output_dir=Path(self.output_dir),
+                task=task,
+                run=run,
+                typed_result=typed_result,
+                lineage_metadata=lineage_metadata,
+            )
+        except Exception as mat_err:
+            error_msg = f"[{QAFailureReason.QA_ARTIFACT_FAILED.value}] Artifact materialization failed: {mat_err}"
+            logger.warning("QA task %s materialization failed: %s", task.id, error_msg)
+            run.complete(status=RunStatus.FAILED.value, error=error_msg)
+            task.complete(status=TaskStatus.FAILED.value, summary=f"Task execution failed: {error_msg}")
+            return run
+
+        # 5. Complete Run and Task with structured QA details
+        run.complete(status=RunStatus.SUCCESS.value)
+        task.complete(
+            status=TaskStatus.COMPLETED.value,
+            summary=f"QA Inspection complete: status={typed_result.status}. {typed_result.summary}",
+            details=typed_result.to_dict(),
+        )
+        return run
 
 
 

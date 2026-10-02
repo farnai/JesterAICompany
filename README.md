@@ -508,7 +508,8 @@ JesterAICompany/
 │   ├── test_run_pipeline.py
 │   ├── test_runtime_adapter.py
 │   ├── test_ux_task_execution.py
-│   └── test_verification_and_code_patch.py
+│   ├── test_verification_and_code_patch.py
+│   └── test_qa_inspection.py
 ├── BACKLOG.md                  # Deferred architecture & roadmap tracker
 └── README.md                   # System documentation (this file)
 ```
@@ -544,7 +545,7 @@ JesterAICompany/
 
 ## 20. Running Tests
 
-The test suite covers domain models, schema validators, artifact materialization, SHA-256 integrity, handoff policies, preflight verifications, worktree isolation, pre-tool hook interception, and verification execution.
+The test suite covers domain models, schema validators, artifact materialization, SHA-256 integrity, handoff policies, preflight verifications, worktree isolation, pre-tool hook interception, verification execution, and independent QA inspection.
 
 To run the relevant test suite:
 
@@ -568,10 +569,11 @@ python -m pytest tests/test_artifact_handoff.py \
                  tests/test_run_pipeline.py \
                  tests/test_runtime_adapter.py \
                  tests/test_ux_task_execution.py \
-                 tests/test_verification_and_code_patch.py
+                 tests/test_verification_and_code_patch.py \
+                 tests/test_qa_inspection.py
 ```
 
-> **Note:** At the STEP 13B-3 documentation checkpoint, the relevant regression suite reported **252 passing tests, 1 skipped**.
+> **Note:** At the STEP 14A documentation checkpoint, the relevant regression suite reported **275 passing tests, 1 skipped**.
 
 ---
 
@@ -590,13 +592,15 @@ python -m pytest tests/test_artifact_handoff.py \
 | **ExecutionGrant & Isolated Worktree (STEP 13B-1)** | **Implemented & Verified** | Immutable grant schema, plan artifact binding, base commit binding, detached worktree lifecycle, diff capture, path confinement, protected-path policy, environment sanitization. |
 | **Bounded Developer Mutation (STEP 13B-2)** | **Implemented & Verified** | Bounded code mutation inside isolated worktree under ExecutionGrant; synchronous PreToolUse hook denies unauthorized writes before mutation; run_command denied; zero real-repository mutation. |
 | **Verification Execution & CODE_PATCH Artifact (STEP 13B-3)** | **Implemented & Verified** | Application-owned typed verification (`pytest`), fail-closed validation, canonical patch capture (including approved new files), durable `CODE_PATCH` artifact materialization (`developer_changes.patch` + `.meta.json`), readback SHA-256 assertion, and worktree destruction. |
+| **QA Inspection & Structured Planning (STEP 14A)** | **Implemented & Verified** | Real QA Agent execution (`agy --agent qa`), strict typed inspection contract (`QAInspectionResult`), structured findings, requirements coverage, test case planning, non-executable verification proposals, durable `QA_REPORT` artifact (`qa_report.md` + `.meta.json`), zero repository mutation. |
 | **Durable Artifact Materialization** | **Implemented & Verified** | Atomic disk writes, SHA-256 hashes, Markdown report generation. |
 | **Preflight Integrity & Limits** | **Implemented & Verified** | 100KB per artifact limit, 150KB combined Developer input limit. |
 | **Workflow Primitives** (Sequential, Fan-out, Fan-in) | **Implemented & Verified** | Research → Product → (UX + Marketing) → Developer Planning. |
-| **Real Repository Patch Application** | **NOT IMPLEMENTED YET** | Applying verified `CODE_PATCH` back to the user's repository is strictly deferred to **STEP 13C**. Main working tree remains untouched. |
-| **QA Structured Execution** | **NOT IMPLEMENTED YET** | Organizational definition only; no typed execution contract yet. |
-| **Developer ↔ QA Repair Loop** | **NOT IMPLEMENTED YET** | Deferred until Developer implementation and QA verification exist. |
-| **Automatic CEO Orchestration** | **NOT IMPLEMENTED YET** | All specialist chaining is currently manual and explicit. |
+| **Isolated QA Test Execution (STEP 14B)** | **NOT IMPLEMENTED YET** | Supervised execution of approved QA test cases against isolated worktrees. |
+| **Developer ↔ QA Repair Loop (STEP 15)** | **NOT IMPLEMENTED YET** | Iterative feedback loop converting QA findings into developer fixes. |
+| **Human-Approved Real Repository Apply (STEP 16)** | **NOT IMPLEMENTED YET** | Applying verified `CODE_PATCH` back to the human owner's primary working tree is intentionally postponed until after independent QA. |
+| **Automatic CEO Orchestration (STEP 17)** | **NOT IMPLEMENTED YET** | Autonomous workflow chaining across all specialists. |
+| **Full End-to-End Company Proof (STEP 18)** | **NOT IMPLEMENTED YET** | Complete organizational validation. |
 | **Automatic Graph Scheduling / Autopilot** | **NOT IMPLEMENTED YET** | Speculative scheduling is intentionally deferred. |
 | **Persistent Database Storage** | **NOT IMPLEMENTED YET** | Company state is currently in-memory per service instance. |
 | **Persistent Long-Term Memory / Vector DB** | **NOT IMPLEMENTED YET** | Deferred in accordance with YAGNI. |
@@ -607,12 +611,13 @@ python -m pytest tests/test_artifact_handoff.py \
 
 ## 22. Next Architectural Boundary
 
-With **STEP 13B-3 (Verification Execution + Durable CODE_PATCH Artifact)** verified, the immediate next boundary is:
+With **STEP 14A (Independent QA Inspection + Structured QA Plan)** verified, the immediate next boundary is:
 
-**STEP 13C — Human-Approved Application of Verified CODE_PATCH to Real Repository**
+**STEP 14B — Isolated QA Execution Against Verified CODE_PATCH**
 
-In STEP 13C:
-1. Human / Founder explicitly reviews and approves the durable `CODE_PATCH` artifact.
-2. Application validates that the current real repository commit matches `grant.base_commit_hash` (or is clean and compatible).
-3. Application infrastructure safely applies `developer_changes.patch` to the human owner's primary working tree.
-4. QA Agent execution and automated repair loops remain deferred to **STEP 14**.
+In STEP 14B:
+1. Application converts approved typed QA test specifications into bounded, application-owned test executions.
+2. Independent test execution occurs in a clean, isolated worktree containing the verified patch.
+3. Produces independent QA execution results leading to the first valid release approval (`PASS` / `FAIL`).
+4. Iterative Developer ↔ QA repair loops remain deferred to **STEP 15**.
+5. Real repository patch application remains strictly deferred to **STEP 16**.

@@ -54,17 +54,25 @@ In accordance with our core operating principles (*"Practical over complex"*, *"
 
 ---
 
-### C. QA Agent Structured Execution
+### C. QA Agent Structured Execution (STEP 14 Roadmap)
 
-- **Implemented Foundation:**
-  - QA Agent role definition and neutral verification guidelines ([`.agents/agents/qa/agent.md`](.agents/agents/qa/agent.md)).
-  - `VerificationResult` domain model in core architecture.
+- **Implemented Foundation (Verified in STEP 14A):**
+  - **Independent QA Inspection:** Real QA Agent execution (`agy --agent qa`) inspecting verified `CODE_PATCH` and upstream Product/UX/Developer specifications.
+  - **Strict Typed QA Contract ([`QAInspectionResult`](jester_ai_company/qa_result.py)):** Schema version 1.0, inspection-oriented verdicts (`READY_FOR_QA_EXECUTION`, `NEEDS_DEVELOPER_ATTENTION`, `BLOCKED`).
+  - **Structured Findings:** Severity-rated defects (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`) citing requirement references, affected files, diff evidence, and recommendations.
+  - **Requirements Coverage:** Deterministic mapping of product/UX requirements against implementation evidence (`COVERED`, `PARTIAL`, `NOT_COVERED`, `NOT_VERIFIABLE`).
+  - **QA Test Planning:** Structured test case specifications (`QATestCase`) with objectives, preconditions, targets, and expected results.
+  - **Recommended Verification Actions:** Proposals for future execution (`QARecommendedAction`) strictly without execution authority (proposal != permission).
+  - **Durable QA Artifact Materialization:** `QA_REPORT` (`qa_report.md` + `.meta.json`) with cryptographic SHA-256 integrity and complete lineage chain back to Product, UX, Plan, Grant, Patch, Base Commit, and Verifications.
+  - **Source Immutability:** Pre- and post-inspection git assertions proving zero repository mutations.
 
-- **Still Deferred:**
-  - **Typed QA Contract:** Structured JSON result contract for QA findings, acceptance criteria verdicts (`PASS` / `FAIL` / `BLOCKED`), and defect logs.
-  - **Structured QA Execution:** Service-level `execute_qa_task` entry point and preflight validation.
-  - **Developer ↔ QA Repair Loop:** Automated feedback cycle where QA failure reports feed back into Developer planning/implementation.
-  - **Automated Test Harness Execution:** Supervised running of unit and integration test suites.
+- **Still Deferred (Updated Roadmap Order):**
+  - **Isolated QA Execution (STEP 14B):** Supervised execution of approved QA test cases against isolated worktrees.
+  - **Final QA Release PASS (STEP 14B):** Release approval reserved until independent execution passes.
+  - **Developer ↔ QA Repair Loop (STEP 15):** Iterative repair loop converting QA findings into developer fixes.
+  - **Human-Approved Real Repository Apply (STEP 16):** Founder-approved application of verified patch to real working tree.
+  - **CEO Orchestration (STEP 17):** Autonomous end-to-end task chaining.
+  - **Full End-to-End Company Proof (STEP 18):** Full organizational validation.
 
 ---
 

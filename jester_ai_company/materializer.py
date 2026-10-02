@@ -352,6 +352,76 @@ def format_developer_plan_report(task: Task, result: DeveloperTaskResult) -> str
     )
 
 
+def format_qa_report(task: Task, typed_result: Any) -> str:
+    """Render a validated QAInspectionResult into a clean, human-readable Markdown report (STEP 14A)."""
+    coverage_rows = []
+    for rc in getattr(typed_result, "requirements_coverage", []):
+        coverage_rows.append(
+            f"| `{rc.requirement_id}` | **{rc.status}** | {rc.evidence or 'N/A'} | {rc.notes or ''} |"
+        )
+    coverage_table = (
+        "| Requirement ID | Coverage Status | Evidence | Notes |\n"
+        "| :--- | :--- | :--- | :--- |\n"
+        + "\n".join(coverage_rows)
+        if coverage_rows
+        else "_No individual requirements mapped._"
+    )
+
+    findings_sections = []
+    for f in getattr(typed_result, "findings", []):
+        aff_str = ", ".join(f.affected_files) if f.affected_files else "None"
+        findings_sections.append(
+            f"### {f.id} [{f.severity}] — {f.category}\n"
+            f"- **Description:** {f.description}\n"
+            f"- **Requirement Reference:** {f.requirement_reference or 'N/A'}\n"
+            f"- **Affected Files:** {aff_str}\n"
+            f"- **Evidence:** {f.evidence or 'N/A'}\n"
+            f"- **Recommended Action:** {f.recommended_action or 'N/A'}\n"
+        )
+    findings_content = "\n".join(findings_sections) if findings_sections else "_No defects or findings reported._"
+
+    test_cases_sections = []
+    for tc in getattr(typed_result, "test_cases", []):
+        test_cases_sections.append(
+            f"### {tc.id}: {tc.objective}\n"
+            f"- **Type:** {tc.type} | **Priority:** {tc.priority}\n"
+            f"- **Target:** `{tc.target}`\n"
+            f"- **Preconditions:** {tc.preconditions or 'None'}\n"
+            f"- **Expected Result:** {tc.expected_result}\n"
+        )
+    test_cases_content = "\n".join(test_cases_sections) if test_cases_sections else "_No test cases defined._"
+
+    rec_actions = []
+    for ra in getattr(typed_result, "recommended_verification_actions", []):
+        rec_actions.append(f"- **{ra.action_type}** `{ra.target}`: {ra.purpose}")
+    rec_actions_content = "\n".join(rec_actions) if rec_actions else "_None_"
+
+    risks = getattr(typed_result, "risks", [])
+    risks_content = "\n".join(f"- {r}" for r in risks) if risks else "_None identified._"
+
+    reg = getattr(typed_result, "regression_areas", [])
+    reg_content = "\n".join(f"- {r}" for r in reg) if reg else "_None identified._"
+
+    unres = getattr(typed_result, "unresolved_questions", [])
+    unres_content = "\n".join(f"- {q}" for q in unres) if unres else "_None._"
+
+    return (
+        f"# QA Inspection Report: {task.title}\n\n"
+        f"- **Task ID:** `{task.id}`\n"
+        f"- **Status:** **{typed_result.status}**\n"
+        f"- **Schema Version:** `{typed_result.schema_version}`\n\n"
+        f"## Executive Summary\n\n{typed_result.summary}\n\n"
+        f"## Requirements Coverage\n\n{coverage_table}\n\n"
+        f"## Structured Findings\n\n{findings_content}\n\n"
+        f"## QA Test Case Specifications\n\n{test_cases_content}\n\n"
+        f"## Recommended Verification Actions\n\n{rec_actions_content}\n\n"
+        f"## Risks & Regression Areas\n\n"
+        f"### Risks\n{risks_content}\n\n"
+        f"### Regression Areas\n{reg_content}\n\n"
+        f"## Unresolved Questions\n\n{unres_content}\n"
+    )
+
+
 def materialize_specialist_artifact(
     base_output_dir: Path,
     task: Task,
@@ -382,6 +452,10 @@ def materialize_specialist_artifact(
         filename = "developer_plan_report.md"
         artifact_type = ArtifactType.DEVELOPER_PLAN_REPORT.value
         content = format_developer_plan_report(task, typed_result)
+    elif agent_name == "qa":
+        filename = "qa_report.md"
+        artifact_type = ArtifactType.QA_REPORT.value
+        content = format_qa_report(task, typed_result)
     else:
         raise MaterializationError(f"Unsupported agent for artifact materialization: '{agent_name}'.")
 
@@ -507,6 +581,82 @@ def materialize_code_patch_artifact(
         sha256=sha256_hash,
         producer_role="developer",
         metadata=metadata,
+    )
+
+    return artifact
+
+
+def materialize_qa_report_artifact(
+    base_output_dir: Path,
+    task: Task,
+    run: TaskRun,
+    typed_result: Any,
+    lineage_metadata: Dict[str, Any],
+    filename: str = "qa_report.md",
+) -> Artifact:
+    """Materialize a durable, cryptographically verified QA_REPORT artifact with complete upstream lineage (STEP 14A).
+
+    Enforces:
+    1. Renders typed result via format_qa_report.
+    2. Atomic write of markdown report to run artifacts directory.
+    3. Exact SHA-256 calculation and post-write verification.
+    4. Attaches complete provenance lineage:
+       - product_artifact_id, product_sha256
+       - ux_artifact_id, ux_sha256 (optional)
+       - developer_plan_artifact_id, developer_plan_sha256
+       - execution_grant_id
+       - code_patch_artifact_id, code_patch_sha256
+       - base_commit_hash
+       - verification_evidence
+       - qa_task_id, qa_run_id
+       - producer_role="qa"
+    5. Also persists companion .meta.json file.
+    6. Registration on TaskRun as durable ArtifactType.QA_REPORT.
+    """
+    target_dir = get_safe_run_artifacts_dir(base_output_dir, task.id, run.id)
+    target_file = target_dir / filename
+
+    content = format_qa_report(task, typed_result)
+    sha256_hash = compute_sha256(content)
+
+    # Perform atomic write to disk
+    atomic_write_text(target_file, content)
+
+    # Read back and verify exact hash match
+    readback_bytes = target_file.read_bytes()
+    recomputed_sha = hashlib.sha256(readback_bytes).hexdigest()
+    if recomputed_sha != sha256_hash:
+        raise MaterializationError(
+            f"Artifact SHA-256 verification failed: computed '{sha256_hash}' != readback '{recomputed_sha}'."
+        )
+
+    try:
+        rel_path = str(target_file.relative_to(base_output_dir.resolve()))
+    except ValueError:
+        rel_path = str(target_file)
+
+    meta: Dict[str, Any] = dict(lineage_metadata)
+    meta.update({
+        "qa_task_id": task.id,
+        "qa_run_id": run.id,
+        "producer_role": "qa",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": getattr(typed_result, "status", ""),
+        "schema_version": getattr(typed_result, "schema_version", "1.0"),
+    })
+
+    # Persist companion .meta.json file
+    meta_file = target_dir / (filename + ".meta.json")
+    atomic_write_text(meta_file, json.dumps(meta, indent=2))
+
+    artifact = run.add_artifact(
+        name=filename,
+        artifact_type=ArtifactType.QA_REPORT.value,
+        path=rel_path,
+        durable=True,
+        sha256=sha256_hash,
+        producer_role="qa",
+        metadata=meta,
     )
 
     return artifact
