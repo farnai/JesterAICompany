@@ -337,15 +337,36 @@ The handoff policy ([`ALLOWED_HANDOFF_EDGES`](jester_ai_company/core.py#L131)) s
 
 ```python
 ALLOWED_HANDOFF_EDGES = {
+    # Sequential handoff: Research -> Product
     ("research", "product"),
+    # Fan-out: Product -> (UX + Marketing)
     ("product", "ux"),
     ("product", "marketing"),
+    # Fan-in: (Product + UX) -> Developer Planning
     ("product", "developer"),
     ("ux", "developer"),
+    # Independent QA Inspection & Verification (STEP 14A / 14B)
+    ("developer", "qa"),
+    ("product", "qa"),
+    ("ux", "qa"),
+    # Developer Repair Loop Data-Level Compatibility (STEP 15)
+    # NOTE: Represents data compatibility of verified input artifacts ONLY.
+    # Conveys ZERO runtime delegation or agent invocation authority.
+    ("qa", "developer"),
+    ("developer", "developer"),
 }
 ```
 
-Any attempt to attach an artifact across an unlisted edge (e.g., `research → developer`, `marketing → developer`, or `developer → qa`) raises a `HandoffPolicyError` during preflight and halts execution before any LLM is called.
+> [!IMPORTANT]
+> **Clarification 1 — Handoff Edge != Agent Authority:**
+> `ALLOWED_HANDOFF_EDGES` governs **artifact consumption compatibility only** ("an artifact produced by role A may be consumed as canonical evidence/input by a task executed by role B"). It conveys **ZERO** runtime invocation authority:
+> - QA cannot invoke Developer.
+> - Developer cannot invoke QA.
+> - Developer cannot invoke another Developer.
+> - No agent can create or execute another agent task directly.
+> - `CompanyService` / application orchestration remains the sole transition owner.
+
+Any attempt to attach an artifact across an unlisted edge raises a `HandoffPolicyError` during preflight and halts execution before any LLM is called.
 
 ---
 
@@ -450,11 +471,97 @@ Verification is owned strictly by application infrastructure:
 - **Materialization:** Canonical patch bytes are written atomically to disk as `developer_changes.patch` in `.runs/<task_id>/<run_id>/artifacts/`.
 - **SHA-256 Readback Assertion:** The file is immediately read back from disk to verify that `recomputed_sha256 == stored_sha256`.
 - **Companion Lineage Record:** An accompanying `developer_changes.patch.meta.json` persists full audit provenance: `artifact_id`, `artifact_sha256`, `producer_role`, `task_id`, `run_id`, `plan_artifact_id`, `plan_artifact_sha256`, `execution_grant_id`, `base_commit_hash`, `changed_files`, `verification_results`, and timestamps.
-- **Patch Is Not Authority to Apply:** The existence of a `CODE_PATCH` artifact does **NOT** authorize application to the human owner's repository. Applying changes to the real repository requires explicit human review and approval in **STEP 13C**.
+- **Patch Is Not Authority to Apply:** The existence of a `CODE_PATCH` artifact does **NOT** authorize application to the human owner's repository. Applying changes to the real repository requires explicit human review and approval in **STEP 16**.
 
 ---
 
-## 18. Repository Structure
+## 18. Independent QA Inspection & Isolated Execution (STEP 14A & STEP 14B)
+
+The QA specialist role verifies implementation quality independently against upstream specifications:
+
+### 18.1 Independent QA Inspection (STEP 14A)
+- **Role Isolation:** Real QA Agent execution (`agy --agent qa`) in read-only inspection mode.
+- **Typed Contract:** [`QAInspectionResult`](jester_ai_company/qa_result.py) schema version 1.0 with inspection statuses (`READY_FOR_QA_EXECUTION`, `NEEDS_DEVELOPER_ATTENTION`, `BLOCKED`).
+- **Defect Findings & Coverage:** Severity-rated findings (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`) and requirements coverage mapping (`COVERED`, `PARTIAL`, `NOT_COVERED`, `NOT_VERIFIABLE`).
+- **Recommended Verification Actions:** Proposals for test actions (`pytest`) strictly without execution authority.
+- **Durable Artifact:** `QA_REPORT` (`qa_report.md` + `.meta.json`) with cryptographic SHA-256 integrity and complete lineage chain.
+
+### 18.2 Isolated QA Test Execution (STEP 14B)
+- **Isolated Worktree:** Fresh disposable Git worktree created from exact `base_commit_hash`.
+- **Application-Owned Patch Apply:** Patch applicability checked (`git apply --check`) and applied (`git apply`) with `shell=False`.
+- **Applied Diff Validation:** Resulting diff checked against recorded `CODE_PATCH` authority.
+- **Authorized Test Execution:** Whitelisted `pytest` execution, path confinement, protected-path policy, target existence check, and timeout budgets.
+- **Deterministic Verdict Constraints:**
+  - Missing/unexecutable verification -> PASS forbidden -> `BLOCKED`.
+  - Verification fails -> PASS forbidden -> `FAIL`.
+  - All verification passes cleanly -> `PASS` permitted.
+- **Durable Verdict Artifact:** `QA_EXECUTION_REPORT` (`qa_execution_report.md` + `.meta.json`) with final release verdict (`PASS`, `FAIL`, `BLOCKED`).
+
+---
+
+## 19. Developer ↔ QA Controlled Repair Loop (STEP 15)
+
+When independent QA execution issues `FAIL` or repairable `BLOCKED`, the system enters an automated, application-owned repair loop:
+
+```
+Independent QA Execution (STEP 14B)
+               ↓
+     QA Verdict != PASS
+               ↓
+Eligibility Classification (FAIL / BLOCKED test-gap eligible; PASS / security BLOCKED terminal)
+               ↓
+Durable DeveloperRepairTask Context Assembled
+               ↓
+Developer Repair Planning (prompt-injection boundaries; root cause; requirements; plan schema 1.0)
+               ↓
+Durable DEVELOPER_REPAIR_PLAN_REPORT Materialized (`developer_repair_plan_v{N}.md`)
+               ↓
+MANDATORY HUMAN APPROVAL CHECKPOINT (Clarification 2 — NEVER FABRICATED)
+               │
+      [Missing / Reused] ──────────────► REPAIR_GRANT_REJECTED (Halt)
+               │
+          [Approved]
+               ↓
+Derive Incremental ExecutionGrant (monotonic scope expansion; test modification gating)
+               ↓
+Fresh Disposable Worktree Reconstruction (created at base_commit_hash + previous patch pre-applied)
+               ↓
+Bounded Developer Mutation (PreToolUse hook blocks unauthorized writes; run_command denied)
+               ↓
+Developer Test Verification (pytest passes in worktree)
+               ↓
+Capture Cumulative CODE_PATCH vN (git diff base_commit_hash capturing total delta + version lineage)
+               ↓
+Independent QA Reinspection (STEP 14A — real QA Agent inspects candidate patch)
+               ↓
+Independent QA Re-execution (STEP 14B — fresh worktree, patch apply, real pytest, QA evaluation)
+               ↓
+         Re-execution Verdict?
+        /                     \
+    [PASS]                 [FAIL / BLOCKED]
+      │                           │
+      ▼                     Iteration < 2?
+   QA_PASSED                     /      \
+                              [Yes]     [No]
+                                │         │
+                          Next Iteration  ▼
+                                    REPAIR_LIMIT_REACHED (Hard limit = 2)
+```
+
+### Key Architectural Invariants
+1. **Clarification 1 — Handoff Edge != Agent Authority:** `ALLOWED_HANDOFF_EDGES` contains `("qa", "developer")` and `("developer", "developer")` strictly representing data compatibility. Agents have zero runtime invocation authority; `CompanyService` is the sole transition owner.
+2. **Clarification 2 — Never Fabricate Human Approval:** Every repair iteration requires distinct, legitimate founder approval (`founder_approval_id`). Missing or reused approval immediately halts in `REPAIR_GRANT_REJECTED`. Test fixtures use explicit fixture approvals validated through the identical path.
+3. **Fresh Worktree Reconstruction:** Each repair worktree is created fresh from `base_commit_hash` and has the previous patch pre-applied via `apply_code_patch_to_worktree`.
+4. **Cumulative Patch Generation:** Diffing the repaired worktree against `base_commit_hash` captures the complete cumulative `CODE_PATCH vN`.
+5. **Immutable Patch History:** Every patch version records `patch_version`, `previous_code_patch_artifact_id`, `previous_code_patch_sha256`, `repair_id`, and `repair_iteration`.
+6. **Double QA Verification:** Every repair candidate undergoes independent QA reinspection (STEP 14A) and isolated QA re-execution (STEP 14B).
+7. **Hard Iteration Limit:** `MAX_REPAIR_ITERATIONS = 2` strictly enforced with no 3rd attempt.
+8. **Durable Reporting:** Materializes `DEVELOPER_REPAIR_PLAN_REPORT` and `DEVELOPER_QA_REPAIR_REPORT` (`developer_qa_repair_report.md` + `.meta.json`).
+9. **Zero Real Repository Mutation:** All operations execute inside isolated disposable worktrees; primary working tree is 100% untouched.
+
+---
+
+## 20. Repository Structure
 
 ```
 JesterAICompany/
@@ -466,7 +573,7 @@ JesterAICompany/
 │       ├── ux/agent.md         # UX specialist (interaction, flows)
 │       ├── marketing/agent.md  # Marketing specialist (positioning, messaging)
 │       ├── developer/agent.md  # Developer specialist (planning & bounded mutation)
-│       └── qa/agent.md         # QA specialist (organizational definition)
+│       └── qa/agent.md         # QA specialist (inspection & verification)
 ├── jester_ai_company/          # Python core package
 │   ├── __init__.py             # Public package exports
 │   ├── core.py                 # Core domain models (Task, Run, Artifact, InputRef)
@@ -477,6 +584,9 @@ JesterAICompany/
 │   ├── developer_mutation.py   # Bounded mutation runner & outcome schemas
 │   ├── policy_hook.py          # PreToolUse hook generator & policy rules
 │   ├── verification.py         # Application-owned verification execution & translation
+│   ├── qa_result.py            # QA inspection schemas, severities, & error classes
+│   ├── qa_execution.py         # Isolated QA execution, diff validation, & verdict parser
+│   ├── repair.py               # Developer ↔ QA repair loop domain & orchestration
 │   ├── materializer.py         # Artifact materialization, CODE_PATCH, SHA-256, & preflight
 │   ├── registry.py             # Agent registry & inventory inspection
 │   ├── execution.py            # Local process execution engine
@@ -504,20 +614,22 @@ JesterAICompany/
 │   ├── test_execution_grant_and_worktree.py
 │   ├── test_marketing_task_execution.py
 │   ├── test_product_task_execution.py
+│   ├── test_qa_execution.py
+│   ├── test_qa_inspection.py
+│   ├── test_repair_loop.py
 │   ├── test_research_task_execution.py
 │   ├── test_run_pipeline.py
 │   ├── test_runtime_adapter.py
+│   ├── test_service_real_execution.py
 │   ├── test_ux_task_execution.py
-│   ├── test_verification_and_code_patch.py
-│   ├── test_qa_inspection.py
-│   └── test_qa_execution.py
+│   └── test_verification_and_code_patch.py
 ├── BACKLOG.md                  # Deferred architecture & roadmap tracker
 └── README.md                   # System documentation (this file)
 ```
 
 ---
 
-## 19. Running Locally
+## 21. Running Locally
 
 ### Prerequisites
 - **Python:** 3.11 or later (verified on Python 3.13 on Windows).
@@ -544,9 +656,9 @@ JesterAICompany/
 
 ---
 
-## 20. Running Tests
+## 22. Running Tests
 
-The test suite covers domain models, schema validators, artifact materialization, SHA-256 integrity, handoff policies, preflight verifications, worktree isolation, pre-tool hook interception, verification execution, and independent QA inspection.
+The test suite covers domain models, schema validators, artifact materialization, SHA-256 integrity, handoff policies, preflight verifications, worktree isolation, pre-tool hook interception, verification execution, independent QA inspection, isolated QA execution, and the Developer ↔ QA repair loop.
 
 To run the relevant test suite:
 
@@ -566,20 +678,22 @@ python -m pytest tests/test_artifact_handoff.py \
                  tests/test_execution_grant_and_worktree.py \
                  tests/test_marketing_task_execution.py \
                  tests/test_product_task_execution.py \
+                 tests/test_qa_execution.py \
+                 tests/test_qa_inspection.py \
+                 tests/test_repair_loop.py \
                  tests/test_research_task_execution.py \
                  tests/test_run_pipeline.py \
                  tests/test_runtime_adapter.py \
+                 tests/test_service_real_execution.py \
                  tests/test_ux_task_execution.py \
-                 tests/test_verification_and_code_patch.py \
-                 tests/test_qa_inspection.py \
-                 tests/test_qa_execution.py
+                 tests/test_verification_and_code_patch.py
 ```
 
-> **Note:** At the STEP 14B documentation checkpoint, the relevant regression suite reported **300 passing tests, 1 skipped, 0 failed**.
+> **Note:** At the STEP 15 documentation checkpoint, the active regression suite reported **324 passing tests, 1 skipped, 0 failed**.
 
 ---
 
-## 21. Implementation Status & Boundaries
+## 23. Implementation Status & Boundaries
 
 | Capability / Subsystem | Status | Notes |
 | :--- | :--- | :--- |
@@ -599,8 +713,8 @@ python -m pytest tests/test_artifact_handoff.py \
 | **Preflight Integrity & Limits** | **Implemented & Verified** | 100KB per artifact limit, 150KB combined Developer input limit. |
 | **Workflow Primitives** (Sequential, Fan-out, Fan-in) | **Implemented & Verified** | Research → Product → (UX + Marketing) → Developer Planning. |
 | **Isolated QA Test Execution (STEP 14B)** | **Implemented & Verified** | Fresh isolated disposable Git worktree from base commit, application-owned patch apply and diff verification, typed action authorization (`pytest` only, path-confined, target verified), deterministic verdict constraints enforced by application layer (missing/unexecutable forbids PASS -> BLOCKED, test failure forbids PASS -> FAIL, clean pass permits PASS), read-only QA Agent evaluation, durable `QA_EXECUTION_REPORT` (`qa_execution_report.md` + `.meta.json`), guaranteed cleanup, zero main-repository mutation. |
-| **Developer ↔ QA Repair Loop (STEP 15)** | **NOT IMPLEMENTED YET** | Iterative feedback loop converting QA findings into developer fixes. |
-| **Human-Approved Real Repository Apply (STEP 16)** | **NOT IMPLEMENTED YET** | Applying verified `CODE_PATCH` back to the human owner's primary working tree is intentionally postponed until after independent QA. |
+| **Developer ↔ QA Repair Loop (STEP 15)** | **Implemented & Verified** | Automated application-owned repair loop, Clarification 1 (handoff != agent authority), Clarification 2 (mandatory human approval per iteration; never fabricated), fresh worktree reconstruction from base commit, cumulative `CODE_PATCH vN`, independent QA reinspection and re-execution, hard limit = 2 iterations, durable reports, zero main repo mutation. |
+| **Human-Approved Real Repository Apply (STEP 16)** | **NOT IMPLEMENTED YET** | Applying verified `CODE_PATCH` back to the human owner's primary working tree requires explicit founder review and approval. |
 | **Automatic CEO Orchestration (STEP 17)** | **NOT IMPLEMENTED YET** | Autonomous workflow chaining across all specialists. |
 | **Full End-to-End Company Proof (STEP 18)** | **NOT IMPLEMENTED YET** | Complete organizational validation. |
 | **Automatic Graph Scheduling / Autopilot** | **NOT IMPLEMENTED YET** | Speculative scheduling is intentionally deferred. |
@@ -611,14 +725,14 @@ python -m pytest tests/test_artifact_handoff.py \
 
 ---
 
-## 22. Next Architectural Boundary
+## 24. Next Architectural Boundary
 
-With **STEP 14B (Isolated QA Execution Against Verified CODE_PATCH)** verified, the immediate next boundary is:
+With **STEP 15 (Developer ↔ QA Controlled Repair Loop)** verified, the immediate next boundary is:
 
-**STEP 15 — Developer ↔ QA Repair Loop**
+**STEP 16 — Human-Approved Transactional Real Repository Apply**
 
-In STEP 15:
-1. When QA issues a non-PASS verdict (`FAIL` or `BLOCKED`) with structured defect findings or unverified requirements, the system orchestrates a structured repair loop back to the Developer agent.
-2. The Developer agent receives the structured QA findings, formulates a repair plan, requests a new or amended `ExecutionGrant`, and produces an updated `CODE_PATCH`.
-3. The cycle repeats deterministically until QA verification passes or the configured iteration budget is reached.
-4. Real repository patch application remains strictly deferred to **STEP 16**.
+In STEP 16:
+1. The human founder reviews the final verified `CODE_PATCH vN` and associated `QA_EXECUTION_REPORT` (verdict `PASS`).
+2. Upon explicit human sign-off, application infrastructure safely and transactionally applies the patch to the primary repository working tree.
+3. Preflight safety checks verify the primary tree is clean and matches the expected base commit before patch application.
+4. Automatic CEO orchestration remains strictly deferred to **STEP 17**.

@@ -27,7 +27,7 @@ import json
 import logging
 from pathlib import Path
 import subprocess
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import uuid
 
 from .core import (
@@ -86,9 +86,27 @@ from .materializer import (
     format_qa_report,
     load_and_verify_input_artifact,
     materialize_code_patch_artifact,
+    materialize_developer_repair_plan_artifact,
+    materialize_developer_qa_repair_report_artifact,
     materialize_qa_report_artifact,
     materialize_qa_execution_report_artifact,
     materialize_specialist_artifact,
+)
+from .repair import (
+    MAX_REPAIR_ITERATIONS,
+    DeveloperQARepairLoopResult,
+    DeveloperRepairPlan,
+    DeveloperRepairTask,
+    RepairAttemptRecord,
+    RepairEligibilityClassification,
+    RepairError,
+    RepairWorkflowStatus,
+    build_developer_repair_planning_prompt,
+    build_developer_repair_task,
+    classify_repair_eligibility,
+    derive_repair_execution_grant,
+    parse_and_validate_developer_repair_plan,
+    reconstruct_qa_execution_context,
 )
 from .qa_execution import (
     QAActionAuthorizationDecision,
@@ -1623,6 +1641,13 @@ class CompanyService:
         instruction: str,
         timeout: Optional[float] = None,
         protect_company_control: bool = True,
+        initial_patch_text: Optional[str] = None,
+        patch_version: int = 1,
+        previous_code_patch_artifact_id: Optional[str] = None,
+        previous_code_patch_sha256: Optional[str] = None,
+        repair_id: Optional[str] = None,
+        repair_iteration: Optional[int] = None,
+        allow_stale_head: bool = False,
     ) -> "BoundedDeveloperExecutionOutcome":
         """Execute real Developer agent for bounded code mutation inside an isolated worktree.
 
@@ -1641,7 +1666,7 @@ class CompanyService:
         """
         # 1. Base commit check (Fail closed on stale repository)
         current_head = resolve_repo_head_commit(self.repo_root)
-        if current_head != grant.base_commit_hash:
+        if current_head != grant.base_commit_hash and not allow_stale_head:
             return BoundedDeveloperExecutionOutcome(
                 grant_id=grant.grant_id,
                 status=DeveloperMutationStatus.POLICY_DENIED.value,
@@ -1680,6 +1705,18 @@ class CompanyService:
         cleaned_up = False
 
         try:
+            # If initial patch is provided (e.g. during repair), apply it to worktree first
+            if initial_patch_text:
+                try:
+                    apply_code_patch_to_worktree(session.worktree_path, initial_patch_text)
+                except Exception as patch_err:
+                    outcome = BoundedDeveloperExecutionOutcome(
+                        grant_id=grant.grant_id,
+                        status=DeveloperMutationStatus.PATCH_CAPTURE_FAILED.value,
+                        summary=f"Failed to apply base patch to repair worktree: {patch_err}",
+                        error=str(patch_err),
+                    )
+                    return outcome
             # 4. Ensure Developer agent definition is present in worktree
             worktree_agent_md = session.worktree_path / ".agents" / "agents" / "developer" / "agent.md"
             if not worktree_agent_md.exists():
@@ -1912,7 +1949,12 @@ class CompanyService:
                                 if not all_passed and failure_outcome is not None:
                                     outcome = failure_outcome
                                 else:
-                                    # 17. Patch Materialization (STEP 13B-3)
+                                    # 17. Patch Materialization (STEP 13B-3 & STEP 15)
+                                    filename = (
+                                        f"developer_changes_v{patch_version}.patch"
+                                        if patch_version > 1
+                                        else "developer_changes.patch"
+                                    )
                                     try:
                                         patch_artifact = materialize_code_patch_artifact(
                                             base_output_dir=self.output_dir,
@@ -1922,7 +1964,12 @@ class CompanyService:
                                             patch_text=diff_res.diff_text,
                                             changed_files=diff_res.changed_files,
                                             verifications=veri_results,
-                                            filename="developer_changes.patch",
+                                            filename=filename,
+                                            patch_version=patch_version,
+                                            previous_code_patch_artifact_id=previous_code_patch_artifact_id,
+                                            previous_code_patch_sha256=previous_code_patch_sha256,
+                                            repair_id=repair_id,
+                                            repair_iteration=repair_iteration,
                                         )
                                         outcome = BoundedDeveloperExecutionOutcome(
                                             grant_id=grant.grant_id,
@@ -1977,6 +2024,7 @@ class CompanyService:
         task_id: str,
         project_id: Optional[str] = None,
         code_patch_artifact_id: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> TaskRun:
         """Execute an independent QA Agent inspection of a verified CODE_PATCH against upstream requirements (STEP 14A).
 
@@ -2055,7 +2103,11 @@ class CompanyService:
                 product_inputs.append((ref, art, src_task))
             elif art.artifact_type == ArtifactType.UX_SPECIFICATION.value or (art.producer_role or "").lower() == "ux":
                 ux_inputs.append((ref, art, src_task))
-            elif art.artifact_type == ArtifactType.DEVELOPER_PLAN_REPORT.value or art.name == "developer_plan_report.md":
+            elif (
+                art.artifact_type in (ArtifactType.DEVELOPER_PLAN_REPORT.value, ArtifactType.DEVELOPER_REPAIR_PLAN_REPORT.value)
+                or art.name == "developer_plan_report.md"
+                or art.name.startswith("developer_repair_plan")
+            ):
                 plan_inputs.append((ref, art, src_task))
             elif art.artifact_type == ArtifactType.CODE_PATCH.value or art.name.endswith(".patch"):
                 patch_inputs.append((ref, art, src_task))
@@ -2202,6 +2254,7 @@ class CompanyService:
             task=task,
             prompt=prompt,
             lineage_metadata=lineage_metadata,
+            timeout=timeout,
         )
 
         repo_state_after = self._get_repo_working_tree_state()
@@ -2215,12 +2268,21 @@ class CompanyService:
         task: Task,
         prompt: str,
         lineage_metadata: Dict[str, Any],
+        timeout: Optional[float] = None,
     ) -> TaskRun:
         """Internal execution lifecycle for QA Agent inspection (STEP 14A)."""
         run = task.create_run()
         run.status = RunStatus.RUNNING.value
 
-        exec_result = self.runtime.execute(agent="qa", prompt=prompt)
+        if timeout is not None:
+            exec_result = self.runtime.execute(
+                agent="qa",
+                prompt=prompt,
+                timeout=timeout,
+                workspace_dir=self.repo_root,
+            )
+        else:
+            exec_result = self.runtime.execute(agent="qa", prompt=prompt)
 
         # 1. Handle runtime failures
         if not exec_result.success:
@@ -2287,6 +2349,7 @@ class CompanyService:
         project_id: Optional[str] = None,
         code_patch_artifact_id: Optional[str] = None,
         qa_report_artifact_id: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> TaskRun:
         """Execute independent QA verification execution against a verified CODE_PATCH (STEP 14B).
 
@@ -2383,7 +2446,11 @@ class CompanyService:
                 product_inputs.append((ref, art, src_task))
             elif art.artifact_type == ArtifactType.UX_SPECIFICATION.value or (art.producer_role or "").lower() == "ux":
                 ux_inputs.append((ref, art, src_task))
-            elif art.artifact_type == ArtifactType.DEVELOPER_PLAN_REPORT.value or art.name == "developer_plan_report.md":
+            elif (
+                art.artifact_type in (ArtifactType.DEVELOPER_PLAN_REPORT.value, ArtifactType.DEVELOPER_REPAIR_PLAN_REPORT.value)
+                or art.name == "developer_plan_report.md"
+                or art.name.startswith("developer_repair_plan")
+            ):
                 plan_inputs.append((ref, art, src_task))
             elif art.artifact_type == ArtifactType.CODE_PATCH.value or art.name.endswith(".patch"):
                 patch_inputs.append((ref, art, src_task))
@@ -2680,6 +2747,631 @@ class CompanyService:
             repo_state_after = self._get_repo_working_tree_state()
             if repo_state_before != repo_state_after:
                 raise ExecutionError(f"Repository mutation detected during QA execution task '{task.id}'!")
+
+    # --------------------------------------------------------------------------
+    # Developer ↔ QA Controlled Repair Loop (STEP 15)
+    # --------------------------------------------------------------------------
+
+    def execute_developer_qa_repair_loop(
+        self,
+        task_id: str,
+        project_id: Optional[str] = None,
+        founder_approvals: Optional[Dict[int, str]] = None,
+        original_grant: Optional[ExecutionGrant] = None,
+        max_repair_iterations: int = MAX_REPAIR_ITERATIONS,
+        allow_test_modifications: bool = False,
+        timeout: Optional[float] = None,
+    ) -> DeveloperQARepairLoopResult:
+        """Execute the Developer ↔ QA Controlled Repair Loop (STEP 15).
+
+        Architecture:
+        1. Fully application-owned transitions. Agents NEVER invoke each other directly.
+        2. Bounded to max_repair_iterations (default 2).
+        3. Deterministic eligibility classification on current QA execution report:
+           - PASS -> QA_PASSED immediately (never enters repair).
+           - FAIL -> REPAIRABLE_IMPLEMENTATION.
+           - BLOCKED -> REPAIRABLE_TEST_GAP vs NON_REPAIRABLE_*.
+        4. Every repair iteration requires an explicit, legitimate founder approval ID.
+           Missing, empty, or reused approvals immediately halt with REPAIR_GRANT_REJECTED.
+           Never fabricates synthetic approvals.
+        5. Developer executes strictly in read-only planning mode to produce DeveloperRepairPlan.
+        6. Candidate ExecutionGrant derived monotonically with no protected paths.
+        7. Fresh isolated worktree starts from original base commit + applies previous CODE_PATCH.
+        8. Diff against original base commit captures complete cumulative CODE_PATCH vN.
+        9. Repaired candidate undergoes complete independent QA reinspection (14A) & re-execution (14B).
+        10. Final durable DEVELOPER_QA_REPAIR_REPORT artifact materialized with full history.
+        11. Zero main-repository mutation guaranteed.
+        """
+        repo_state_before = self._get_repo_working_tree_state()
+
+        try:
+            task = self.get_task(task_id, project_id=project_id)
+            if not task:
+                raise RepairError(f"Task '{task_id}' not found.")
+
+            proj = self.company.projects.get(task.project_id or project_id or "default")
+            if not proj:
+                raise RepairError(f"Project for task '{task_id}' not found.")
+
+            # 1. Locate latest QA_EXECUTION_REPORT associated with task
+            qa_exec_art: Optional[Artifact] = None
+            for run in reversed(task.runs):
+                for art in run.artifacts:
+                    if art.artifact_type == ArtifactType.QA_EXECUTION_REPORT.value:
+                        qa_exec_art = art
+                        break
+                if qa_exec_art:
+                    break
+
+            if not qa_exec_art:
+                for other_task in reversed(list(proj.tasks.values())):
+                    for run in reversed(other_task.runs):
+                        for art in run.artifacts:
+                            if art.artifact_type == ArtifactType.QA_EXECUTION_REPORT.value:
+                                meta = art.metadata or {}
+                                if (
+                                    meta.get("qa_task_id") == task.id
+                                    or meta.get("task_id") == task.id
+                                    or meta.get("original_task_id") == task.id
+                                    or other_task.id == task.id
+                                    or other_task.id.startswith(f"qa_exec_{task.id}")
+                                ):
+                                    qa_exec_art = art
+                                    break
+                        if qa_exec_art:
+                            break
+                    if qa_exec_art:
+                        break
+
+            if not qa_exec_art:
+                raise RepairError(f"No QA_EXECUTION_REPORT found for task '{task.id}'.")
+
+            # 2. Extract upstream artifact pointers from QA execution report metadata
+            qa_meta = qa_exec_art.metadata or {}
+            code_patch_id = qa_meta.get("code_patch_artifact_id")
+            qa_report_id = qa_meta.get("qa_report_artifact_id")
+            plan_art_id = qa_meta.get("developer_plan_artifact_id")
+            prod_art_id = qa_meta.get("product_artifact_id")
+            ux_art_id = qa_meta.get("ux_artifact_id")
+            base_commit = qa_meta.get("base_commit_hash")
+
+            if not code_patch_id:
+                raise RepairError("QA_EXECUTION_REPORT missing code_patch_artifact_id.")
+            patch_lineage = self.find_artifact(code_patch_id)
+            if not patch_lineage:
+                raise RepairError(f"CODE_PATCH artifact '{code_patch_id}' not found.")
+            _, _, current_patch_art = patch_lineage
+
+            if not qa_report_id:
+                raise RepairError("QA_EXECUTION_REPORT missing qa_report_artifact_id.")
+            qa_rep_lineage = self.find_artifact(qa_report_id)
+            if not qa_rep_lineage:
+                raise RepairError(f"QA_REPORT artifact '{qa_report_id}' not found.")
+            _, _, current_qa_report_art = qa_rep_lineage
+
+            if not plan_art_id:
+                raise RepairError("QA_EXECUTION_REPORT missing developer_plan_artifact_id.")
+            plan_lineage = self.find_artifact(plan_art_id)
+            if not plan_lineage:
+                raise RepairError(f"DEVELOPER_PLAN_REPORT artifact '{plan_art_id}' not found.")
+            _, _, original_plan_art = plan_lineage
+
+            if not prod_art_id:
+                raise RepairError("QA_EXECUTION_REPORT missing product_artifact_id.")
+            prod_lineage = self.find_artifact(prod_art_id)
+            if not prod_lineage:
+                raise RepairError(f"PRODUCT_REQUIREMENTS artifact '{prod_art_id}' not found.")
+            _, _, prod_art = prod_lineage
+
+            ux_art = None
+            if ux_art_id:
+                ux_lineage = self.find_artifact(ux_art_id)
+                if ux_lineage:
+                    _, _, ux_art = ux_lineage
+
+            # 3. Base commit determination
+            if not base_commit:
+                base_commit = current_patch_art.metadata.get("base_commit_hash") if current_patch_art.metadata else None
+            if not base_commit:
+                base_commit = resolve_repo_head_commit(self.repo_root)
+
+            # 4. Initialize grant baseline
+            patch_meta = current_patch_art.metadata or {}
+            if original_grant is None:
+                orig_mod = tuple(patch_meta.get("changed_files", []))
+                original_grant = ExecutionGrant(
+                    grant_id=patch_meta.get("execution_grant_id", f"grant_{task.id}"),
+                    task_id=task.id,
+                    plan_artifact_id=patch_meta.get("plan_artifact_id", original_plan_art.id),
+                    plan_sha256=patch_meta.get("plan_sha256", original_plan_art.sha256 or ""),
+                    base_commit_hash=base_commit,
+                    approved_files_to_modify=orig_mod,
+                    approved_files_to_create=(),
+                    verification_actions=(),
+                    allow_test_modifications=allow_test_modifications,
+                    max_files_changed=max(len(orig_mod) + 5, 5),
+                    max_bytes_written=100_000,
+                    max_verification_actions=5,
+                    max_duration_seconds=120,
+                    network_enabled=False,
+                    founder_approval_id=patch_meta.get("founder_approval_id", "appr_base"),
+                )
+
+            # 5. Reconstruct initial QA execution evaluation
+            current_verdict_res, current_action_audits, current_veri_results = reconstruct_qa_execution_context(
+                qa_exec_art=qa_exec_art,
+                task=task,
+            )
+
+            current_qa_exec_art = qa_exec_art
+            current_qa_report_art = current_qa_report_art
+            current_patch_art = current_patch_art
+            current_grant = original_grant
+            used_approval_ids: Set[str] = {original_grant.founder_approval_id}
+
+            attempts: List[RepairAttemptRecord] = []
+            dev_planning_invocations = 0
+            dev_mutation_invocations = 0
+            qa_inspection_invocations = 0
+            qa_evaluation_invocations = 0
+
+            final_status = ""
+            termination_reason = ""
+            final_code_patch_id: Optional[str] = current_patch_art.id
+            final_qa_exec_id: Optional[str] = current_qa_exec_art.id
+            repair_iterations_used = 0
+
+            # 6. Repair Loop
+            for iteration in range(1, max_repair_iterations + 1):
+                # 6.1 Classify eligibility
+                classification, repair_reason = classify_repair_eligibility(
+                    verdict_result=current_verdict_res,
+                    action_audits=current_action_audits,
+                    verification_results=current_veri_results,
+                )
+
+                if classification == RepairEligibilityClassification.NOT_ELIGIBLE_PASS:
+                    final_status = RepairWorkflowStatus.QA_PASSED.value
+                    termination_reason = "QA verification has passed cleanly; no repair required."
+                    final_code_patch_id = current_patch_art.id
+                    final_qa_exec_id = current_qa_exec_art.id
+                    break
+
+                if classification in (
+                    RepairEligibilityClassification.NON_REPAIRABLE_SECURITY,
+                    RepairEligibilityClassification.NON_REPAIRABLE_ENVIRONMENT,
+                    RepairEligibilityClassification.NON_REPAIRABLE_INFRASTRUCTURE,
+                ):
+                    final_status = RepairWorkflowStatus.NON_REPAIRABLE_BLOCKED.value
+                    termination_reason = (
+                        f"QA verification is blocked by non-repairable condition "
+                        f"({classification.value}): {repair_reason}"
+                    )
+                    final_code_patch_id = current_patch_art.id
+                    final_qa_exec_id = current_qa_exec_art.id
+                    break
+
+                # 6.2 Founder approval enforcement (Clarification 2)
+                approval_id = (founder_approvals or {}).get(iteration)
+                if not approval_id or not str(approval_id).strip():
+                    final_status = RepairWorkflowStatus.REPAIR_GRANT_REJECTED.value
+                    termination_reason = f"Repair iteration {iteration} rejected: missing legitimate founder approval."
+                    final_code_patch_id = current_patch_art.id
+                    final_qa_exec_id = current_qa_exec_art.id
+                    break
+
+                cleaned_approval_id = str(approval_id).strip()
+                if cleaned_approval_id in used_approval_ids:
+                    final_status = RepairWorkflowStatus.REPAIR_GRANT_REJECTED.value
+                    termination_reason = (
+                        f"Repair iteration {iteration} rejected: reused founder approval '{cleaned_approval_id}'. "
+                        f"Each repair iteration requires a distinct, legitimate approval."
+                    )
+                    final_code_patch_id = current_patch_art.id
+                    final_qa_exec_id = current_qa_exec_art.id
+                    break
+
+                used_approval_ids.add(cleaned_approval_id)
+
+                # 6.3 Construct typed DeveloperRepairTask
+                repair_id = f"repair_{task.id}_iter{iteration}"
+                repair_task_context = build_developer_repair_task(
+                    repair_id=repair_id,
+                    original_task_id=task.id,
+                    iteration=iteration,
+                    product_art=prod_art,
+                    plan_art=original_plan_art,
+                    patch_art=current_patch_art,
+                    qa_report_art=current_qa_report_art,
+                    qa_exec_art=current_qa_exec_art,
+                    verdict_result=current_verdict_res,
+                    action_audits=current_action_audits,
+                    verification_results=current_veri_results,
+                    classification=classification,
+                    repair_reason=repair_reason,
+                    ux_art=ux_art,
+                    max_iterations=max_repair_iterations,
+                )
+
+                # 6.4 Developer Repair Planning (READ-ONLY)
+                product_ref = ArtifactInputRef(
+                    artifact_id=prod_art.id,
+                    run_id=prod_art.run_id or "",
+                    sha256=prod_art.sha256 or "",
+                    producer_role=prod_art.producer_role,
+                )
+                prod_content = load_and_verify_input_artifact(Path(self.output_dir), prod_art, product_ref)
+
+                plan_ref = ArtifactInputRef(
+                    artifact_id=original_plan_art.id,
+                    run_id=original_plan_art.run_id or "",
+                    sha256=original_plan_art.sha256 or "",
+                    producer_role=original_plan_art.producer_role,
+                )
+                orig_plan_content = load_and_verify_input_artifact(Path(self.output_dir), original_plan_art, plan_ref)
+
+                patch_ref = ArtifactInputRef(
+                    artifact_id=current_patch_art.id,
+                    run_id=current_patch_art.run_id or "",
+                    sha256=current_patch_art.sha256 or "",
+                    producer_role=current_patch_art.producer_role,
+                )
+                current_patch_content = load_and_verify_input_artifact(Path(self.output_dir), current_patch_art, patch_ref)
+
+                qa_rep_ref = ArtifactInputRef(
+                    artifact_id=current_qa_report_art.id,
+                    run_id=current_qa_report_art.run_id or "",
+                    sha256=current_qa_report_art.sha256 or "",
+                    producer_role=current_qa_report_art.producer_role,
+                )
+                qa_rep_content = load_and_verify_input_artifact(Path(self.output_dir), current_qa_report_art, qa_rep_ref)
+
+                qa_exec_ref = ArtifactInputRef(
+                    artifact_id=current_qa_exec_art.id,
+                    run_id=current_qa_exec_art.run_id or "",
+                    sha256=current_qa_exec_art.sha256 or "",
+                    producer_role=current_qa_exec_art.producer_role,
+                )
+                qa_exec_content = load_and_verify_input_artifact(Path(self.output_dir), current_qa_exec_art, qa_exec_ref)
+
+                ux_content = None
+                if ux_art:
+                    ux_ref = ArtifactInputRef(
+                        artifact_id=ux_art.id,
+                        run_id=ux_art.run_id or "",
+                        sha256=ux_art.sha256 or "",
+                        producer_role=ux_art.producer_role,
+                    )
+                    ux_content = load_and_verify_input_artifact(Path(self.output_dir), ux_art, ux_ref)
+
+                repair_plan_prompt = build_developer_repair_planning_prompt(
+                    repair_task=repair_task_context,
+                    product_content=prod_content,
+                    original_plan_content=orig_plan_content,
+                    previous_patch_text=current_patch_content,
+                    qa_report_content=qa_rep_content,
+                    qa_execution_report_content=qa_exec_content,
+                    ux_content=ux_content,
+                )
+
+                dev_planning_invocations += 1
+                repair_plan_task_id = f"{task.id}_repair_plan_iter{iteration}"
+                repair_plan_task = proj.create_task(
+                    task_id=repair_plan_task_id,
+                    title=f"Developer Repair Planning (Iteration {iteration})",
+                    goal=f"Formulate strict repair plan to resolve QA defects for task {task.id}",
+                    required_roles=["developer"],
+                )
+                self.attach_input_artifact(repair_plan_task.id, prod_art.id, project_id=proj.id)
+                if ux_art:
+                    self.attach_input_artifact(repair_plan_task.id, ux_art.id, project_id=proj.id)
+                self.attach_input_artifact(repair_plan_task.id, original_plan_art.id, project_id=proj.id)
+                self.attach_input_artifact(repair_plan_task.id, current_patch_art.id, project_id=proj.id)
+                self.attach_input_artifact(repair_plan_task.id, current_qa_report_art.id, project_id=proj.id)
+                self.attach_input_artifact(repair_plan_task.id, current_qa_exec_art.id, project_id=proj.id)
+
+                plan_run = repair_plan_task.create_run()
+                plan_run.status = RunStatus.RUNNING.value
+
+                plan_exec_res = self.runtime.execute(
+                    agent="developer",
+                    prompt=repair_plan_prompt,
+                    timeout=timeout or 60.0,
+                    workspace_dir=self.repo_root,
+                    env=sanitize_execution_environment(),
+                )
+
+                try:
+                    repair_plan = parse_and_validate_developer_repair_plan(plan_exec_res.stdout)
+                except Exception as parse_err:
+                    plan_run.complete(status=RunStatus.FAILED.value, error=str(parse_err))
+                    repair_plan_task.complete(status=TaskStatus.FAILED.value, summary=f"Repair planning failed: {parse_err}")
+                    final_status = RepairWorkflowStatus.REPAIR_PLAN_FAILED.value
+                    termination_reason = f"Developer repair plan parsing/validation failed: {parse_err}"
+                    final_code_patch_id = current_patch_art.id
+                    final_qa_exec_id = current_qa_exec_art.id
+                    attempts.append(
+                        RepairAttemptRecord(
+                            iteration=iteration,
+                            repair_task_id=repair_task_context.repair_id,
+                            status="FAILED",
+                            error=str(parse_err),
+                        )
+                    )
+                    break
+
+                if repair_plan.requirement_conflict_detected:
+                    plan_run.complete(status=RunStatus.FAILED.value, error=f"Requirement conflict: {repair_plan.conflict_details}")
+                    repair_plan_task.complete(
+                        status=TaskStatus.FAILED.value,
+                        summary=f"Requirement conflict: {repair_plan.conflict_details}",
+                    )
+                    final_status = RepairWorkflowStatus.REQUIREMENT_CONFLICT.value
+                    termination_reason = f"Developer identified requirement conflict: {repair_plan.conflict_details}"
+                    final_code_patch_id = current_patch_art.id
+                    final_qa_exec_id = current_qa_exec_art.id
+                    attempts.append(
+                        RepairAttemptRecord(
+                            iteration=iteration,
+                            repair_task_id=repair_task_context.repair_id,
+                            status="REQUIREMENT_CONFLICT",
+                            error=repair_plan.conflict_details,
+                        )
+                    )
+                    break
+
+                plan_run.complete(status=RunStatus.SUCCESS.value)
+                repair_plan_task.complete(
+                    status=TaskStatus.COMPLETED.value,
+                    summary=f"Repair plan completed for iteration {iteration}",
+                )
+                plan_art = materialize_developer_repair_plan_artifact(
+                    base_output_dir=Path(self.output_dir),
+                    task=repair_plan_task,
+                    run=plan_run,
+                    typed_result=repair_plan,
+                    filename=f"developer_repair_plan_v{iteration}.md",
+                )
+
+                # 6.5 Derive ExecutionGrant
+                try:
+                    repair_grant = derive_repair_execution_grant(
+                        plan=repair_plan,
+                        previous_grant=current_grant,
+                        base_commit_hash=base_commit,
+                        founder_approval_id=cleaned_approval_id,
+                        allow_test_modifications=allow_test_modifications,
+                        task_id=task.id,
+                        plan_artifact_id=plan_art.id,
+                        plan_sha256=plan_art.sha256 or "",
+                    )
+                except Exception as grant_err:
+                    final_status = RepairWorkflowStatus.REPAIR_GRANT_REJECTED.value
+                    termination_reason = f"Repair execution grant rejected: {grant_err}"
+                    final_code_patch_id = current_patch_art.id
+                    final_qa_exec_id = current_qa_exec_art.id
+                    attempts.append(
+                        RepairAttemptRecord(
+                            iteration=iteration,
+                            repair_task_id=repair_task_context.repair_id,
+                            repair_plan_artifact_id=plan_art.id,
+                            repair_plan_sha256=plan_art.sha256,
+                            status="REPAIR_GRANT_REJECTED",
+                            error=str(grant_err),
+                        )
+                    )
+                    break
+
+                # 6.6 Execute bounded Developer mutation in isolated worktree
+                dev_mutation_invocations += 1
+                mutation_outcome = self.execute_bounded_developer_mutation(
+                    grant=repair_grant,
+                    instruction=f"Repair QA defects: {repair_plan.root_cause}. Implement changes: {repair_plan.proposed_changes}",
+                    timeout=timeout,
+                    initial_patch_text=current_patch_content,
+                    patch_version=iteration + 1,
+                    previous_code_patch_artifact_id=current_patch_art.id,
+                    previous_code_patch_sha256=current_patch_art.sha256,
+                    repair_id=repair_id,
+                    repair_iteration=iteration,
+                    allow_stale_head=False,
+                )
+
+                if mutation_outcome.status != DeveloperMutationStatus.SUCCESS.value or not mutation_outcome.patch_artifact:
+                    final_status = RepairWorkflowStatus.REPAIR_EXECUTION_FAILED.value
+                    termination_reason = f"Repair mutation execution failed: {mutation_outcome.summary}"
+                    final_code_patch_id = current_patch_art.id
+                    final_qa_exec_id = current_qa_exec_art.id
+                    attempts.append(
+                        RepairAttemptRecord(
+                            iteration=iteration,
+                            repair_task_id=repair_task_context.repair_id,
+                            repair_plan_artifact_id=plan_art.id,
+                            repair_plan_sha256=plan_art.sha256,
+                            execution_grant_id=repair_grant.grant_id,
+                            status="EXECUTION_FAILED",
+                            error=mutation_outcome.error or mutation_outcome.summary,
+                        )
+                    )
+                    break
+
+                repaired_patch_art = mutation_outcome.patch_artifact
+
+                # 6.7 Independent QA Reinspection (STEP 14A)
+                qa_inspection_invocations += 1
+                qa_inspect_task_id = f"{task.id}_qa_inspect_iter{iteration}"
+                qa_inspect_task = proj.create_task(
+                    task_id=qa_inspect_task_id,
+                    title=f"QA Reinspection (Iteration {iteration})",
+                    goal=f"Reinspect repaired CODE_PATCH v{iteration + 1} for task {task.id}",
+                    required_roles=["qa"],
+                )
+                self.attach_input_artifact(qa_inspect_task.id, prod_art.id, project_id=proj.id)
+                if ux_art:
+                    self.attach_input_artifact(qa_inspect_task.id, ux_art.id, project_id=proj.id)
+                self.attach_input_artifact(qa_inspect_task.id, plan_art.id, project_id=proj.id)
+                self.attach_input_artifact(qa_inspect_task.id, repaired_patch_art.id, project_id=proj.id)
+
+                qa_inspect_run = self.execute_qa_inspection_task(
+                    task_id=qa_inspect_task.id,
+                    project_id=proj.id,
+                    code_patch_artifact_id=repaired_patch_art.id,
+                    timeout=timeout,
+                )
+                if qa_inspect_run.status != RunStatus.SUCCESS.value:
+                    final_status = RepairWorkflowStatus.QA_REEXECUTION_FAILED.value
+                    termination_reason = f"QA reinspection run failed: {qa_inspect_run.error}"
+                    final_code_patch_id = repaired_patch_art.id
+                    final_qa_exec_id = current_qa_exec_art.id
+                    attempts.append(
+                        RepairAttemptRecord(
+                            iteration=iteration,
+                            repair_task_id=repair_task_context.repair_id,
+                            repair_plan_artifact_id=plan_art.id,
+                            repair_plan_sha256=plan_art.sha256,
+                            execution_grant_id=repair_grant.grant_id,
+                            code_patch_artifact_id=repaired_patch_art.id,
+                            code_patch_sha256=repaired_patch_art.sha256,
+                            status="QA_INSPECTION_FAILED",
+                            error=qa_inspect_run.error,
+                        )
+                    )
+                    break
+
+                repaired_qa_report_art = [
+                    a for a in qa_inspect_run.artifacts if a.artifact_type == ArtifactType.QA_REPORT.value
+                ][0]
+
+                # 6.8 Independent QA Re-execution (STEP 14B)
+                qa_evaluation_invocations += 1
+                qa_verify_task_id = f"{task.id}_qa_verify_iter{iteration}"
+                qa_verify_task = proj.create_task(
+                    task_id=qa_verify_task_id,
+                    title=f"QA Verification Execution (Iteration {iteration})",
+                    goal=f"Execute independent verification of repaired CODE_PATCH v{iteration + 1} for task {task.id}",
+                    required_roles=["qa"],
+                )
+                self.attach_input_artifact(qa_verify_task.id, prod_art.id, project_id=proj.id)
+                if ux_art:
+                    self.attach_input_artifact(qa_verify_task.id, ux_art.id, project_id=proj.id)
+                self.attach_input_artifact(qa_verify_task.id, plan_art.id, project_id=proj.id)
+                self.attach_input_artifact(qa_verify_task.id, repaired_patch_art.id, project_id=proj.id)
+                self.attach_input_artifact(qa_verify_task.id, repaired_qa_report_art.id, project_id=proj.id)
+
+                qa_verify_run = self.execute_qa_verification_task(
+                    task_id=qa_verify_task.id,
+                    project_id=proj.id,
+                    code_patch_artifact_id=repaired_patch_art.id,
+                    qa_report_artifact_id=repaired_qa_report_art.id,
+                    timeout=timeout,
+                )
+                if qa_verify_run.status != RunStatus.SUCCESS.value:
+                    final_status = RepairWorkflowStatus.QA_REEXECUTION_FAILED.value
+                    termination_reason = f"QA re-execution run failed: {qa_verify_run.error}"
+                    final_code_patch_id = repaired_patch_art.id
+                    final_qa_exec_id = current_qa_exec_art.id
+                    attempts.append(
+                        RepairAttemptRecord(
+                            iteration=iteration,
+                            repair_task_id=repair_task_context.repair_id,
+                            repair_plan_artifact_id=plan_art.id,
+                            repair_plan_sha256=plan_art.sha256,
+                            execution_grant_id=repair_grant.grant_id,
+                            code_patch_artifact_id=repaired_patch_art.id,
+                            code_patch_sha256=repaired_patch_art.sha256,
+                            qa_report_artifact_id=repaired_qa_report_art.id,
+                            qa_report_sha256=repaired_qa_report_art.sha256,
+                            status="QA_EXECUTION_FAILED",
+                            error=qa_verify_run.error,
+                        )
+                    )
+                    break
+
+                repaired_qa_exec_art = [
+                    a for a in qa_verify_run.artifacts if a.artifact_type == ArtifactType.QA_EXECUTION_REPORT.value
+                ][0]
+                new_verdict = repaired_qa_exec_art.metadata.get("verdict", "FAIL")
+                repair_iterations_used = iteration
+
+                attempt_rec = RepairAttemptRecord(
+                    iteration=iteration,
+                    repair_task_id=repair_task_context.repair_id,
+                    repair_plan_artifact_id=plan_art.id,
+                    repair_plan_sha256=plan_art.sha256,
+                    execution_grant_id=repair_grant.grant_id,
+                    code_patch_artifact_id=repaired_patch_art.id,
+                    code_patch_sha256=repaired_patch_art.sha256,
+                    qa_report_artifact_id=repaired_qa_report_art.id,
+                    qa_report_sha256=repaired_qa_report_art.sha256,
+                    qa_execution_report_artifact_id=repaired_qa_exec_art.id,
+                    qa_execution_report_sha256=repaired_qa_exec_art.sha256,
+                    qa_verdict=new_verdict,
+                    status="COMPLETED",
+                )
+                attempts.append(attempt_rec)
+
+                # Check outcome
+                if new_verdict == QAFinalVerdict.PASS.value:
+                    final_status = RepairWorkflowStatus.QA_PASSED.value
+                    termination_reason = f"Repaired CODE_PATCH v{iteration + 1} PASSED QA verification on iteration {iteration}."
+                    final_code_patch_id = repaired_patch_art.id
+                    final_qa_exec_id = repaired_qa_exec_art.id
+                    break
+                else:
+                    if iteration >= max_repair_iterations:
+                        final_status = RepairWorkflowStatus.REPAIR_LIMIT_REACHED.value
+                        termination_reason = (
+                            f"Reached maximum allowed repair iterations ({max_repair_iterations}). "
+                            f"Last QA verdict: {new_verdict}."
+                        )
+                        final_code_patch_id = repaired_patch_art.id
+                        final_qa_exec_id = repaired_qa_exec_art.id
+                        break
+                    else:
+                        # Advance current pointers for next repair iteration
+                        current_patch_art = repaired_patch_art
+                        current_grant = repair_grant
+                        current_qa_report_art = repaired_qa_report_art
+                        current_qa_exec_art = repaired_qa_exec_art
+                        current_verdict_res, current_action_audits, current_veri_results = reconstruct_qa_execution_context(
+                            qa_exec_art=current_qa_exec_art,
+                            task=qa_verify_task,
+                        )
+
+            result = DeveloperQARepairLoopResult(
+                status=final_status or RepairWorkflowStatus.WORKFLOW_ERROR.value,
+                original_task_id=task.id,
+                final_code_patch_artifact_id=final_code_patch_id,
+                final_qa_execution_report_artifact_id=final_qa_exec_id,
+                repair_iterations_used=repair_iterations_used,
+                max_repair_iterations=max_repair_iterations,
+                attempts=attempts,
+                termination_reason=termination_reason,
+                developer_planning_invocations=dev_planning_invocations,
+                developer_mutation_invocations=dev_mutation_invocations,
+                qa_inspection_invocations=qa_inspection_invocations,
+                qa_evaluation_invocations=qa_evaluation_invocations,
+            )
+
+            # Materialize DEVELOPER_QA_REPAIR_REPORT artifact
+            repair_summary_run = task.create_run()
+            repair_summary_run.status = RunStatus.SUCCESS.value
+            materialize_developer_qa_repair_report_artifact(
+                base_output_dir=Path(self.output_dir),
+                task=task,
+                run=repair_summary_run,
+                typed_result=result,
+                filename="developer_qa_repair_report.md",
+            )
+            repair_summary_run.complete(status=RunStatus.SUCCESS.value)
+
+            return result
+
+        finally:
+            repo_state_after = self._get_repo_working_tree_state()
+            if repo_state_before != repo_state_after:
+                raise ExecutionError(f"Repository mutation detected during repair loop execution on task '{task_id}'!")
+
 
 
 

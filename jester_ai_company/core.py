@@ -41,6 +41,8 @@ class ArtifactType(str, Enum):
     MARKETING_BRIEF = "MARKETING_BRIEF"
     MARKETING_REPORT = "MARKETING_REPORT"
     DEVELOPER_PLAN_REPORT = "DEVELOPER_PLAN_REPORT"
+    DEVELOPER_REPAIR_PLAN_REPORT = "DEVELOPER_REPAIR_PLAN_REPORT"
+    DEVELOPER_QA_REPAIR_REPORT = "DEVELOPER_QA_REPAIR_REPORT"
     QA_REPORT = "QA_REPORT"
     QA_EXECUTION_REPORT = "QA_EXECUTION_REPORT"
     SUMMARY = "SUMMARY"
@@ -130,7 +132,10 @@ class ArtifactVerificationError(HandoffError):
     pass
 
 
-# Deterministic specialist-to-specialist artifact handoff policy (STEP 10, 11, 12, 13A & 14A)
+# Deterministic specialist-to-specialist artifact handoff policy (STEP 10, 11, 12, 13A, 14A & 15)
+# NOTE: ALLOWED_HANDOFF_EDGES defines strictly the data-level compatibility of verified artifacts
+# as input references between specialist tasks. It grants ZERO runtime delegation or invocation authority.
+# Agents NEVER invoke each other directly. All workflow execution is 100% application-owned.
 ALLOWED_HANDOFF_EDGES: Set[Tuple[str, str]] = {
     ("research", "product"),
     ("product", "ux"),
@@ -141,6 +146,8 @@ ALLOWED_HANDOFF_EDGES: Set[Tuple[str, str]] = {
     ("ux", "qa"),
     ("developer", "qa"),
     ("qa", "qa"),
+    ("qa", "developer"),
+    ("developer", "developer"),
 }
 
 

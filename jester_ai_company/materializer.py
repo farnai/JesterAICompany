@@ -493,6 +493,11 @@ def materialize_code_patch_artifact(
     changed_files: List[str],
     verifications: Optional[List[Any]] = None,
     filename: str = "developer_changes.patch",
+    patch_version: int = 1,
+    previous_code_patch_artifact_id: Optional[str] = None,
+    previous_code_patch_sha256: Optional[str] = None,
+    repair_id: Optional[str] = None,
+    repair_iteration: Optional[int] = None,
 ) -> Artifact:
     """Materialize a durable, cryptographically verified CODE_PATCH artifact with full lineage (STEP 13B-3).
 
@@ -566,6 +571,11 @@ def materialize_code_patch_artifact(
         "task_id": task.id,
         "run_id": run.id,
         "producer_role": "developer",
+        "patch_version": patch_version,
+        "previous_code_patch_artifact_id": previous_code_patch_artifact_id,
+        "previous_code_patch_sha256": previous_code_patch_sha256,
+        "repair_id": repair_id,
+        "repair_iteration": repair_iteration,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -793,6 +803,7 @@ def materialize_qa_execution_report_artifact(
         "deterministic_override_applied": getattr(typed_verdict, "deterministic_override_applied", False),
         "override_reason": getattr(typed_verdict, "override_reason", None),
         "execution_outcomes": execution_evidence or [],
+        "verdict_details": typed_verdict.to_dict() if hasattr(typed_verdict, "to_dict") else None,
     })
 
     # Persist companion .meta.json file
@@ -875,4 +886,114 @@ def load_and_verify_input_artifact(
         )
 
     return content
+
+
+def materialize_developer_repair_plan_artifact(
+    base_output_dir: Path,
+    task: Task,
+    run: TaskRun,
+    typed_result: Any,
+    filename: str = "developer_repair_plan_report.md",
+) -> Artifact:
+    """Materialize a durable DEVELOPER_REPAIR_PLAN_REPORT artifact on disk (STEP 15)."""
+    target_dir = get_safe_run_artifacts_dir(base_output_dir, task.id, run.id)
+    target_file = target_dir / filename
+
+    from .repair import format_developer_repair_plan_report
+    content = format_developer_repair_plan_report(task, typed_result)
+    sha256_hash = compute_sha256(content)
+    atomic_write_text(target_file, content)
+
+    readback_bytes = target_file.read_bytes()
+    recomputed_sha = hashlib.sha256(readback_bytes).hexdigest()
+    if recomputed_sha != sha256_hash:
+        raise MaterializationError(
+            f"Artifact SHA-256 verification failed: computed '{sha256_hash}' != readback '{recomputed_sha}'."
+        )
+
+    try:
+        rel_path = str(target_file.relative_to(base_output_dir.resolve()))
+    except ValueError:
+        rel_path = str(target_file)
+
+    meta = {
+        "task_id": task.id,
+        "run_id": run.id,
+        "producer_role": "developer",
+        "repair_id": getattr(typed_result, "repair_id", ""),
+        "iteration": getattr(typed_result, "iteration", 1),
+        "root_cause": getattr(typed_result, "root_cause", ""),
+        "requirements_to_fix": getattr(typed_result, "requirements_to_fix", []),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    meta_file = target_dir / (filename + ".meta.json")
+    atomic_write_text(meta_file, json.dumps(meta, indent=2))
+
+    artifact = run.add_artifact(
+        name=filename,
+        artifact_type=ArtifactType.DEVELOPER_REPAIR_PLAN_REPORT.value,
+        path=rel_path,
+        durable=True,
+        sha256=sha256_hash,
+        producer_role="developer",
+        metadata=meta,
+    )
+    return artifact
+
+
+def materialize_developer_qa_repair_report_artifact(
+    base_output_dir: Path,
+    task: Task,
+    run: TaskRun,
+    typed_result: Any,
+    filename: str = "developer_qa_repair_report.md",
+) -> Artifact:
+    """Materialize a durable DEVELOPER_QA_REPAIR_REPORT artifact on disk (STEP 15)."""
+    target_dir = get_safe_run_artifacts_dir(base_output_dir, task.id, run.id)
+    target_file = target_dir / filename
+
+    from .repair import format_developer_qa_repair_report
+    content = format_developer_qa_repair_report(task, typed_result)
+    sha256_hash = compute_sha256(content)
+    atomic_write_text(target_file, content)
+
+    readback_bytes = target_file.read_bytes()
+    recomputed_sha = hashlib.sha256(readback_bytes).hexdigest()
+    if recomputed_sha != sha256_hash:
+        raise MaterializationError(
+            f"Artifact SHA-256 verification failed: computed '{sha256_hash}' != readback '{recomputed_sha}'."
+        )
+
+    try:
+        rel_path = str(target_file.relative_to(base_output_dir.resolve()))
+    except ValueError:
+        rel_path = str(target_file)
+
+    meta = {
+        "task_id": task.id,
+        "run_id": run.id,
+        "producer_role": "qa",
+        "status": getattr(typed_result, "status", ""),
+        "original_task_id": getattr(typed_result, "original_task_id", ""),
+        "final_code_patch_artifact_id": getattr(typed_result, "final_code_patch_artifact_id", None),
+        "final_qa_execution_report_artifact_id": getattr(typed_result, "final_qa_execution_report_artifact_id", None),
+        "repair_iterations_used": getattr(typed_result, "repair_iterations_used", 0),
+        "max_repair_iterations": getattr(typed_result, "max_repair_iterations", 2),
+        "termination_reason": getattr(typed_result, "termination_reason", ""),
+        "attempts": [a.to_dict() if hasattr(a, "to_dict") else a for a in getattr(typed_result, "attempts", [])],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    meta_file = target_dir / (filename + ".meta.json")
+    atomic_write_text(meta_file, json.dumps(meta, indent=2))
+
+    artifact = run.add_artifact(
+        name=filename,
+        artifact_type=ArtifactType.DEVELOPER_QA_REPAIR_REPORT.value,
+        path=rel_path,
+        durable=True,
+        sha256=sha256_hash,
+        producer_role="qa",
+        metadata=meta,
+    )
+    return artifact
 

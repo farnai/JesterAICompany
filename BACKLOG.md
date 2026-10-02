@@ -74,10 +74,20 @@ In accordance with our core operating principles (*"Practical over complex"*, *"
   - **Read-Only QA Agent Release Verdict (STEP 14B):** QA Agent evaluates executed evidence and issues structured final release verdict (`PASS`, `FAIL`, `BLOCKED`).
   - **Durable QA Execution Artifact Materialization (STEP 14B):** `QA_EXECUTION_REPORT` (`qa_execution_report.md` + `.meta.json`) with SHA-256 cryptographic verification and complete end-to-end lineage.
   - **Guaranteed Worktree Cleanup & Repo Immutability (STEP 14B):** Worktree destroyed on all exit paths in `finally:` block; main repository remains 100% untouched.
+  - **Developer ↔ QA Controlled Repair Loop (STEP 15):**
+    - Application-owned repair loop between Developer and QA when independent QA execution returns `FAIL` or repairable `BLOCKED`.
+    - **Clarification 1 (Handoff Edge != Agent Authority):** `ALLOWED_HANDOFF_EDGES` contains `("qa", "developer")` and `("developer", "developer")` strictly governing artifact consumption compatibility; agents have zero runtime invocation authority; QA cannot invoke Developer, Developer cannot invoke QA or itself; `CompanyService` remains the sole transition owner.
+    - **Clarification 2 (Human Approval Mandatory):** Zero synthetic/fabricated founder approvals. Every repair iteration strictly requires its own legitimate founder approval (`founder_approval_id`); missing or reused approval halts immediately in `REPAIR_GRANT_REJECTED`.
+    - **Typed DeveloperRepairTask & Strict DeveloperRepairPlan:** Schema version 1.0 ([`DeveloperRepairPlan`](jester_ai_company/repair.py)), strict root-cause analysis, defect-to-requirement mapping, file deletion strictly forbidden, requirement conflict gating.
+    - **Fresh Worktree Reconstruction & Patch Pre-application:** Fresh worktree created at original `base_commit_hash` with previous `CODE_PATCH` pre-applied (`apply_code_patch_to_worktree`).
+    - **Cumulative CODE_PATCH vN Generation:** Captured directly against `base_commit_hash` representing total cumulative delta; includes complete version lineage (`patch_version`, `previous_code_patch_artifact_id`, `previous_code_patch_sha256`, `repair_id`, `repair_iteration`).
+    - **Independent QA Reinspection & Re-execution:** Every candidate patch undergoes independent QA reinspection (STEP 14A) and re-execution (STEP 14B) in disposable worktree.
+    - **Hard Iteration Limit:** `MAX_REPAIR_ITERATIONS = 2` strictly enforced with no 3rd attempt.
+    - **Durable Repair Artifacts:** `DEVELOPER_REPAIR_PLAN_REPORT` (`developer_repair_plan_v{N}.md`) and `DEVELOPER_QA_REPAIR_REPORT` (`developer_qa_repair_report.md` + `.meta.json`).
+    - **Zero Real Repository Mutation:** All repairs execute inside isolated disposable worktrees; main repository remains 100% untouched.
 
 - **Still Deferred (Updated Roadmap Order):**
-  - **Developer ↔ QA Repair Loop (STEP 15):** Iterative repair loop converting QA findings into developer fixes.
-  - **Human-Approved Real Repository Apply (STEP 16):** Founder-approved application of verified patch to real working tree.
+  - **Human-Approved Transactional Real Repository Apply (STEP 16):** Founder-approved application of verified patch to real working tree.
   - **CEO Orchestration (STEP 17):** Autonomous end-to-end task chaining.
   - **Full End-to-End Company Proof (STEP 18):** Full organizational validation.
 
