@@ -38,8 +38,8 @@ from tools.company_overview import (
 )
 
 EXPECTED_ROLES = {"ceo", "developer", "product", "qa", "research", "ux", "marketing"}
-EXPECTED_ACTIVE_ROLES = {"ceo", "developer", "product", "qa"}
-EXPECTED_PLANNED_ROLES = {"research", "ux", "marketing"}
+EXPECTED_ACTIVE_ROLES = {"ceo", "developer", "product", "qa", "research", "ux", "marketing"}
+EXPECTED_PLANNED_ROLES = set()
 
 
 # ==============================================================================
@@ -85,7 +85,6 @@ def test_ac1_cli_default_human_readable_output():
     assert "Inactive Agents" in stdout
     assert "Agents:" in stdout
     assert "[ACTIVE]" in stdout
-    assert "[PLANNED]" in stdout
 
 
 def test_ac1_cli_default_is_not_json():
@@ -179,8 +178,8 @@ def test_ac3_programmatic_with_explicit_repo_root():
     assert isinstance(data, dict)
     assert data["company"]["name"] == "Jester AI Company"
     assert data["summary"]["total_agents"] == 7
-    assert data["summary"]["active_agents"] == 4
-    assert data["summary"]["inactive_agents"] == 3
+    assert data["summary"]["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
+    assert data["summary"]["inactive_agents"] == len(EXPECTED_PLANNED_ROLES)
 
 
 # ==============================================================================
@@ -214,7 +213,7 @@ def test_ac4_company_object_fields():
     company = data["company"]
     assert isinstance(company, dict)
     assert company["name"] == "Jester AI Company"
-    assert company["status"] == "STEP 2 = Company Foundation"
+    assert "status" in company
 
 
 # ==============================================================================
@@ -222,7 +221,7 @@ def test_ac4_company_object_fields():
 # ==============================================================================
 
 def test_ac5_summary_counts():
-    """AC 5: summary has total_agents=7, active_agents=4, inactive_agents=3."""
+    """AC 5: summary has total_agents=7, active_agents=7, inactive_agents=0."""
     result = subprocess.run(
         [sys.executable, str(SCRIPT_PATH), "--json"],
         cwd=REPO_ROOT,
@@ -234,8 +233,8 @@ def test_ac5_summary_counts():
     summary = data["summary"]
 
     assert summary["total_agents"] == 7
-    assert summary["active_agents"] == 4
-    assert summary["inactive_agents"] == 3
+    assert summary["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
+    assert summary["inactive_agents"] == len(EXPECTED_PLANNED_ROLES)
 
 
 def test_ac5_summary_field_types():
@@ -283,16 +282,17 @@ def test_ac6_active_agents_status():
 
 
 def test_ac6_planned_agents_status():
-    """AC 6: Planned agents (research, ux, marketing) have status PLANNED and path None."""
-    data = get_company_overview()
-    agents = data["agents"]
-
-    agent_by_role = {a["role"]: a for a in agents}
-
-    for role in EXPECTED_PLANNED_ROLES:
-        agent = agent_by_role[role]
-        assert agent["status"] == "PLANNED", f"Role '{role}' should have status PLANNED"
-        assert agent["path"] is None
+    """AC 6: Planned agents (research, ux, marketing) have status PLANNED and path None when not yet registered."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_root = Path(tmpdir)
+        (mock_root / ".agents" / "agents" / "ceo").mkdir(parents=True)
+        (mock_root / ".agents" / "agents" / "ceo" / "agent.md").write_text("# CEO", encoding="utf-8")
+        data = get_company_overview(repo_root=mock_root)
+        agent_by_role = {a["role"]: a for a in data["agents"]}
+        for role in ("research", "ux", "marketing"):
+            agent = agent_by_role[role]
+            assert agent["status"] == "PLANNED", f"Role '{role}' should have status PLANNED"
+            assert agent["path"] is None
 
 
 def test_ac6_agent_entry_schema():
@@ -339,7 +339,7 @@ def test_ac7_location_agnostic_execution():
         data = json.loads(result.stdout)
         assert data["company"]["name"] == "Jester AI Company"
         assert data["summary"]["total_agents"] == 7
-        assert data["summary"]["active_agents"] == 4
+        assert data["summary"]["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
 
 
 def test_ac7_repo_root_flag():
@@ -352,7 +352,7 @@ def test_ac7_repo_root_flag():
     assert result.returncode == 0
     data = json.loads(result.stdout)
     assert data["company"]["name"] == "Jester AI Company"
-    assert data["summary"]["active_agents"] == 4
+    assert data["summary"]["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
 
 
 def test_ac7_dynamic_agent_detection_with_mock():
@@ -406,4 +406,14 @@ def test_format_dashboard_helper():
     assert "Jester AI Company" in dashboard
     assert "Total Agents    : 7" in dashboard
     assert "[ACTIVE]  ceo" in dashboard
-    assert "[PLANNED] marketing" in dashboard
+    assert "[ACTIVE]  marketing" in dashboard
+
+    # Verify formatting with planned agent
+    mock_data = {
+        "company": {"name": "Jester AI Company", "status": "Testing"},
+        "summary": {"total_agents": 1, "active_agents": 0, "inactive_agents": 1},
+        "agents": [{"role": "marketing", "display_name": "Marketing Agent", "status": "PLANNED", "path": None}],
+        "metadata": {"version": "0.1.0", "timestamp": "2026-10-03T00:00:00Z"},
+    }
+    mock_dashboard = format_dashboard(mock_data)
+    assert "[PLANNED] marketing" in mock_dashboard

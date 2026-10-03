@@ -25,7 +25,7 @@ SCRIPT_PATH = REPO_ROOT / "tools" / "company_health.py"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.company_health import get_company_health
+from tools.company_health import get_company_health, count_registered_agents
 
 
 def test_script_exists():
@@ -105,7 +105,8 @@ def test_agent_count_value():
     data = json.loads(result.stdout)
     assert "agent_count" in data
     assert isinstance(data["agent_count"], int) and not isinstance(data["agent_count"], bool)
-    assert data["agent_count"] == 4
+    assert data["agent_count"] == count_registered_agents(REPO_ROOT)
+    assert data["agent_count"] >= 7
 
 
 def test_pure_stdout_contract():
@@ -136,7 +137,7 @@ def test_execution_from_arbitrary_cwd():
         data = json.loads(result.stdout)
         assert data["company_name"] == "Jester AI Company"
         assert data["status"] == "healthy"
-        assert data["agent_count"] == 4
+        assert data["agent_count"] == count_registered_agents(REPO_ROOT)
 
 
 def test_compact_flag():
@@ -153,7 +154,7 @@ def test_compact_flag():
     data = json.loads(lines[0])
     assert data["company_name"] == "Jester AI Company"
     assert data["status"] == "healthy"
-    assert data["agent_count"] == 4
+    assert data["agent_count"] == count_registered_agents(REPO_ROOT)
 
 
 def test_fallback_on_missing_readme():
@@ -217,15 +218,13 @@ def test_direct_python_api():
     assert isinstance(health, dict)
     assert health["company_name"] == "Jester AI Company"
     assert health["status"] == "healthy"
-    assert health["agent_count"] == 4
+    assert health["agent_count"] == count_registered_agents(REPO_ROOT)
 
 
 def test_count_registered_agents_direct():
-    """Verify count_registered_agents() returns 4 for current repo."""
-    from tools.company_health import count_registered_agents
-
+    """Verify count_registered_agents() returns registered agent count for current repo."""
     count = count_registered_agents(REPO_ROOT)
-    assert count == 4
+    assert count == 7
 
 
 def test_unhealthy_when_agents_dir_missing():

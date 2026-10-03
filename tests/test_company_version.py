@@ -129,7 +129,8 @@ def test_agent_count_value():
     )
     assert result.returncode == 0
     data = json.loads(result.stdout)
-    assert data["agent_count"] == 4
+    assert data["agent_count"] == count_registered_agents(REPO_ROOT)
+    assert data["agent_count"] >= 7
 
 
 def test_pure_stdout_contract():
@@ -160,7 +161,7 @@ def test_execution_from_arbitrary_cwd():
         data = json.loads(result.stdout)
         assert data["company_name"] == "Jester AI Company"
         assert data["version"] == "0.1.0"
-        assert data["agent_count"] == 4
+        assert data["agent_count"] == count_registered_agents(REPO_ROOT)
 
 
 def test_compact_flag():
@@ -177,7 +178,7 @@ def test_compact_flag():
     data = json.loads(lines[0])
     assert data["company_name"] == "Jester AI Company"
     assert data["version"] == "0.1.0"
-    assert data["agent_count"] == 4
+    assert data["agent_count"] == count_registered_agents(REPO_ROOT)
 
 
 def test_repo_root_flag():
@@ -191,7 +192,7 @@ def test_repo_root_flag():
     data = json.loads(result.stdout)
     assert data["company_name"] == "Jester AI Company"
     assert data["version"] == "0.1.0"
-    assert data["agent_count"] == 4
+    assert data["agent_count"] == count_registered_agents(REPO_ROOT)
 
 
 def test_repo_root_and_compact_combined():
@@ -207,7 +208,7 @@ def test_repo_root_and_compact_combined():
     data = json.loads(lines[0])
     assert data["company_name"] == "Jester AI Company"
     assert data["version"] == "0.1.0"
-    assert data["agent_count"] == 4
+    assert data["agent_count"] == count_registered_agents(REPO_ROOT)
 
 
 def test_dynamic_agent_count_custom_repo():
@@ -309,13 +310,13 @@ def test_direct_python_api_get_company_version():
     assert isinstance(version_info, dict)
     assert version_info["company_name"] == "Jester AI Company"
     assert version_info["version"] == "0.1.0"
-    assert version_info["agent_count"] == 4
+    assert version_info["agent_count"] == count_registered_agents(REPO_ROOT)
 
 
 def test_direct_python_api_count_registered_agents():
-    """Verify count_registered_agents() returns 4 for current repo."""
+    """Verify count_registered_agents() returns registered agent count for current repo."""
     count = count_registered_agents(REPO_ROOT)
-    assert count == 4
+    assert count == 7
 
 
 def test_constants():

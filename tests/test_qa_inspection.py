@@ -1060,6 +1060,12 @@ def test_live_qa_agent_inspection_detects_coverage_gap():
 
         # Execute live QA agent using real Antigravity runtime
         run = service.execute_qa_inspection_task(qa_task.id)
+        if run.status == RunStatus.FAILED.value and (
+            "exit code 3" in (run.error or "")
+            or "RESOURCE_EXHAUSTED" in (run.error or "")
+            or "429" in (run.error or "")
+        ):
+            pytest.skip("External Antigravity provider unavailable / quota exhausted (HTTP 429)")
 
         # 1. Run and task lifecycle
         assert run.status == RunStatus.SUCCESS.value

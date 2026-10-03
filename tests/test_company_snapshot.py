@@ -46,9 +46,9 @@ from tools.company_snapshot import (
     parse_company_metadata,
 )
 
-EXPECTED_ACTIVE_ROLES = {"ceo", "developer", "product", "qa"}
-EXPECTED_PLANNED_ROLES = {"research", "ux", "marketing"}
-EXPECTED_ALL_ROLES = EXPECTED_ACTIVE_ROLES | EXPECTED_PLANNED_ROLES
+EXPECTED_ALL_ROLES = {"ceo", "developer", "product", "qa", "research", "ux", "marketing"}
+EXPECTED_ACTIVE_ROLES = set(EXPECTED_ALL_ROLES)
+EXPECTED_PLANNED_ROLES = set()
 
 
 # ==============================================================================
@@ -94,7 +94,6 @@ def test_cli_default_human_readable_output():
     assert "Planned Agents" in stdout
     assert "Agents:" in stdout
     assert "[ACTIVE]" in stdout
-    assert "[PLANNED]" in stdout
 
 
 def test_cli_default_is_not_json():
@@ -217,14 +216,14 @@ def test_ac2_agent_counts():
 
     # Top-level counts
     assert data["total_agents"] == 7, "total_agents should be 7"
-    assert data["active_agents"] == 4, "active_agents should be 4"
-    assert data["planned_agents"] == 3, "planned_agents should be 3"
+    assert data["active_agents"] == len(EXPECTED_ACTIVE_ROLES), "active_agents should match expected active roles"
+    assert data["planned_agents"] == len(EXPECTED_PLANNED_ROLES), "planned_agents should match expected planned roles"
 
     # Summary counts
     summary = data["summary"]
     assert summary["total_agents"] == 7
-    assert summary["active_agents"] == 4
-    assert summary["planned_agents"] == 3
+    assert summary["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
+    assert summary["planned_agents"] == len(EXPECTED_PLANNED_ROLES)
 
 
 def test_ac2_agents_list_all_roles():
@@ -283,8 +282,8 @@ def test_location_agnostic_repo_root_flag():
         assert result.returncode == 0
         data = json.loads(result.stdout)
         assert data["total_agents"] == 7
-        assert data["active_agents"] == 4
-        assert data["planned_agents"] == 3
+        assert data["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
+        assert data["planned_agents"] == len(EXPECTED_PLANNED_ROLES)
 
 
 def test_location_agnostic_execution():
@@ -299,8 +298,8 @@ def test_location_agnostic_execution():
         assert result.returncode == 0
         data = json.loads(result.stdout)
         assert data["total_agents"] == 7
-        assert data["active_agents"] == 4
-        assert data["planned_agents"] == 3
+        assert data["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
+        assert data["planned_agents"] == len(EXPECTED_PLANNED_ROLES)
 
 
 def test_missing_readme_fallback():

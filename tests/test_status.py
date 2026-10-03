@@ -50,8 +50,8 @@ from jester_ai_company.status import (
 import status as root_status
 
 EXPECTED_ROLES = {"ceo", "product", "research", "ux", "marketing", "developer", "qa"}
-EXPECTED_ACTIVE_ROLES = {"ceo", "product", "developer", "qa"}
-EXPECTED_PLANNED_ROLES = {"research", "ux", "marketing"}
+EXPECTED_ACTIVE_ROLES = set(EXPECTED_ROLES)
+EXPECTED_PLANNED_ROLES = set()
 
 
 # ==============================================================================
@@ -125,16 +125,18 @@ def test_active_agents_status_and_paths():
 
 
 def test_planned_agents_status_and_paths():
-    """FR 2: Planned agents (research, ux, marketing) have status PLANNED and path None."""
-    status_data = get_company_status()
-    agents = status_data["agents"]
-    agent_by_role = {a["role"]: a for a in agents}
-
-    for role in EXPECTED_PLANNED_ROLES:
-        agent = agent_by_role[role]
-        assert agent["id"] == role, f"Role '{role}' missing or mismatched id"
-        assert agent["status"] == "PLANNED", f"Role '{role}' should be PLANNED"
-        assert agent["path"] is None
+    """FR 2: Planned agents (research, ux, marketing) have status PLANNED and path None when not yet registered."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_root = Path(tmpdir)
+        (mock_root / ".agents" / "agents" / "ceo").mkdir(parents=True)
+        (mock_root / ".agents" / "agents" / "ceo" / "agent.md").write_text("# CEO", encoding="utf-8")
+        status_data = get_company_status(repo_root=mock_root)
+        agent_by_role = {a["role"]: a for a in status_data["agents"]}
+        for role in ("research", "ux", "marketing"):
+            agent = agent_by_role[role]
+            assert agent["id"] == role, f"Role '{role}' missing or mismatched id"
+            assert agent["status"] == "PLANNED", f"Role '{role}' should be PLANNED"
+            assert agent["path"] is None
 
 
 # ==============================================================================
@@ -214,14 +216,14 @@ def test_summary_agent_counts():
     summary = status_data["summary"]
 
     assert summary["total_agents"] == 7
-    assert summary["active_agents"] == 4
-    assert summary["planned_agents"] == 3
+    assert summary["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
+    assert summary["planned_agents"] == len(EXPECTED_PLANNED_ROLES)
     assert summary["active_agents"] + summary["planned_agents"] == summary["total_agents"]
 
     # Top-level mirrors
     assert status_data["total_agents"] == 7
-    assert status_data["active_agents"] == 4
-    assert status_data["planned_agents"] == 3
+    assert status_data["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
+    assert status_data["planned_agents"] == len(EXPECTED_PLANNED_ROLES)
 
 
 def test_implemented_capabilities_catalog():
@@ -258,12 +260,25 @@ def test_default_human_readable_console_output():
     assert "Health           : OPERATIONAL [OK]" in console_out
     assert "Summary:" in console_out
     assert "Total Agents   : 7" in console_out
-    assert "Active Agents  : 4" in console_out
-    assert "Planned Agents : 3" in console_out
+    assert f"Active Agents  : {len(EXPECTED_ACTIVE_ROLES)}" in console_out
+    assert f"Planned Agents : {len(EXPECTED_PLANNED_ROLES)}" in console_out
     assert "Implemented Capabilities:" in console_out
     assert "company_status" in console_out
     assert "[ACTIVE]   CEO Agent (ceo)" in console_out
-    assert "[PLANNED]  Research Agent (research)" in console_out
+    assert "[ACTIVE]   Research Agent (research)" in console_out
+
+    # Verify formatting of planned agents with mock data
+    mock_status = {
+        "company_name": "Jester AI Company",
+        "health": "healthy",
+        "summary": {"total_agents": 1, "active_agents": 0, "planned_agents": 1},
+        "capabilities": [],
+        "implemented_capabilities": [],
+        "agents": [{"role": "research", "title": "Research Agent", "status": "PLANNED", "path": None}],
+        "metadata": {"version": "0.1.0", "timestamp": "2026-10-03T00:00:00Z"},
+    }
+    mock_out = format_status_console(mock_status)
+    assert "[PLANNED]  Research Agent (research)" in mock_out
 
     # Must NOT be JSON
     with pytest.raises(json.JSONDecodeError):
@@ -382,7 +397,7 @@ def test_entrypoint_root_status_script():
     )
     assert result.returncode == 0
     assert "JESTER AI COMPANY STATUS" in result.stdout
-    assert "Active Agents  : 4" in result.stdout
+    assert f"Active Agents  : {len(EXPECTED_ACTIVE_ROLES)}" in result.stdout
 
 
 def test_entrypoint_root_status_script_json():
@@ -396,7 +411,7 @@ def test_entrypoint_root_status_script_json():
     assert result.returncode == 0
     data = json.loads(result.stdout)
     assert data["company_name"] == "Jester AI Company"
-    assert data["active_agents"] == 4
+    assert data["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
 
 
 def test_entrypoint_module_status_help():
@@ -479,7 +494,7 @@ def test_location_agnostic_execution():
         data = json.loads(result.stdout)
         assert data["company_name"] == "Jester AI Company"
         assert data["summary"]["total_agents"] == 7
-        assert data["summary"]["active_agents"] == 4
+        assert data["summary"]["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
 
 
 def test_repo_root_flag():
@@ -493,7 +508,7 @@ def test_repo_root_flag():
     assert result.returncode == 0
     data = json.loads(result.stdout)
     assert data["company_name"] == "Jester AI Company"
-    assert data["summary"]["active_agents"] == 4
+    assert data["summary"]["active_agents"] == len(EXPECTED_ACTIVE_ROLES)
 
 
 def test_dynamic_agent_detection_mock_directory():

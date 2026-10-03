@@ -168,7 +168,10 @@ def get_pipeline_telemetry(repo_root: Optional[Path] = None) -> Dict[str, Any]:
         return empty_telemetry
 
     try:
-        run_dirs = [d for d in runs_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        run_dirs = [
+            d for d in runs_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".") and d.name.startswith("run_")
+        ]
     except OSError:
         return empty_telemetry
 
