@@ -219,6 +219,7 @@ from .dag import (
     select_ready_work_items,
     validate_dag_structure,
 )
+from .engineering_pipeline import EngineeringPipelineAdapter
 from .context import (
     assemble_specialist_context,
 )
@@ -353,12 +354,14 @@ class CompanyService:
         verbose: bool = False,
         repo_root: Optional[Path] = None,
         runtime: Optional[AntigravityRuntime] = None,
+        enable_engineering_pipeline: bool = True,
     ):
         self.repo_root = repo_root or Path(__file__).resolve().parent.parent
         self.company = company or create_default_company(self.repo_root)
         self.output_dir = Path(output_dir)
         self.verbose = verbose
         self.runtime = runtime or AntigravityRuntime(repo_root=self.repo_root)
+        self.enable_engineering_pipeline = enable_engineering_pipeline
         self.executor = TaskExecutor(
             company=self.company,
             output_dir=str(self.output_dir),
@@ -1595,6 +1598,7 @@ class CompanyService:
         max_duration_seconds: int = 120,
         project_id: Optional[str] = None,
         grant_id: Optional[str] = None,
+        repo_root: Optional[Path] = None,
     ) -> ExecutionGrant:
         """Create and validate an immutable ExecutionGrant bound to verified company state (STEP 13B-1).
 
@@ -1658,7 +1662,8 @@ class CompanyService:
             )
 
         # 5. Resolve repo HEAD commit (Requirement 5)
-        base_commit = resolve_repo_head_commit(self.repo_root)
+        target_repo = (Path(repo_root) if repo_root else self.repo_root).resolve()
+        base_commit = resolve_repo_head_commit(target_repo)
 
         # 6. Generate unique grant_id if not provided
         gid = grant_id or f"grant_{task.id}_{uuid.uuid4().hex[:8]}"
@@ -1683,8 +1688,9 @@ class CompanyService:
 
         # Validate approved paths against protected and test policies upfront
         all_approved = list(grant.approved_files_to_modify) + list(grant.approved_files_to_create)
+        is_main_repo = (target_repo == self.repo_root.resolve())
         for rel_path in all_approved:
-            if is_protected_path(rel_path, protect_company_control=True):
+            if is_protected_path(rel_path, protect_company_control=is_main_repo):
                 raise ProtectedPathError(f"Approved path '{rel_path}' is protected by company policy.")
             if is_test_file(rel_path) and not grant.allow_test_modifications:
                 raise TestModificationForbiddenError(
@@ -1719,6 +1725,7 @@ class CompanyService:
         repair_id: Optional[str] = None,
         repair_iteration: Optional[int] = None,
         allow_stale_head: bool = False,
+        repo_root: Optional[Path] = None,
     ) -> "BoundedDeveloperExecutionOutcome":
         """Execute real Developer agent for bounded code mutation inside an isolated worktree.
 
@@ -1736,7 +1743,9 @@ class CompanyService:
         11. Guaranteed worktree cleanup on all exit paths.
         """
         # 1. Base commit check (Fail closed on stale repository)
-        current_head = resolve_repo_head_commit(self.repo_root)
+        target_repo = (Path(repo_root) if repo_root else self.repo_root).resolve()
+        is_main_repo = (target_repo == self.repo_root.resolve())
+        current_head = resolve_repo_head_commit(target_repo)
         if current_head != grant.base_commit_hash and not allow_stale_head:
             return BoundedDeveloperExecutionOutcome(
                 grant_id=grant.grant_id,
@@ -1768,9 +1777,9 @@ class CompanyService:
 
         # 3. Create isolated worktree
         manager = WorktreeManager(
-            repo_root=self.repo_root,
+            repo_root=target_repo,
             worktrees_dir=Path(self.output_dir) / "worktrees",
-            protect_company_control=protect_company_control,
+            protect_company_control=protect_company_control if is_main_repo else False,
         )
         session = manager.create_worktree(grant)
         cleaned_up = False
@@ -2421,6 +2430,7 @@ class CompanyService:
         code_patch_artifact_id: Optional[str] = None,
         qa_report_artifact_id: Optional[str] = None,
         timeout: Optional[float] = None,
+        target_repo_root: Optional[Path] = None,
     ) -> TaskRun:
         """Execute independent QA verification execution against a verified CODE_PATCH (STEP 14B).
 
@@ -2659,14 +2669,16 @@ class CompanyService:
                 )
 
         # 7. Create fresh isolated Git worktree from exact base_commit_hash
+        target_repo = (Path(target_repo_root) if target_repo_root else self.repo_root).resolve()
+        is_main_repo = (target_repo == self.repo_root.resolve())
         session_id = f"qa_exec_{task.id}_{uuid.uuid4().hex[:8]}"
         manager = WorktreeManager(
-            repo_root=self.repo_root,
+            repo_root=target_repo,
             worktrees_dir=Path(self.output_dir) / "worktrees",
-            protect_company_control=True,
+            protect_company_control=is_main_repo,
         )
 
-        repo_state_before = self._get_repo_working_tree_state()
+        repo_state_before = self._get_repo_working_tree_state(repo_path=target_repo)
         session = manager.create_qa_worktree(base_commit_hash=base_commit, session_id=session_id)
 
         run = task.create_run()
@@ -2815,7 +2827,7 @@ class CompanyService:
             except Exception as clean_err:
                 logger.error("Failed to clean up QA worktree: %s", clean_err)
 
-            repo_state_after = self._get_repo_working_tree_state()
+            repo_state_after = self._get_repo_working_tree_state(repo_path=target_repo)
             if repo_state_before != repo_state_after:
                 raise ExecutionError(f"Repository mutation detected during QA execution task '{task.id}'!")
 
@@ -2832,6 +2844,7 @@ class CompanyService:
         max_repair_iterations: int = MAX_REPAIR_ITERATIONS,
         allow_test_modifications: bool = False,
         timeout: Optional[float] = None,
+        target_repo_root: Optional[Path] = None,
     ) -> DeveloperQARepairLoopResult:
         """Execute the Developer ↔ QA Controlled Repair Loop (STEP 15).
 
@@ -2853,7 +2866,8 @@ class CompanyService:
         10. Final durable DEVELOPER_QA_REPAIR_REPORT artifact materialized with full history.
         11. Zero main-repository mutation guaranteed.
         """
-        repo_state_before = self._get_repo_working_tree_state()
+        target_repo = (Path(target_repo_root) if target_repo_root else self.repo_root).resolve()
+        repo_state_before = self._get_repo_working_tree_state(repo_path=target_repo)
 
         try:
             task = self.get_task(task_id, project_id=project_id)
@@ -2886,6 +2900,8 @@ class CompanyService:
                                     or meta.get("original_task_id") == task.id
                                     or other_task.id == task.id
                                     or other_task.id.startswith(f"qa_exec_{task.id}")
+                                    or other_task.id.startswith(task.id)
+                                    or other_task.id == f"{task.id}_qa_verify"
                                 ):
                                     qa_exec_art = art
                                     break
@@ -3246,6 +3262,7 @@ class CompanyService:
                     repair_id=repair_id,
                     repair_iteration=iteration,
                     allow_stale_head=False,
+                    repo_root=target_repo,
                 )
 
                 if mutation_outcome.status != DeveloperMutationStatus.SUCCESS.value or not mutation_outcome.patch_artifact:
@@ -3335,6 +3352,7 @@ class CompanyService:
                     code_patch_artifact_id=repaired_patch_art.id,
                     qa_report_artifact_id=repaired_qa_report_art.id,
                     timeout=timeout,
+                    target_repo_root=target_repo,
                 )
                 if qa_verify_run.status != RunStatus.SUCCESS.value:
                     final_status = RepairWorkflowStatus.QA_REEXECUTION_FAILED.value
@@ -3439,7 +3457,7 @@ class CompanyService:
             return result
 
         finally:
-            repo_state_after = self._get_repo_working_tree_state()
+            repo_state_after = self._get_repo_working_tree_state(repo_path=target_repo)
             if repo_state_before != repo_state_after:
                 raise ExecutionError(f"Repository mutation detected during repair loop execution on task '{task_id}'!")
 
@@ -3920,9 +3938,10 @@ class CompanyService:
 
         # Check if already completed
         if len(completed_ids) == len(run.active_plan.work_items) and len(run.active_plan.work_items) > 0:
-            run.transition_to(CompanyRunState.COMPLETED)
-            run.add_event("RUN_COMPLETED", reason="All planned non-code work items completed and verified")
-            self.save_company_run(run)
+            if not run.is_code_workflow:
+                run.transition_to(CompanyRunState.COMPLETED)
+                run.add_event("RUN_COMPLETED", reason="All planned non-code work items completed and verified")
+                self.save_company_run(run)
             return run
 
         # Select ready items deterministically
@@ -3930,9 +3949,10 @@ class CompanyService:
         if not ready_items:
             # Check if all completed
             if all(run.work_item_states.get(item.work_item_id) == WorkItemState.COMPLETED.value for item in run.active_plan.work_items):
-                run.transition_to(CompanyRunState.COMPLETED)
-                run.add_event("RUN_COMPLETED", reason="All planned non-code work items completed and verified")
-                self.save_company_run(run)
+                if not run.is_code_workflow:
+                    run.transition_to(CompanyRunState.COMPLETED)
+                    run.add_event("RUN_COMPLETED", reason="All planned non-code work items completed and verified")
+                    self.save_company_run(run)
                 return run
 
             # If not all completed and none ready, check if any failed
@@ -3963,11 +3983,11 @@ class CompanyService:
             self.save_company_run(run)
             raise OrchestrationError(err_msg)
 
-        # Enforce STEP 17B-3 scope boundary: non-code roles only
-        if role in ("developer", "qa"):
+        # Enforce STEP 17B-4 role dispatching
+        if role == "qa":
             err_msg = (
-                f"Role '{role}' is unsupported in STEP 17B-3 (non-code workflows only). "
-                f"Execution stopped at phase boundary."
+                "Role 'qa' cannot be scheduled as an ordinary CEO-planned DAG work item. "
+                "QA is application-owned inside the engineering pipeline."
             )
             target_item.state = WorkItemState.BLOCKED.value
             run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
@@ -3984,6 +4004,34 @@ class CompanyService:
             )
             self.save_company_run(run)
             raise UnsupportedRoleError(err_msg)
+
+        if role == "developer":
+            obj_constraints = [str(c).lower() for c in (run.objective.constraints or [])]
+            if not getattr(self, "enable_engineering_pipeline", True) or any(
+                c in ("no developer role", "no code changes", "no source-code mutation") for c in obj_constraints
+            ):
+                err_msg = (
+                    f"Role '{role}' is unsupported in STEP 17B-3 (non-code workflows only). "
+                    f"Execution stopped at phase boundary."
+                )
+                target_item.state = WorkItemState.BLOCKED.value
+                run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
+                run.transition_to(CompanyRunState.BLOCKED, error=err_msg)
+                run.add_event(
+                    event_type="WORK_ITEM_FAILED",
+                    work_item_id=target_item.work_item_id,
+                    role=role,
+                    reason=err_msg,
+                )
+                run.add_event(
+                    event_type="RUN_FAILED",
+                    reason=err_msg,
+                )
+                self.save_company_run(run)
+                raise UnsupportedRoleError(err_msg)
+
+            # Dispatch Developer macro work item to EngineeringPipelineAdapter
+            return self.execute_developer_company_work(run_id=run.run_id, work_item_id=target_item.work_item_id)
 
         if role not in ("research", "product", "ux", "marketing"):
             err_msg = f"Unknown or unsupported specialist role '{role}' in work item '{target_item.work_item_id}'."
@@ -4216,7 +4264,7 @@ class CompanyService:
             run.work_item_states.get(w.work_item_id) == WorkItemState.COMPLETED.value
             for w in run.active_plan.work_items
         )
-        if all_completed:
+        if all_completed and not run.is_code_workflow:
             run.transition_to(CompanyRunState.COMPLETED)
             run.add_event(
                 event_type="RUN_COMPLETED",
@@ -4234,6 +4282,7 @@ class CompanyService:
         """Execute successive ready work items until a terminal state or phase boundary is reached.
 
         Bounded by max_steps to prevent infinite loops.
+        Stops at READY_FOR_HUMAN_APPLY for code workflows (autonomous company cannot approve apply).
         """
         steps = 0
         while steps < max_steps:
@@ -4243,6 +4292,7 @@ class CompanyService:
                 CompanyRunState.FAILED.value,
                 CompanyRunState.BLOCKED.value,
                 CompanyRunState.WAITING_FOR_HUMAN.value,
+                CompanyRunState.READY_FOR_HUMAN_APPLY.value,
             ):
                 break
             if run.state != CompanyRunState.RUNNING.value:
@@ -4257,9 +4307,10 @@ class CompanyService:
             if not ready_items:
                 # Check if all completed
                 if all(st == WorkItemState.COMPLETED.value for st in run.work_item_states.values()):
-                    run.transition_to(CompanyRunState.COMPLETED)
-                    run.add_event("RUN_COMPLETED", reason="All planned non-code work items completed and verified")
-                    self.save_company_run(run)
+                    if not run.is_code_workflow:
+                        run.transition_to(CompanyRunState.COMPLETED)
+                        run.add_event("RUN_COMPLETED", reason="All planned non-code work items completed and verified")
+                        self.save_company_run(run)
                 break
 
             # Execute next unit of work
@@ -4305,6 +4356,75 @@ class CompanyService:
         runs_dir.mkdir(parents=True, exist_ok=True)
         run_file = runs_dir / f"{run.run_id}.json"
         run_file.write_text(json.dumps(run.to_dict(), indent=2), encoding="utf-8")
+
+    def execute_developer_company_work(
+        self,
+        run_id: str,
+        work_item_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> CompanyRun:
+        """Execute a ready Developer macro work item through the engineering pipeline."""
+        run = self.get_company_run(run_id)
+        if not run.active_plan:
+            raise PlanValidationError(f"CompanyRun '{run_id}' has no active plan.")
+
+        target_item = None
+        if work_item_id:
+            target_item = next((w for w in run.active_plan.work_items if w.work_item_id == work_item_id), None)
+        else:
+            completed_ids = {
+                item_id for item_id, st in run.work_item_states.items()
+                if st == WorkItemState.COMPLETED.value
+            }
+            ready_items = select_ready_work_items(run.active_plan, completed_ids, run.work_item_states)
+            for item in ready_items:
+                if item.role.lower() == "developer":
+                    target_item = item
+                    break
+
+        if not target_item:
+            raise OrchestrationError(f"No ready developer work item found in CompanyRun '{run_id}'.")
+
+        adapter = EngineeringPipelineAdapter(self)
+        return adapter.execute_developer_work(run=run, target_item=target_item, timeout=timeout)
+
+    def approve_company_repo_apply(
+        self,
+        run_id: str,
+        founder_approval_id: str,
+        approver: str = "Human Founder",
+    ) -> RealRepoApplyGrant:
+        """Explicitly approve real repository apply by Human Founder for a CompanyRun (STEP 17B-4)."""
+        run = self.get_company_run(run_id)
+        adapter = EngineeringPipelineAdapter(self)
+        return adapter.approve_repo_apply(
+            run=run,
+            founder_approval_id=founder_approval_id,
+            approver=approver,
+        )
+
+    def apply_approved_company_repo(
+        self,
+        run_id: str,
+    ) -> RealRepoApplyResult:
+        """Execute transactional application of approved patch to repository for a CompanyRun (STEP 17B-4)."""
+        run = self.get_company_run(run_id)
+        adapter = EngineeringPipelineAdapter(self)
+        return adapter.apply_repo(run=run)
+
+    def apply_company_repo_with_human_approval(
+        self,
+        run_id: str,
+        founder_approval_id: str,
+        approver: str = "Human Founder",
+    ) -> RealRepoApplyResult:
+        """Convenience helper: approve and execute real repository apply in sequence."""
+        self.approve_company_repo_apply(
+            run_id=run_id,
+            founder_approval_id=founder_approval_id,
+            approver=approver,
+        )
+        return self.apply_approved_company_repo(run_id=run_id)
 
 
 def _resolve_artifact_file_path(base_output_dir: Path, artifact: Artifact) -> Path:

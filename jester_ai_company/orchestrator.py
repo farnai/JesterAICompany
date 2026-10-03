@@ -491,6 +491,11 @@ class CompanyRun:
     escalation: Optional[HumanEscalation] = None
     employee_summaries: List[EmployeeResultSummary] = field(default_factory=list)
     events: List[Dict[str, Any]] = field(default_factory=list)
+    code_patch_artifact_id: Optional[str] = None
+    qa_execution_report_artifact_id: Optional[str] = None
+    real_repo_apply_proposal_id: Optional[str] = None
+    real_repo_apply_grant_id: Optional[str] = None
+    real_repo_apply_result: Optional[Dict[str, Any]] = None
     created_at: str = field(default_factory=_utc_now_iso)
     updated_at: str = field(default_factory=_utc_now_iso)
     completed_at: Optional[str] = None
@@ -500,6 +505,18 @@ class CompanyRun:
         valid_states = {s.value for s in CompanyRunState}
         if self.state not in valid_states:
             raise TransitionPolicyError(f"Invalid CompanyRunState '{self.state}'.")
+
+    @property
+    def is_code_workflow(self) -> bool:
+        """Return True if run involves a Developer code modification workflow."""
+        if self.code_patch_artifact_id or self.real_repo_apply_proposal_id or self.real_repo_apply_grant_id:
+            return True
+        if self.active_plan:
+            return any((w.role or "").strip().lower() == "developer" for w in self.active_plan.work_items)
+        for p in self.plan_history:
+            if any((w.role or "").strip().lower() == "developer" for w in p.work_items):
+                return True
+        return False
 
     def transition_to(
         self,
@@ -518,9 +535,15 @@ class CompanyRun:
                 f"Allowed transitions: {sorted(valid_targets) if valid_targets else 'None (terminal state)'}."
             )
 
-        if target == CompanyRunState.READY_FOR_HUMAN_APPLY.value and not is_code_workflow:
+        is_code = is_code_workflow or self.is_code_workflow
+        if target == CompanyRunState.READY_FOR_HUMAN_APPLY.value and not is_code:
             raise TransitionPolicyError(
                 f"Invalid transition to '{target}': non-code company workflows cannot enter READY_FOR_HUMAN_APPLY."
+            )
+
+        if target == CompanyRunState.COMPLETED.value and is_code and curr != CompanyRunState.APPLYING.value:
+            raise TransitionPolicyError(
+                f"Invalid transition to '{target}': Direct transition from {curr} to COMPLETED is forbidden for code workflows without going through READY_FOR_HUMAN_APPLY and APPLYING."
             )
 
         self.state = target
@@ -586,6 +609,11 @@ class CompanyRun:
             "escalation": self.escalation.to_dict() if self.escalation else None,
             "employee_summaries": [s.to_dict() for s in self.employee_summaries],
             "events": [dict(e) for e in self.events],
+            "code_patch_artifact_id": self.code_patch_artifact_id,
+            "qa_execution_report_artifact_id": self.qa_execution_report_artifact_id,
+            "real_repo_apply_proposal_id": self.real_repo_apply_proposal_id,
+            "real_repo_apply_grant_id": self.real_repo_apply_grant_id,
+            "real_repo_apply_result": self.real_repo_apply_result,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
@@ -644,6 +672,11 @@ class CompanyRun:
             escalation=escalation,
             employee_summaries=employee_summaries,
             events=events,
+            code_patch_artifact_id=data.get("code_patch_artifact_id"),
+            qa_execution_report_artifact_id=data.get("qa_execution_report_artifact_id"),
+            real_repo_apply_proposal_id=data.get("real_repo_apply_proposal_id"),
+            real_repo_apply_grant_id=data.get("real_repo_apply_grant_id"),
+            real_repo_apply_result=data.get("real_repo_apply_result"),
             created_at=data.get("created_at") or _utc_now_iso(),
             updated_at=data.get("updated_at") or _utc_now_iso(),
             completed_at=data.get("completed_at"),

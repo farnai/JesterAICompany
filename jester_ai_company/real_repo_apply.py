@@ -316,6 +316,11 @@ class RealRepoApplyGrant:
     status: str = "ISSUED"  # "ISSUED" -> "CONSUMED" -> "INVALIDATED"
     validity_duration_seconds: int = 3600
 
+    @property
+    def founder_approval_id(self) -> str:
+        """Alias for human_approval_id for founder approval workflows."""
+        return self.human_approval_id
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "schema_version": self.schema_version,
