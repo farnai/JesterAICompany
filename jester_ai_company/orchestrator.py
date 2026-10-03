@@ -15,7 +15,7 @@ Defines the typed foundation for multi-specialist company workflows:
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 import uuid
 
 
@@ -48,6 +48,11 @@ class TransitionPolicyError(OrchestrationError):
     pass
 
 
+class UnsupportedRoleError(OrchestrationError):
+    """Raised when a role is not supported for execution in the current phase."""
+    pass
+
+
 class EscalationRequiredError(OrchestrationError):
     """Raised when an unresolvable conflict requires human intervention."""
     pass
@@ -74,6 +79,53 @@ class CompanyRunState(str, Enum):
     COMPLETED = "COMPLETED"
     BLOCKED = "BLOCKED"
     FAILED = "FAILED"
+
+
+VALID_COMPANY_RUN_TRANSITIONS: Dict[str, Set[str]] = {
+    CompanyRunState.CREATED.value: {
+        CompanyRunState.PLANNING.value,
+        CompanyRunState.FAILED.value,
+        CompanyRunState.BLOCKED.value,
+    },
+    CompanyRunState.PLANNING.value: {
+        CompanyRunState.PLAN_READY.value,
+        CompanyRunState.FAILED.value,
+        CompanyRunState.BLOCKED.value,
+    },
+    CompanyRunState.PLAN_READY.value: {
+        CompanyRunState.RUNNING.value,
+        CompanyRunState.PLANNING.value,
+        CompanyRunState.FAILED.value,
+        CompanyRunState.BLOCKED.value,
+    },
+    CompanyRunState.RUNNING.value: {
+        CompanyRunState.COMPLETED.value,
+        CompanyRunState.WAITING_FOR_HUMAN.value,
+        CompanyRunState.READY_FOR_HUMAN_APPLY.value,
+        CompanyRunState.PLANNING.value,
+        CompanyRunState.BLOCKED.value,
+        CompanyRunState.FAILED.value,
+    },
+    CompanyRunState.WAITING_FOR_HUMAN.value: {
+        CompanyRunState.RUNNING.value,
+        CompanyRunState.PLANNING.value,
+        CompanyRunState.BLOCKED.value,
+        CompanyRunState.FAILED.value,
+    },
+    CompanyRunState.READY_FOR_HUMAN_APPLY.value: {
+        CompanyRunState.APPLYING.value,
+        CompanyRunState.BLOCKED.value,
+        CompanyRunState.FAILED.value,
+    },
+    CompanyRunState.APPLYING.value: {
+        CompanyRunState.COMPLETED.value,
+        CompanyRunState.BLOCKED.value,
+        CompanyRunState.FAILED.value,
+    },
+    CompanyRunState.COMPLETED.value: set(),
+    CompanyRunState.BLOCKED.value: set(),
+    CompanyRunState.FAILED.value: set(),
+}
 
 
 class WorkItemState(str, Enum):
@@ -437,6 +489,8 @@ class CompanyRun:
     specialist_invocation_count: int = 0
     replan_count: int = 0
     escalation: Optional[HumanEscalation] = None
+    employee_summaries: List[EmployeeResultSummary] = field(default_factory=list)
+    events: List[Dict[str, Any]] = field(default_factory=list)
     created_at: str = field(default_factory=_utc_now_iso)
     updated_at: str = field(default_factory=_utc_now_iso)
     completed_at: Optional[str] = None
@@ -447,14 +501,64 @@ class CompanyRun:
         if self.state not in valid_states:
             raise TransitionPolicyError(f"Invalid CompanyRunState '{self.state}'.")
 
-    def transition_to(self, new_state: CompanyRunState, error: Optional[str] = None) -> None:
-        """Safely transition state machine."""
-        self.state = new_state.value
+    def transition_to(
+        self,
+        new_state: CompanyRunState,
+        error: Optional[str] = None,
+        is_code_workflow: bool = False,
+    ) -> None:
+        """Safely transition state machine according to explicit policy."""
+        curr = self.state
+        target = new_state.value if isinstance(new_state, CompanyRunState) else str(new_state)
+
+        valid_targets = VALID_COMPANY_RUN_TRANSITIONS.get(curr, set())
+        if target not in valid_targets:
+            raise TransitionPolicyError(
+                f"Invalid CompanyRun transition from '{curr}' to '{target}'. "
+                f"Allowed transitions: {sorted(valid_targets) if valid_targets else 'None (terminal state)'}."
+            )
+
+        if target == CompanyRunState.READY_FOR_HUMAN_APPLY.value and not is_code_workflow:
+            raise TransitionPolicyError(
+                f"Invalid transition to '{target}': non-code company workflows cannot enter READY_FOR_HUMAN_APPLY."
+            )
+
+        self.state = target
         self.updated_at = _utc_now_iso()
         if error:
             self.error = error
-        if new_state in (CompanyRunState.COMPLETED, CompanyRunState.FAILED, CompanyRunState.BLOCKED):
+        if target in (
+            CompanyRunState.COMPLETED.value,
+            CompanyRunState.FAILED.value,
+            CompanyRunState.BLOCKED.value,
+        ):
             self.completed_at = _utc_now_iso()
+
+    def add_event(
+        self,
+        event_type: str,
+        reason: Optional[str] = None,
+        work_item_id: Optional[str] = None,
+        role: Optional[str] = None,
+        task_id: Optional[str] = None,
+        artifact_refs: Optional[List[Dict[str, Any]]] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Record a bounded operational audit event."""
+        event: Dict[str, Any] = {
+            "timestamp": _utc_now_iso(),
+            "event_type": str(event_type),
+            "company_run_id": self.run_id,
+            "work_item_id": work_item_id,
+            "role": role,
+            "task_id": task_id,
+            "artifact_refs": list(artifact_refs or []),
+            "reason": reason,
+            "details": dict(details or {}),
+        }
+        self.events.append(event)
+        self.updated_at = _utc_now_iso()
+        return event
 
     def set_plan(self, plan: CEOOrchestrationPlan) -> None:
         """Register or replace active plan, preserving immutable plan history."""
@@ -480,6 +584,8 @@ class CompanyRun:
             "specialist_invocation_count": self.specialist_invocation_count,
             "replan_count": self.replan_count,
             "escalation": self.escalation.to_dict() if self.escalation else None,
+            "employee_summaries": [s.to_dict() for s in self.employee_summaries],
+            "events": [dict(e) for e in self.events],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
@@ -519,6 +625,12 @@ class CompanyRun:
         if data.get("escalation"):
             escalation = HumanEscalation.from_dict(data["escalation"])
 
+        employee_summaries = [
+            EmployeeResultSummary.from_dict(s)
+            for s in data.get("employee_summaries", [])
+        ]
+        events = list(data.get("events", []))
+
         return cls(
             run_id=run_id.strip(),
             objective=objective,
@@ -530,6 +642,8 @@ class CompanyRun:
             specialist_invocation_count=int(data.get("specialist_invocation_count", 0)),
             replan_count=int(data.get("replan_count", 0)),
             escalation=escalation,
+            employee_summaries=employee_summaries,
+            events=events,
             created_at=data.get("created_at") or _utc_now_iso(),
             updated_at=data.get("updated_at") or _utc_now_iso(),
             completed_at=data.get("completed_at"),

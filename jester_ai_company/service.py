@@ -202,7 +202,25 @@ from .proposal import (
 from .runtime import AntigravityRuntime, InvalidAgentError
 from .orchestrator import (
     CEOOrchestrationPlan,
+    CEOPlannedWorkItem,
     CompanyObjective,
+    CompanyRun,
+    CompanyRunState,
+    EmployeeResultSummary,
+    HumanEscalation,
+    OrchestrationError,
+    PlanValidationError,
+    TransitionPolicyError,
+    UnsupportedRoleError,
+    WorkItemState,
+)
+from .dag import (
+    MAX_PLANNED_WORK_ITEMS,
+    select_ready_work_items,
+    validate_dag_structure,
+)
+from .context import (
+    assemble_specialist_context,
 )
 from .ceo_contract import (
     build_ceo_planning_prompt,
@@ -349,6 +367,7 @@ class CompanyService:
         )
         self._real_repo_apply_proposals: Dict[str, RealRepoApplyProposal] = {}
         self._real_repo_apply_grants: Dict[str, RealRepoApplyGrant] = {}
+        self._company_runs: Dict[str, CompanyRun] = {}
 
     # --------------------------------------------------------------------------
     # Project Management
@@ -3755,6 +3774,537 @@ class CompanyService:
 
         plan = parse_and_validate_ceo_plan(exec_result.stdout, objective)
         return plan
+
+    # --------------------------------------------------------------------------
+    # Company Run Orchestration Engine (STEP 17B-3)
+    # --------------------------------------------------------------------------
+
+    def create_company_run(self, objective: CompanyObjective) -> CompanyRun:
+        """Create a new CompanyRun coordinator from a CompanyObjective.
+
+        Enforces:
+        - Application-generated run_id (never supplied by CEO).
+        - Initial state CREATED.
+        - Objective bound immutably to run.
+        - Counters initialized to zero.
+        - No active plan initially, empty plan history, no active escalation.
+        - Initial audit event recorded.
+        - Durable minimal V1 state persistence.
+        """
+        if not isinstance(objective, CompanyObjective):
+            raise OrchestrationError("Expected CompanyObjective instance.")
+
+        run_id = f"crun_{uuid.uuid4().hex[:8]}"
+        run = CompanyRun(
+            run_id=run_id,
+            objective=objective,
+            state=CompanyRunState.CREATED.value,
+        )
+        run.add_event(
+            event_type="RUN_CREATED",
+            reason="CompanyRun created from CompanyObjective",
+        )
+        self.save_company_run(run)
+        return run
+
+    def plan_company_run(
+        self,
+        run_id: str,
+        timeout: Optional[float] = None,
+    ) -> CompanyRun:
+        """Execute the CEO planning phase for a CompanyRun.
+
+        Enforces:
+        - State transition: CREATED -> PLANNING.
+        - Real CEO planning invocation via propose_initial_company_plan.
+        - Increments ceo_invocation_count by exactly 1.
+        - Validated plan attached to run and immutable plan history updated.
+        - State transition: PLANNING -> PLAN_READY.
+        - Fail-closed on error: transition to FAILED with error recorded.
+        - Audit events recorded.
+        """
+        run = self.get_company_run(run_id)
+        run.transition_to(CompanyRunState.PLANNING)
+        run.add_event(
+            event_type="PLANNING_STARTED",
+            reason="CEO initial planning invocation started",
+        )
+        run.ceo_invocation_count += 1
+        self.save_company_run(run)
+
+        try:
+            plan = self.propose_initial_company_plan(run.objective, timeout=timeout)
+        except Exception as exc:
+            run.transition_to(CompanyRunState.FAILED, error=str(exc))
+            run.add_event(
+                event_type="RUN_FAILED",
+                reason=f"CEO planning failed: {exc}",
+            )
+            self.save_company_run(run)
+            raise
+
+        run.set_plan(plan)
+        run.transition_to(CompanyRunState.PLAN_READY)
+        run.add_event(
+            event_type="CEO_PLAN_ACCEPTED",
+            reason="CEO plan parsed, verified, and accepted",
+            details={
+                "plan_id": plan.plan_id,
+                "work_items_count": len(plan.work_items),
+            },
+        )
+        self.save_company_run(run)
+        return run
+
+    def start_company_run(self, run_id: str) -> CompanyRun:
+        """Start execution of a planned CompanyRun.
+
+        Enforces:
+        - State must be PLAN_READY.
+        - Active plan must exist and pass DAG structural validation again.
+        - State transition: PLAN_READY -> RUNNING.
+        - Audit event recorded.
+        """
+        run = self.get_company_run(run_id)
+        if run.state != CompanyRunState.PLAN_READY.value:
+            raise TransitionPolicyError(
+                f"Cannot start CompanyRun '{run_id}': State is '{run.state}', expected '{CompanyRunState.PLAN_READY.value}'."
+            )
+        if not run.active_plan:
+            raise PlanValidationError(f"CompanyRun '{run_id}' has no active plan.")
+
+        validate_dag_structure(run.active_plan)
+        run.transition_to(CompanyRunState.RUNNING)
+        run.add_event(
+            event_type="RUN_STARTED",
+            reason="CompanyRun transitioned to RUNNING",
+        )
+        self.save_company_run(run)
+        return run
+
+    def execute_next_company_work(self, run_id: str) -> Optional[CompanyRun]:
+        """Execute AT MOST ONE ready macro work item within a RUNNING CompanyRun.
+
+        Deterministic Progression:
+        1. Inspect CompanyRun (requires RUNNING).
+        2. Identify completed work items.
+        3. Deterministically select next ready work item: (priority ASC, work_item_id ASC).
+        4. Validate role: closed mapping ('research', 'product', 'ux', 'marketing').
+           'developer' -> explicit UnsupportedRoleError boundary (fail closed / stop).
+           'qa' -> UnsupportedRoleError boundary (fail closed / stop).
+        5. Mark work item RUNNING and record audit event.
+        6. Translate CEO planned work item into typed application Task.
+        7. Resolve completed dependency artifacts and enforce ALLOWED_HANDOFF_EDGES.
+        8. Assemble role-specific ContextEnvelope (validating token budget & policies).
+        9. Dispatch to existing specialist execution method.
+        10. Verify resulting canonical artifact exists on disk and SHA-256 matches.
+        11. Create bounded EmployeeResultSummary and bind Task/TaskRun IDs to work item.
+        12. Mark work item COMPLETED and increment specialist_invocation_count.
+        13. Evaluate non-code completion gate (if all plan items COMPLETED -> RUN COMPLETED).
+        14. Persist updated CompanyRun.
+        15. CRITICAL: CEO IS NEVER INVOKED DURING EXECUTION (ceo_invocation_count unchanged).
+        """
+        run = self.get_company_run(run_id)
+        if run.state != CompanyRunState.RUNNING.value:
+            raise TransitionPolicyError(
+                f"Cannot execute work: CompanyRun '{run_id}' is in state '{run.state}', expected '{CompanyRunState.RUNNING.value}'."
+            )
+        if not run.active_plan:
+            raise PlanValidationError(f"CompanyRun '{run_id}' has no active plan.")
+
+        # Completed item IDs
+        completed_ids = {
+            item_id for item_id, st in run.work_item_states.items()
+            if st == WorkItemState.COMPLETED.value
+        }
+
+        # Check if already completed
+        if len(completed_ids) == len(run.active_plan.work_items) and len(run.active_plan.work_items) > 0:
+            run.transition_to(CompanyRunState.COMPLETED)
+            run.add_event("RUN_COMPLETED", reason="All planned non-code work items completed and verified")
+            self.save_company_run(run)
+            return run
+
+        # Select ready items deterministically
+        ready_items = select_ready_work_items(run.active_plan, completed_ids, run.work_item_states)
+        if not ready_items:
+            # Check if all completed
+            if all(run.work_item_states.get(item.work_item_id) == WorkItemState.COMPLETED.value for item in run.active_plan.work_items):
+                run.transition_to(CompanyRunState.COMPLETED)
+                run.add_event("RUN_COMPLETED", reason="All planned non-code work items completed and verified")
+                self.save_company_run(run)
+                return run
+
+            # If not all completed and none ready, check if any failed
+            has_failed = any(st == WorkItemState.FAILED.value for st in run.work_item_states.values())
+            if has_failed:
+                err_msg = "Unresolvable dependency failure: a prerequisite work item failed."
+                run.transition_to(CompanyRunState.FAILED, error=err_msg)
+                run.add_event("RUN_FAILED", reason=err_msg)
+            else:
+                err_msg = "No ready work items available in plan DAG."
+                run.transition_to(CompanyRunState.BLOCKED, error=err_msg)
+                run.add_event("RUN_FAILED", reason=err_msg)
+            self.save_company_run(run)
+            return run
+
+        # Select exactly ONE ready item
+        target_item = ready_items[0]
+        role = target_item.role.lower()
+
+        # Enforce budget limits
+        if run.specialist_invocation_count >= len(run.active_plan.work_items):
+            err_msg = (
+                f"Specialist invocation count ({run.specialist_invocation_count}) "
+                f"exceeds planned work items budget ({len(run.active_plan.work_items)})."
+            )
+            run.transition_to(CompanyRunState.FAILED, error=err_msg)
+            run.add_event("RUN_FAILED", reason=err_msg)
+            self.save_company_run(run)
+            raise OrchestrationError(err_msg)
+
+        # Enforce STEP 17B-3 scope boundary: non-code roles only
+        if role in ("developer", "qa"):
+            err_msg = (
+                f"Role '{role}' is unsupported in STEP 17B-3 (non-code workflows only). "
+                f"Execution stopped at phase boundary."
+            )
+            target_item.state = WorkItemState.BLOCKED.value
+            run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
+            run.transition_to(CompanyRunState.BLOCKED, error=err_msg)
+            run.add_event(
+                event_type="WORK_ITEM_FAILED",
+                work_item_id=target_item.work_item_id,
+                role=role,
+                reason=err_msg,
+            )
+            run.add_event(
+                event_type="RUN_FAILED",
+                reason=err_msg,
+            )
+            self.save_company_run(run)
+            raise UnsupportedRoleError(err_msg)
+
+        if role not in ("research", "product", "ux", "marketing"):
+            err_msg = f"Unknown or unsupported specialist role '{role}' in work item '{target_item.work_item_id}'."
+            target_item.state = WorkItemState.FAILED.value
+            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+            run.transition_to(CompanyRunState.FAILED, error=err_msg)
+            run.add_event(
+                event_type="WORK_ITEM_FAILED",
+                work_item_id=target_item.work_item_id,
+                role=role,
+                reason=err_msg,
+            )
+            run.add_event(
+                event_type="RUN_FAILED",
+                reason=err_msg,
+            )
+            self.save_company_run(run)
+            raise UnsupportedRoleError(err_msg)
+
+        # Mark work item RUNNING
+        target_item.state = WorkItemState.RUNNING.value
+        run.work_item_states[target_item.work_item_id] = WorkItemState.RUNNING.value
+        run.add_event(
+            event_type="WORK_ITEM_STARTED",
+            work_item_id=target_item.work_item_id,
+            role=role,
+            reason=f"Started execution of {target_item.work_item_id}",
+        )
+        self.save_company_run(run)
+
+        # Ensure project exists
+        proj_id = f"proj_{run.run_id}"
+        if proj_id not in self.company.projects:
+            self.create_project(proj_id, name=f"Project for {run.objective.title}")
+        proj = self.get_project(proj_id)
+
+        # Translate to typed Task
+        task_id = f"task_{run.run_id}_{target_item.work_item_id}"
+        task = self.create_task(
+            project_id=proj.id,
+            title=f"[{role.upper()}] {target_item.objective[:60]}",
+            goal=target_item.objective,
+            task_id=task_id,
+            constraints=list(run.objective.constraints),
+            required_roles=[role],
+            expected_output=list(target_item.expected_outputs),
+        )
+        target_item.task_id = task.id
+        target_item.run_id = run.run_id
+
+        # Resolve completed dependencies & attach permitted input artifacts
+        for dep_id in target_item.depends_on:
+            dep_item = next((w for w in run.active_plan.work_items if w.work_item_id == dep_id), None)
+            if dep_item and dep_item.task_id:
+                dep_task = self.get_task(dep_item.task_id, project_id=proj.id)
+                for run_attempt in dep_task.runs:
+                    if run_attempt.status == RunStatus.SUCCESS.value:
+                        for art in run_attempt.artifacts:
+                            producer_norm = (dep_item.role or "").strip().lower()
+                            consumer_norm = role.strip().lower()
+                            if (producer_norm, consumer_norm) in ALLOWED_HANDOFF_EDGES:
+                                self.attach_input_artifact(
+                                    target_task_id=task.id,
+                                    source_artifact_id=art.id,
+                                    project_id=proj.id,
+                                )
+
+        # Assemble and validate role-specific ContextEnvelope
+        available_arts: Dict[str, Artifact] = {}
+        for ref in task.input_artifacts:
+            lineage = self.find_artifact(ref.artifact_id)
+            if lineage:
+                available_arts[ref.artifact_id] = lineage[2]
+
+        assemble_specialist_context(
+            recipient_role=role,
+            objective=run.objective,
+            work_item=target_item,
+            base_output_dir=self.output_dir,
+            available_artifacts=available_arts,
+            artifact_input_refs=task.input_artifacts,
+            summaries=run.employee_summaries,
+            constraints=run.objective.constraints,
+            company_run_state=run.state,
+        )
+
+        # Closed role dispatch
+        try:
+            if role == "research":
+                task_run = self.execute_research_task(task.id, project_id=proj.id)
+            elif role == "product":
+                task_run = self.execute_product_task(task.id, project_id=proj.id)
+            elif role == "ux":
+                task_run = self.execute_ux_task(task.id, project_id=proj.id)
+            elif role == "marketing":
+                task_run = self.execute_marketing_task(task.id, project_id=proj.id)
+            else:
+                raise UnsupportedRoleError(f"Unsupported specialist role '{role}'.")
+        except Exception as exec_err:
+            target_item.state = WorkItemState.FAILED.value
+            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+            run.transition_to(CompanyRunState.FAILED, error=str(exec_err))
+            run.add_event(
+                event_type="WORK_ITEM_FAILED",
+                work_item_id=target_item.work_item_id,
+                role=role,
+                task_id=task.id,
+                reason=str(exec_err),
+            )
+            run.add_event(
+                event_type="RUN_FAILED",
+                reason=f"Execution error on work item {target_item.work_item_id}: {exec_err}",
+            )
+            self.save_company_run(run)
+            raise
+
+        # Verify task execution outcome
+        task_updated = self.get_task(task.id, project_id=proj.id)
+        if task_updated.status != TaskStatus.COMPLETED.value or task_run.status != RunStatus.SUCCESS.value:
+            err_msg = task_run.error or f"Specialist '{role}' failed task '{task.id}'."
+            target_item.state = WorkItemState.FAILED.value
+            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+            run.transition_to(CompanyRunState.FAILED, error=err_msg)
+            run.add_event(
+                event_type="WORK_ITEM_FAILED",
+                work_item_id=target_item.work_item_id,
+                role=role,
+                task_id=task.id,
+                reason=err_msg,
+            )
+            run.add_event(
+                event_type="RUN_FAILED",
+                reason=f"Specialist task {task.id} failed: {err_msg}",
+            )
+            self.save_company_run(run)
+            return run
+
+        # Canonical Artifact Verification (Fail closed if no artifacts or checksum mismatch)
+        if not task_run.artifacts:
+            err_msg = f"Work item '{target_item.work_item_id}' produced no durable artifacts."
+            target_item.state = WorkItemState.FAILED.value
+            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+            run.transition_to(CompanyRunState.FAILED, error=err_msg)
+            run.add_event(
+                event_type="WORK_ITEM_FAILED",
+                work_item_id=target_item.work_item_id,
+                role=role,
+                task_id=task.id,
+                reason=err_msg,
+            )
+            run.add_event("RUN_FAILED", reason=err_msg)
+            self.save_company_run(run)
+            raise ArtifactVerificationError(err_msg)
+
+        verified_artifact_refs: List[Dict[str, Any]] = []
+        for art in task_run.artifacts:
+            art_path = _resolve_artifact_file_path(self.output_dir, art)
+            if not art_path.is_file():
+                err_msg = f"Artifact file '{art.path}' does not exist on disk."
+                target_item.state = WorkItemState.FAILED.value
+                run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+                run.transition_to(CompanyRunState.FAILED, error=err_msg)
+                run.add_event(
+                    event_type="WORK_ITEM_FAILED",
+                    work_item_id=target_item.work_item_id,
+                    role=role,
+                    task_id=task.id,
+                    reason=err_msg,
+                )
+                run.add_event("RUN_FAILED", reason=err_msg)
+                self.save_company_run(run)
+                raise ArtifactVerificationError(err_msg)
+
+            actual_sha = hashlib.sha256(art_path.read_bytes()).hexdigest()
+            if actual_sha != art.sha256:
+                err_msg = f"Artifact checksum mismatch for '{art.name}': expected {art.sha256}, got {actual_sha}."
+                target_item.state = WorkItemState.FAILED.value
+                run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+                run.transition_to(CompanyRunState.FAILED, error=err_msg)
+                run.add_event(
+                    event_type="WORK_ITEM_FAILED",
+                    work_item_id=target_item.work_item_id,
+                    role=role,
+                    task_id=task.id,
+                    reason=err_msg,
+                )
+                run.add_event("RUN_FAILED", reason=err_msg)
+                self.save_company_run(run)
+                raise ArtifactVerificationError(err_msg)
+
+            verified_artifact_refs.append({
+                "artifact_id": art.id,
+                "name": art.name,
+                "type": str(art.artifact_type),
+                "sha256": art.sha256,
+                "path": art.path,
+                "producer_role": art.producer_role,
+            })
+
+        # Bind success to work item
+        target_item.task_id = task.id
+        target_item.run_id = task_run.id
+        target_item.state = WorkItemState.COMPLETED.value
+        run.work_item_states[target_item.work_item_id] = WorkItemState.COMPLETED.value
+        run.specialist_invocation_count += 1
+
+        # Create bounded EmployeeResultSummary
+        summary = EmployeeResultSummary(
+            role=role,
+            task_id=task.id,
+            run_id=task_run.id,
+            status=task_updated.status,
+            artifact_refs=verified_artifact_refs,
+            summary=task_updated.result.summary if task_updated.result else "",
+            blockers=[],
+        )
+        run.employee_summaries.append(summary)
+
+        run.add_event(
+            event_type="WORK_ITEM_COMPLETED",
+            work_item_id=target_item.work_item_id,
+            role=role,
+            task_id=task.id,
+            artifact_refs=verified_artifact_refs,
+            reason=f"Work item {target_item.work_item_id} completed successfully",
+        )
+
+        # Deterministic Non-Code Completion Gate
+        all_completed = all(
+            run.work_item_states.get(w.work_item_id) == WorkItemState.COMPLETED.value
+            for w in run.active_plan.work_items
+        )
+        if all_completed:
+            run.transition_to(CompanyRunState.COMPLETED)
+            run.add_event(
+                event_type="RUN_COMPLETED",
+                reason="All planned non-code work items completed and verified",
+            )
+
+        self.save_company_run(run)
+        return run
+
+    def run_company_until_boundary(
+        self,
+        run_id: str,
+        max_steps: int = 10,
+    ) -> CompanyRun:
+        """Execute successive ready work items until a terminal state or phase boundary is reached.
+
+        Bounded by max_steps to prevent infinite loops.
+        """
+        steps = 0
+        while steps < max_steps:
+            run = self.get_company_run(run_id)
+            if run.state in (
+                CompanyRunState.COMPLETED.value,
+                CompanyRunState.FAILED.value,
+                CompanyRunState.BLOCKED.value,
+                CompanyRunState.WAITING_FOR_HUMAN.value,
+            ):
+                break
+            if run.state != CompanyRunState.RUNNING.value:
+                break
+
+            # Inspect ready work
+            completed_ids = {
+                item_id for item_id, st in run.work_item_states.items()
+                if st == WorkItemState.COMPLETED.value
+            }
+            ready_items = select_ready_work_items(run.active_plan, completed_ids, run.work_item_states)
+            if not ready_items:
+                # Check if all completed
+                if all(st == WorkItemState.COMPLETED.value for st in run.work_item_states.values()):
+                    run.transition_to(CompanyRunState.COMPLETED)
+                    run.add_event("RUN_COMPLETED", reason="All planned non-code work items completed and verified")
+                    self.save_company_run(run)
+                break
+
+            # Execute next unit of work
+            try:
+                self.execute_next_company_work(run_id)
+            except UnsupportedRoleError:
+                # Boundary reached (e.g. Developer or unknown role)
+                break
+            except Exception:
+                # Stop on failure
+                break
+
+            steps += 1
+
+        return self.get_company_run(run_id)
+
+    def get_company_run(self, run_id: str) -> CompanyRun:
+        """Retrieve a CompanyRun by run_id from memory or disk."""
+        if run_id in self._company_runs:
+            return self._company_runs[run_id]
+
+        # File-backed minimal V1 fallback
+        run_file = self.output_dir / "company_runs" / f"{run_id}.json"
+        if run_file.is_file():
+            try:
+                data = json.loads(run_file.read_text(encoding="utf-8"))
+                run = CompanyRun.from_dict(data)
+                self._company_runs[run.run_id] = run
+                return run
+            except Exception as exc:
+                raise OrchestrationError(f"Failed to load CompanyRun '{run_id}' from disk: {exc}") from exc
+
+        raise OrchestrationError(f"CompanyRun '{run_id}' not found.")
+
+    def list_company_runs(self) -> List[CompanyRun]:
+        """List all active or loaded CompanyRuns."""
+        return list(self._company_runs.values())
+
+    def save_company_run(self, run: CompanyRun) -> None:
+        """Persist CompanyRun to in-memory store and file-backed JSON."""
+        self._company_runs[run.run_id] = run
+        runs_dir = self.output_dir / "company_runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        run_file = runs_dir / f"{run.run_id}.json"
+        run_file.write_text(json.dumps(run.to_dict(), indent=2), encoding="utf-8")
 
 
 def _resolve_artifact_file_path(base_output_dir: Path, artifact: Artifact) -> Path:
