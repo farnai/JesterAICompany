@@ -200,6 +200,14 @@ from .proposal import (
     parse_and_validate_proposal,
 )
 from .runtime import AntigravityRuntime, InvalidAgentError
+from .orchestrator import (
+    CEOOrchestrationPlan,
+    CompanyObjective,
+)
+from .ceo_contract import (
+    build_ceo_planning_prompt,
+    parse_and_validate_ceo_plan,
+)
 from .execution_grant import (
     ExecutionGrant,
     GrantError,
@@ -3706,6 +3714,47 @@ class CompanyService:
 
         finally:
             lock.release()
+
+    # --------------------------------------------------------------------------
+    # CEO Orchestration Planning (STEP 17B-2)
+    # --------------------------------------------------------------------------
+
+    def propose_initial_company_plan(
+        self,
+        objective: CompanyObjective,
+        timeout: Optional[float] = None,
+    ) -> CEOOrchestrationPlan:
+        """Invoke the real CEO Agent to formulate an initial macro orchestration plan.
+
+        Enforces:
+        - Bounded planning prompt generation containing the CompanyObjective.
+        - Execution via the real AntigravityRuntime adapter.
+        - Runtime execution success check.
+        - Strict JSON extraction and trust boundary schema validation.
+        - Deterministic DAG validation (Fan-In, depth, cycle, roles).
+        - Zero specialist task execution, zero repository mutation, zero grant creation.
+
+        Returns:
+            Validated, accepted CEOOrchestrationPlan (pure inert data).
+        """
+        if not isinstance(objective, CompanyObjective):
+            raise CompanyServiceError("Expected CompanyObjective instance.")
+
+        prompt = build_ceo_planning_prompt(objective)
+        exec_result = self.runtime.execute(
+            agent="ceo",
+            prompt=prompt,
+            timeout=timeout,
+        )
+        if not exec_result.success:
+            err_msg = (
+                f"CEO agent execution failed (exit_code={exec_result.exit_code}, "
+                f"timed_out={exec_result.timed_out}): {exec_result.stderr}"
+            )
+            raise ExecutionError(err_msg)
+
+        plan = parse_and_validate_ceo_plan(exec_result.stdout, objective)
+        return plan
 
 
 def _resolve_artifact_file_path(base_output_dir: Path, artifact: Artifact) -> Path:
