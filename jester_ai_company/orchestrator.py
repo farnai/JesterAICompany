@@ -166,6 +166,7 @@ class CompanyObjective:
     constraints: List[str] = field(default_factory=list)
     acceptance_criteria: List[str] = field(default_factory=list)
     target_repository: Optional[str] = None
+    project_id: Optional[str] = None
     created_at: str = field(default_factory=_utc_now_iso)
     created_by: str = "HUMAN"
 
@@ -178,6 +179,7 @@ class CompanyObjective:
             "constraints": list(self.constraints),
             "acceptance_criteria": list(self.acceptance_criteria),
             "target_repository": self.target_repository,
+            "project_id": self.project_id,
             "created_at": self.created_at,
             "created_by": self.created_by,
         }
@@ -199,6 +201,7 @@ class CompanyObjective:
             constraints=[str(c) for c in data.get("constraints", [])],
             acceptance_criteria=[str(a) for a in data.get("acceptance_criteria", [])],
             target_repository=data.get("target_repository"),
+            project_id=data.get("project_id"),
             created_at=data.get("created_at") or _utc_now_iso(),
             created_by=data.get("created_by") or "HUMAN",
         )
@@ -482,6 +485,10 @@ class CompanyRun:
     run_id: str
     objective: CompanyObjective
     state: str = CompanyRunState.CREATED.value
+    project_id: Optional[str] = None
+    repository_id: Optional[str] = None
+    target_branch: Optional[str] = None
+    base_commit_hash: Optional[str] = None
     active_plan: Optional[CEOOrchestrationPlan] = None
     plan_history: List[CEOOrchestrationPlan] = field(default_factory=list)
     work_item_states: Dict[str, str] = field(default_factory=dict)
@@ -505,6 +512,13 @@ class CompanyRun:
         valid_states = {s.value for s in CompanyRunState}
         if self.state not in valid_states:
             raise TransitionPolicyError(f"Invalid CompanyRunState '{self.state}'.")
+        # Propagate and validate project_id binding
+        if self.project_id is None and self.objective.project_id is not None:
+            self.project_id = self.objective.project_id
+        elif self.project_id and self.objective.project_id and self.project_id != self.objective.project_id:
+            raise OrchestrationError(
+                f"Conflicting project_id: run '{self.project_id}' != objective '{self.objective.project_id}'."
+            )
 
     @property
     def is_code_workflow(self) -> bool:
@@ -600,6 +614,10 @@ class CompanyRun:
             "run_id": self.run_id,
             "objective": self.objective.to_dict(),
             "state": self.state,
+            "project_id": self.project_id,
+            "repository_id": self.repository_id,
+            "target_branch": self.target_branch,
+            "base_commit_hash": self.base_commit_hash,
             "active_plan": self.active_plan.to_dict() if self.active_plan else None,
             "plan_history": [p.to_dict() for p in self.plan_history],
             "work_item_states": dict(self.work_item_states),
@@ -663,6 +681,10 @@ class CompanyRun:
             run_id=run_id.strip(),
             objective=objective,
             state=state_val,
+            project_id=data.get("project_id") or objective.project_id,
+            repository_id=data.get("repository_id"),
+            target_branch=data.get("target_branch"),
+            base_commit_hash=data.get("base_commit_hash"),
             active_plan=active_plan,
             plan_history=plan_history,
             work_item_states=dict(data.get("work_item_states", {})),

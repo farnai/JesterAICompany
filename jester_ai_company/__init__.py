@@ -24,6 +24,45 @@ from .core import (
     VerificationResult,
     create_default_company,
 )
+from .project import (
+    DEFAULT_PROJECT_REGISTRY,
+    CrossProjectMismatchError,
+    DuplicateProjectError,
+    DuplicateRepositoryError,
+    PolicyViolationError,
+    Project as RepositoryProject,
+    ProjectError,
+    ProjectRegistry,
+    ProjectValidationError,
+    RepositoryPolicy,
+    RepositoryRef,
+    RepositoryStateFingerprint,
+    RepositoryValidationError,
+    inspect_repository_state,
+    validate_grant_against_project_policy,
+)
+from .knowledge import (
+    DEFAULT_KNOWLEDGE_REGISTRY,
+    DuplicateSourceError,
+    FreshnessStatus,
+    KnowledgeConflictError,
+    KnowledgeError,
+    KnowledgeLoadPolicy,
+    KnowledgeNotFoundError,
+    KnowledgePolicyViolationError,
+    ProjectContextExcerpt,
+    ProjectKnowledgeCatalog,
+    ProjectKnowledgeManifest,
+    ProjectKnowledgeRegistry,
+    ProjectKnowledgeSource,
+    RoleKnowledgePolicy,
+    SourceAuthority,
+    StaleKnowledgeError,
+    TruthScope,
+    extract_markdown_section,
+    format_project_knowledge_prompt_block,
+    normalize_domain,
+)
 from .execution import TaskExecutor
 from .registry import RECOGNIZED_AGENTS, get_agent_inventory
 from .service import (

@@ -101,6 +101,7 @@ from .real_repo_apply import (
     ConcurrentApplyError,
     CrashRecoveryBlockError,
     CrashStateClassification,
+    CrossProjectMismatchError,
     GrantExpiredError,
     GrantReplayedError,
     PatchApplyFailedError,
@@ -131,6 +132,23 @@ from .real_repo_apply import (
     validate_candidate_eligibility,
     validate_real_repo_diff,
     verify_target_repo_cleanliness,
+)
+from .project import (
+    DEFAULT_PROJECT_REGISTRY,
+    Project as RepositoryProject,
+    ProjectRegistry,
+    RepositoryPolicy,
+    RepositoryRef,
+    validate_grant_against_project_policy,
+)
+from .knowledge import (
+    DEFAULT_KNOWLEDGE_REGISTRY,
+    ProjectContextExcerpt,
+    ProjectKnowledgeCatalog,
+    ProjectKnowledgeManifest,
+    ProjectKnowledgeRegistry,
+    ProjectKnowledgeSource,
+    RoleKnowledgePolicy,
 )
 from .repair import (
     MAX_REPAIR_ITERATIONS,
@@ -371,6 +389,61 @@ class CompanyService:
         self._real_repo_apply_proposals: Dict[str, RealRepoApplyProposal] = {}
         self._real_repo_apply_grants: Dict[str, RealRepoApplyGrant] = {}
         self._company_runs: Dict[str, CompanyRun] = {}
+        self.project_registry: ProjectRegistry = ProjectRegistry()
+        self.knowledge_registry: ProjectKnowledgeRegistry = ProjectKnowledgeRegistry()
+
+    # --------------------------------------------------------------------------
+    # Repository Project Management (STEP 19B)
+    # --------------------------------------------------------------------------
+
+    def register_repository_project(
+        self,
+        project: RepositoryProject,
+        validate_repo: bool = True,
+    ) -> RepositoryProject:
+        """Register a repository-backed Project under the generic ProjectRegistry."""
+        return self.project_registry.register_project(project, validate_repo=validate_repo)
+
+    def get_repository_project(self, project_id: str) -> Optional[RepositoryProject]:
+        """Retrieve a repository-backed Project from the ProjectRegistry."""
+        return self.project_registry.get_project(project_id)
+
+    def require_repository_project(self, project_id: str) -> RepositoryProject:
+        """Require a registered repository-backed Project or raise ProjectNotFoundError."""
+        return self.project_registry.require_project(project_id)
+
+    def list_repository_projects(self) -> List[RepositoryProject]:
+        """List all registered repository-backed Projects."""
+        return self.project_registry.list_projects()
+
+    # --------------------------------------------------------------------------
+    # Project Knowledge Management (STEP 19C-B)
+    # --------------------------------------------------------------------------
+
+    def register_project_knowledge_manifest(
+        self,
+        manifest: ProjectKnowledgeManifest,
+    ) -> None:
+        """Register a knowledge manifest associated with a registered Project."""
+        self.knowledge_registry.register_manifest(manifest)
+
+    def get_project_knowledge_manifest(self, project_id: str) -> Optional[ProjectKnowledgeManifest]:
+        """Retrieve the configured knowledge manifest for a Project."""
+        return self.knowledge_registry.get_manifest(project_id)
+
+    def get_project_knowledge_catalog(self, project_id: str) -> Optional[ProjectKnowledgeCatalog]:
+        """Obtain an operational ProjectKnowledgeCatalog for a Project if configured."""
+        manifest = self.knowledge_registry.get_manifest(project_id)
+        if not manifest:
+            return None
+        repo_proj = self.project_registry.get_project(project_id)
+        if not repo_proj:
+            return None
+        return ProjectKnowledgeCatalog(
+            manifest=manifest,
+            repo_policy=repo_proj.policy,
+            repo_root=repo_proj.repository.root_path,
+        )
 
     # --------------------------------------------------------------------------
     # Project Management
@@ -1695,6 +1768,16 @@ class CompanyService:
             if is_test_file(rel_path) and not grant.allow_test_modifications:
                 raise TestModificationForbiddenError(
                     f"Test file '{rel_path}' cannot be modified: grant.allow_test_modifications is False."
+                )
+
+        # Validate against RepositoryPolicy if project is registered in ProjectRegistry (STEP 19B)
+        if project_id:
+            repo_proj = self.project_registry.get_project(project_id)
+            if repo_proj:
+                validate_grant_against_project_policy(
+                    approved_files_to_modify=grant.approved_files_to_modify,
+                    approved_files_to_create=grant.approved_files_to_create,
+                    policy=repo_proj.policy,
                 )
 
         return grant
@@ -3541,6 +3624,7 @@ class CompanyService:
                 qa_report_artifact=qa_rep_art,
                 qa_execution_report_artifact=qa_exec_art,
                 qa_execution_report_file_path=qa_exec_file_path,
+                project_id=project_id,
             )
 
             # 6. Store in proposal registry
@@ -3582,6 +3666,7 @@ class CompanyService:
                 proposal=proposal,
                 founder_approval_id=founder_approval_id,
                 approver=approver,
+                project_id=project_id,
             )
             self._real_repo_apply_grants[grant.grant_id] = grant
             return grant
@@ -3619,6 +3704,22 @@ class CompanyService:
             raise GrantReplayedError(f"Grant '{grant_id}' has already been consumed.")
         if grant.status != "ISSUED":
             raise ApprovalInvalidError(f"Grant '{grant_id}' status is '{grant.status}', expected 'ISSUED'.")
+
+        # Cross-project mismatch protection
+        proposal = self._real_repo_apply_proposals.get(grant.proposal_id)
+        if project_id:
+            if grant.project_id and grant.project_id != project_id:
+                raise CrossProjectMismatchError(
+                    f"Cross-project apply rejected: grant project '{grant.project_id}' != target project '{project_id}'."
+                )
+            if proposal and proposal.project_id and proposal.project_id != project_id:
+                raise CrossProjectMismatchError(
+                    f"Cross-project apply rejected: proposal project '{proposal.project_id}' != target project '{project_id}'."
+                )
+        if proposal and proposal.project_id and grant.project_id and proposal.project_id != grant.project_id:
+            raise CrossProjectMismatchError(
+                f"Cross-project apply rejected: proposal project '{proposal.project_id}' != grant project '{grant.project_id}'."
+            )
 
         # Expiry check
         approved_dt = datetime.fromisoformat(grant.approved_at)
@@ -3797,13 +3898,21 @@ class CompanyService:
     # Company Run Orchestration Engine (STEP 17B-3)
     # --------------------------------------------------------------------------
 
-    def create_company_run(self, objective: CompanyObjective) -> CompanyRun:
+    def create_company_run(
+        self,
+        objective: CompanyObjective,
+        project_id: Optional[str] = None,
+        repository_id: Optional[str] = None,
+        target_branch: Optional[str] = None,
+        base_commit_hash: Optional[str] = None,
+    ) -> CompanyRun:
         """Create a new CompanyRun coordinator from a CompanyObjective.
 
         Enforces:
         - Application-generated run_id (never supplied by CEO).
         - Initial state CREATED.
         - Objective bound immutably to run.
+        - Project and repository identity bound immutably for Project-backed runs.
         - Counters initialized to zero.
         - No active plan initially, empty plan history, no active escalation.
         - Initial audit event recorded.
@@ -3812,11 +3921,21 @@ class CompanyService:
         if not isinstance(objective, CompanyObjective):
             raise OrchestrationError("Expected CompanyObjective instance.")
 
+        bound_project_id = project_id or objective.project_id
+        if project_id and objective.project_id and project_id != objective.project_id:
+            raise OrchestrationError(
+                f"Conflicting project_id: argument '{project_id}' != objective '{objective.project_id}'."
+            )
+
         run_id = f"crun_{uuid.uuid4().hex[:8]}"
         run = CompanyRun(
             run_id=run_id,
             objective=objective,
             state=CompanyRunState.CREATED.value,
+            project_id=bound_project_id,
+            repository_id=repository_id,
+            target_branch=target_branch,
+            base_commit_hash=base_commit_hash,
         )
         run.add_event(
             event_type="RUN_CREATED",

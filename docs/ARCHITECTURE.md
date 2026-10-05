@@ -253,5 +253,119 @@ Specialists communicate through immutable, content-addressed deliverables:
 13. Duplicate apply fails closed or reports idempotent completion.
 14. Tampered or stale artifacts fail closed.
 15. Crash/resume reuses only verified durable state.
-16. Jester software product remains unconnected.
+16. Jester software product remains unconnected (real connection deferred to STEP 19C).
 17. JesterBridge remains untouched and out of scope.
+
+---
+
+## 11. Generic Project & Repository Foundation (STEP 19B)
+
+STEP 19B introduces a typed, generic integration layer allowing JesterAICompany to operate against registered external software projects without hardcoding any specific repository or product into Core.
+
+### 1. Domain Entities
+- **`Project`**: Immutable entity binding a `project_id`, descriptive metadata, exactly one primary `RepositoryRef`, and an overarching `RepositoryPolicy`.
+- **`RepositoryRef`**: Immutable configuration specifying `repository_id`, safe canonical filesystem `root_path`, configured `target_branch`, and optional `expected_remote`.
+- **`RepositoryPolicy`**: Immutable security policy defining coarse maximum Project authority (`read_allowed`, `mutation_allowed`, `denied`).
+  - **Precedence Rule:** `DENIED` strictly overrides `ALLOWED` (fail-closed).
+  - **Path Traversal & Escape:** Strict path normalization blocks `..` traversals, absolute paths outside repo root, and symlink escapes.
+- **`RepositoryStateFingerprint`**: Read-only, deterministic snapshot of observed runtime state (`head_commit_hash`, `branch_name`, `is_clean`, `state_sha256`). Inspection performs zero Git mutations.
+- **`ProjectRegistry`**: Application/Human-owned registry for registering, resolving, and listing projects. Enforces unique project and repository IDs and validates repository health and branch conformity upon registration.
+
+### 2. Dual Authority Model (Project Authority vs. Task Authority)
+
+```
+               Human / Application Authority
+                            │
+                            ▼
+                     ProjectRegistry
+                            │
+                            ▼
+                RepositoryPolicy (Project Authority)
+                - Coarse maximum repository boundary
+                - mutation_allowed, denied
+                            │
+                            ▼
+                 ExecutionGrant (Task Authority)
+                - Narrower, task-specific developer scope
+                - approved_files_to_modify, approved_files_to_create
+                            │
+                            ▼
+                Isolated Disposable Git Worktree
+```
+- **Invariant:** `ExecutionGrant` mutation scope **MUST** be a strict subset of `RepositoryPolicy.mutation_allowed` and must not intersect `RepositoryPolicy.denied`.
+- Both layers must validate; any violation fails closed.
+
+### 3. Provenance & Cross-Project Protection
+- **Run Binding:** Project-backed `CompanyRun` instances carry immutable bindings: `project_id`, `repository_id`, `target_branch`, and `base_commit_hash`.
+- **Task Inheritance:** Tasks inherit `project_id` from the run; CEO output cannot alter or redirect project identity.
+- **RealRepoApply Boundary:** `RealRepoApplyProposal` and `RealRepoApplyGrant` are bound to `project_id` and `repository_id`.
+- **Cross-Project Invariant:** A proposal, grant, or patch for Project A cannot authorize or mutate Project B under any circumstances (`CrossProjectMismatchError` fails closed with zero target mutation).
+
+### 4. Current Stage Status
+- **Generic Project / Repository Foundation:** Implemented, verified, and tested.
+- **Control Center UI / API:** Deferred to later milestones.
+
+---
+
+## 12. Generic Project Knowledge Core & Read-Only Repository Integration (STEP 19C-B)
+
+STEP 19C-B introduces the first generic, typed Project Knowledge layer in JesterAICompany and proves it against the real Jester repository (`C:\Users\fiord\.gemini\antigravity-ide\scratch\jester`) in strictly read-only mode.
+
+### 1. Conceptual Triad: Project Knowledge vs. Run Artifacts vs. Company Memory
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                          AGENT CONTEXT                                 │
+│                                                                        │
+│   System / Role Contract                                               │
+│ + Human Objective                                                      │
+│ + Security Constraints                                                 │
+│ + Relevant Project Knowledge (Configured, durable repository truth)   │
+│ + Required Run Artifacts     (Produced during current CompanyRun)      │
+│ + Future Company Memory      (Cross-run learned operational knowledge) │
+│ + Execution Authority        (Task-specific grants where applicable)   │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Project Knowledge:** Durable, configured knowledge belonging to the target Project (e.g. system prompts, schemas, architecture specs, rules). It is reference DATA from an external repository.
+- **Run Artifacts:** Transient, verified outputs created during the current `CompanyRun` (e.g., `ProductSpecification`, `UXSpecification`, `PatchProposal`).
+- **Company Memory:** Future cross-run learned operational knowledge (deferred, NOT implemented in Core V1).
+- **Invariant:** Project Knowledge and Run Artifacts remain structurally distinct within `ContextEnvelope` with zero lifecycle conflation.
+
+### 2. Extensible Knowledge Domains & Truth Scopes
+
+- **Extensible Domains:** Domains are normalized strings (`normalize_domain(slug)`) validated via `^[a-z0-9_\-\.]+$` rather than a closed enum. Any project can configure custom domains (e.g., `architecture`, `product`, `brand`, `backend`, `frontend`, `security`, `payments`, `compliance`) without modifying Core.
+- **Source Authority:** Classifies trust and durability:
+  - `AUTHORITATIVE`: Binding durable project truth.
+  - `SUPPORTING`: Explanatory context; subordinate to authoritative.
+  - `EXPLORATORY`: Roadmaps and non-final proposals.
+  - `HISTORICAL`: Superseded records, archival benchmarks.
+  - `GENERATED`: Ephemeral build caches, test dumps.
+  - `DENIED`: Secrets, credentials, private configs (fails closed).
+  - `IGNORE`: Noise, IDE configs.
+- **Truth Scopes:** Distinguishes intended truth from observed truth to prevent false conflicts:
+  - `SPECIFICATION`: Intended product/architectural requirements.
+  - `IMPLEMENTATION`: Executable source code reflecting current reality.
+  - `BEHAVIOR`: Persona guidelines and rhetorical directives.
+  - `CONFIGURATION`: Environment defaults, ports, quotas.
+  - `REFERENCE`: Background facts and benchmarks.
+
+### 3. Separation of Source Metadata and Role Policy
+
+- **`ProjectKnowledgeSource`:** Describes WHAT the knowledge is, WHERE it resides, its domain, authority, truth scope, and load policy (`FULL_DOCUMENT`, `SECTION_EXCERPT`, `METADATA_ONLY`). Sources do **not** intrinsically belong to any employee role.
+- **`RoleKnowledgePolicy`:** Separately defines which primary/secondary domains and explicit source inclusions/exclusions an employee role consumes (e.g. Marketing vs. Developer).
+- **`ProjectKnowledgeManifest`:** Immutable collection of sources bound to `project_id` and `repository_id`.
+
+### 4. Freshness: Repository Drift vs. Source Drift
+
+- **Revision Provenance:** Excerpts capture `repository_revision` and cryptographic `content_sha256`.
+- **Drift Distinction:** If an unrelated file advances the repository HEAD commit, the catalog detects `repository_drift`, but because the selected source file's `content_sha256` remains identical, the excerpt remains valid and fresh.
+- If the selected source file changes, disappears, or becomes denied, freshness fails closed.
+
+### 5. Security & Trust Boundaries
+
+- **Untrusted Data Delimiters:** Every Project Knowledge excerpt injected into an agent prompt is wrapped inside deterministic `UNTRUSTED REPOSITORY DATA` delimiters with explicit notices instructing the model never to obey instructions embedded within external repository text.
+- **Deterministic Secret Denial:** Sources marked `DENIED` or matching `RepositoryPolicy.denied` fail closed before any content is read from disk.
+- **Zero Real Repository Mutation:** All reading operates in place with zero worktree creation, zero patches, zero grants, and zero disk mutations. Real Jester remains 100% clean and identical to baseline commit `700fa1254855885a4c5a175f203b0e278e993288`.
+
+

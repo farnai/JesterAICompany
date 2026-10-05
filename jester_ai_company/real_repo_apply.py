@@ -49,6 +49,7 @@ from .execution_grant import (
     ProtectedPathError,
 )
 from .qa_execution import QAFinalVerdict
+from .project import CrossProjectMismatchError as BaseCrossProjectMismatchError
 from .worktree import (
     is_protected_path,
     resolve_repo_head_commit,
@@ -120,6 +121,11 @@ class RepositoryStateChangedError(RealRepoApplyError):
 
 class ConcurrentApplyError(RealRepoApplyError):
     """Raised when another apply transaction holds the external repository lock."""
+    pass
+
+
+class CrossProjectMismatchError(RealRepoApplyError, BaseCrossProjectMismatchError):
+    """Raised when an apply proposal or grant targets an unauthorized project or repository."""
     pass
 
 
@@ -266,6 +272,8 @@ class RealRepoApplyProposal:
 
     created_at: str
     proposal_sha256: str
+    project_id: Optional[str] = None
+    repository_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -288,6 +296,8 @@ class RealRepoApplyProposal:
             "is_clean": self.is_clean,
             "created_at": self.created_at,
             "proposal_sha256": self.proposal_sha256,
+            "project_id": self.project_id,
+            "repository_id": self.repository_id,
         }
 
 
@@ -315,6 +325,8 @@ class RealRepoApplyGrant:
 
     status: str = "ISSUED"  # "ISSUED" -> "CONSUMED" -> "INVALIDATED"
     validity_duration_seconds: int = 3600
+    project_id: Optional[str] = None
+    repository_id: Optional[str] = None
 
     @property
     def founder_approval_id(self) -> str:
@@ -339,6 +351,8 @@ class RealRepoApplyGrant:
             "approved_at": self.approved_at,
             "status": self.status,
             "validity_duration_seconds": self.validity_duration_seconds,
+            "project_id": self.project_id,
+            "repository_id": self.repository_id,
         }
 
 
@@ -519,6 +533,8 @@ def build_real_repo_apply_proposal(
     qa_report_artifact: Artifact,
     qa_execution_report_artifact: Artifact,
     qa_execution_report_file_path: Path,
+    project_id: Optional[str] = None,
+    repository_id: Optional[str] = None,
 ) -> RealRepoApplyProposal:
     """Build an immutable, typed proposal for human review. PERFORMS ZERO REPOSITORY MUTATION."""
     # 1. Eligibility validation
@@ -603,6 +619,11 @@ def build_real_repo_apply_proposal(
         "is_clean": is_clean,
         "created_at": created_at,
     }
+    if project_id:
+        canonical_dict["project_id"] = project_id
+    if repository_id:
+        canonical_dict["repository_id"] = repository_id
+
     canonical_json = json.dumps(canonical_dict, sort_keys=True)
     proposal_sha = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
@@ -626,6 +647,8 @@ def build_real_repo_apply_proposal(
         is_clean=is_clean,
         created_at=created_at,
         proposal_sha256=proposal_sha,
+        project_id=project_id,
+        repository_id=repository_id,
     )
 
 
@@ -634,10 +657,25 @@ def derive_real_repo_apply_grant(
     founder_approval_id: str,
     approver: str = "Human Founder",
     validity_duration_seconds: int = 3600,
+    project_id: Optional[str] = None,
+    repository_id: Optional[str] = None,
 ) -> RealRepoApplyGrant:
     """Derive a single-use mutation grant bound to the approved proposal. ZERO REPO MUTATION."""
     if not founder_approval_id or not isinstance(founder_approval_id, str) or not founder_approval_id.strip():
         raise MissingApprovalError("Cannot derive RealRepoApplyGrant without explicit founder_approval_id.")
+
+    # Cross-project mismatch protection
+    effective_project_id = proposal.project_id or project_id
+    if project_id and proposal.project_id and project_id != proposal.project_id:
+        raise CrossProjectMismatchError(
+            f"Cannot derive grant: project_id '{project_id}' != proposal project_id '{proposal.project_id}'."
+        )
+
+    effective_repository_id = proposal.repository_id or repository_id
+    if repository_id and proposal.repository_id and repository_id != proposal.repository_id:
+        raise CrossProjectMismatchError(
+            f"Cannot derive grant: repository_id '{repository_id}' != proposal repository_id '{proposal.repository_id}'."
+        )
 
     cleaned_approval = founder_approval_id.strip()
     grant_id = f"grant_apply_{uuid.uuid4().hex[:8]}"
@@ -659,6 +697,8 @@ def derive_real_repo_apply_grant(
         approved_at=_utc_now_iso(),
         status="ISSUED",
         validity_duration_seconds=validity_duration_seconds,
+        project_id=effective_project_id,
+        repository_id=effective_repository_id,
     )
 
 

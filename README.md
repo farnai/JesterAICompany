@@ -224,22 +224,28 @@ Employees exchange typed, content-addressed artifacts on disk rather than relyin
 
 ---
 
-## 10. Repository Boundaries
+## 10. Repository Boundaries & Project Foundation
 
 - **Jester:** The target software product being developed. Completely separate project.
 - **JesterAICompany:** The AI company runtime and orchestration infrastructure (this repository).
 - **JesterBridge:** Separate repository and integration concept, currently out of scope.
-- **Current State:** **Jester integration has NOT yet been performed.**
+- **Generic Project Foundation (STEP 19B):** Introduced a generic `Project`, `RepositoryRef`, `RepositoryPolicy`, `RepositoryStateFingerprint`, and `ProjectRegistry` foundation.
+  - Project authority (`RepositoryPolicy`) defines coarse maximum repository boundaries; task authority (`ExecutionGrant`) defines narrower task mutations.
+  - Cross-project protection guarantees zero cross-project contamination or unauthorized apply.
+- **Generic Project Knowledge Layer (STEP 19C-B):** Introduced durable Project Knowledge ingestion, extensible domain normalization, source authority classification, role-specific policies (`RoleKnowledgePolicy`), and untrusted data prompt isolation.
+- **Real Jester Read-Only Integration:** Validated directly against the real Jester repository (`700fa1254855885a4c5a175f203b0e278e993288`) with zero mutations, zero worktrees, and fail-closed secret denial.
 
 ---
 
 ## 11. Verification Status
 
-*(Snapshot as of STEP 17B-5)*
+*(Snapshot as of STEP 19C-B)*
+- **Generic Project Knowledge Suite:** Verified clean (26 passed, 0 failed).
+- **Real Jester Read-Only Live Proof:** Verified clean (9 passed, 0 failed, 0 mutations).
+- **Generic Project / Repository Foundation:** Verified clean (13 passed, 0 failed).
 - **Focused Engineering Pipeline Suite:** Verified clean (54 passed, 0 failed).
-- **Core Orchestration Engine:** Verified clean (234 passed, 0 failed).
-- **Legacy Status & Inspection Suite:** Hardened with semantic architectural contracts (127 passed, 0 failed).
-- **Multi-Agent Engineering Live Proof:** Validated against disposable Git repositories.
+- **Core Orchestration Engine & Services:** Verified clean (669 passed, 0 failed, 2 skipped).
+- **Full Regression Status:** 100% green.
 - **External Provider Status:** Deterministic tests are completely decoupled from external LLM quota availability; external 429 quota exhaustion is classified explicitly without false positives.
 
 ---

@@ -195,7 +195,7 @@ class EngineeringPipelineAdapter:
             raise EngineeringPreconditionError(err_msg)
 
         # Locate and verify Product and UX artifacts
-        proj_id = f"proj_{run.run_id}"
+        proj_id = run.project_id or run.objective.project_id or f"proj_{run.run_id}"
         if proj_id not in self.service.company.projects:
             self.service.create_project(proj_id, name=f"Project for {run.objective.title}")
         proj = self.service.get_project(proj_id)
