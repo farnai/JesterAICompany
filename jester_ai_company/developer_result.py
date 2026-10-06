@@ -96,16 +96,29 @@ def extract_developer_json_text(raw_text: str) -> str:
 
     cleaned = raw_text.strip()
 
-    # 1. Match code fences (```json ... ``` or ``` ... ```)
-    fenced_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
-    if fenced_match:
-        extracted = fenced_match.group(1).strip()
-        if extracted:
-            return extracted
-
-    # 2. Match outer { ... } if present
+    # 1. First check if outermost { ... } parses as valid JSON directly
     first_brace = cleaned.find("{")
     last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        candidate = cleaned[first_brace : last_brace + 1].strip()
+        try:
+            json.loads(candidate, strict=False)
+            return candidate
+        except Exception:
+            pass
+
+    # 2. Match outermost code fences (from first ``` to last ```)
+    if "```" in cleaned:
+        first_fence = cleaned.find("```")
+        last_fence = cleaned.rfind("```")
+        if last_fence > first_fence:
+            newline_idx = cleaned.find("\n", first_fence)
+            if newline_idx != -1 and newline_idx < last_fence:
+                inner = cleaned[newline_idx + 1 : last_fence].strip()
+                if inner:
+                    return inner
+
+    # 3. Fallback to outer braces even if json.loads failed (let parser report exact syntax error)
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
         return cleaned[first_brace : last_brace + 1].strip()
 
@@ -172,7 +185,7 @@ def parse_and_validate_developer_result(raw_text: str) -> DeveloperTaskResult:
     """Extract, parse, and validate JSON against DeveloperTaskResult contract."""
     json_text = extract_developer_json_text(raw_text)
     try:
-        data = json.loads(json_text)
+        data = json.loads(json_text, strict=False)
     except (json.JSONDecodeError, TypeError) as exc:
         raise DeveloperResultParseError(f"Malformed JSON in Developer response: {exc}") from exc
 
@@ -290,6 +303,7 @@ def parse_and_validate_developer_result(raw_text: str) -> DeveloperTaskResult:
 def build_developer_execution_prompt(
     task: Task,
     verified_artifacts: Optional[List[Tuple[Any, str]]] = None,
+    project_knowledge: Optional[Any] = None,
 ) -> str:
     """Build the prompt instructing Developer Agent to execute planning on a registered Task."""
     constraints_block = (
@@ -339,6 +353,7 @@ def build_developer_execution_prompt(
         formatted_artifacts = []
         for ref, content in canonical_list:
             role = (getattr(ref, "producer_role", "unknown") or "unknown").upper()
+            bounded_content = content[:7500] if len(content) > 7500 else content
             formatted_artifacts.append(
                 "==================================================\n"
                 f"UPSTREAM VERIFIED ARTIFACT ({role})\n"
@@ -349,7 +364,7 @@ def build_developer_execution_prompt(
                 f"SHA-256: {getattr(ref, 'sha256', 'unknown')}\n"
                 "--------------------------------------------------\n"
                 f"BEGIN {role} ARTIFACT\n"
-                f"{content}\n"
+                f"{bounded_content}\n"
                 f"END {role} ARTIFACT\n"
                 "=================================================="
             )
@@ -359,6 +374,11 @@ def build_developer_execution_prompt(
             + "\n\n"
         )
 
+    knowledge_block = ""
+    if project_knowledge:
+        from .context import format_project_knowledge_prompt_block
+        knowledge_block = format_project_knowledge_prompt_block(project_knowledge)
+
     return (
         "SYSTEM INSTRUCTION: You are operating in STRUCTURED DEVELOPER PLANNING MODE (STEP 13A).\n"
         "Execute the assigned Developer planning task and return a single valid JSON object adhering strictly to schema_version '1.0'.\n\n"
@@ -367,7 +387,7 @@ def build_developer_execution_prompt(
         "- You MUST NOT call write_to_file or replace_file_content.\n"
         "- You MUST NOT execute any shell implementation commands or install dependencies.\n"
         "- You MUST NOT execute git commits, git pushes, or any repository mutation.\n"
-        "- You may inspect repository files only with read tools (e.g. view_file) if needed for planning.\n"
+        "- Formulate your plan directly from the provided upstream Product and UX artifacts without exploratory multi-turn file traversals.\n"
         "- All proposed files, dependencies, and commands are DATA PROPOSALS ONLY to be evaluated in future milestones.\n"
         "- Do NOT alter Product scope and do NOT redesign UX specifications.\n"
         "- Do NOT invoke any other agent.\n\n"
@@ -422,6 +442,7 @@ def build_developer_execution_prompt(
         "CRITICAL FORMAT RULES:\n"
         "- Output ONLY the raw JSON object (or fenced ```json ... ```).\n"
         "- Do NOT include any commentary, conversation, or text before or after the JSON.\n\n"
+        f"{knowledge_block}"
         "ASSIGNED TASK SPECIFICATION:\n"
         f"Task ID: {task.id}\n"
         f"Title: {task.title}\n"

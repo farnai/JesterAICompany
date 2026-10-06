@@ -503,6 +503,7 @@ class CompanyRun:
     real_repo_apply_proposal_id: Optional[str] = None
     real_repo_apply_grant_id: Optional[str] = None
     real_repo_apply_result: Optional[Dict[str, Any]] = None
+    target_repository_verification: Optional[Dict[str, Any]] = None
     created_at: str = field(default_factory=_utc_now_iso)
     updated_at: str = field(default_factory=_utc_now_iso)
     completed_at: Optional[str] = None
@@ -632,6 +633,7 @@ class CompanyRun:
             "real_repo_apply_proposal_id": self.real_repo_apply_proposal_id,
             "real_repo_apply_grant_id": self.real_repo_apply_grant_id,
             "real_repo_apply_result": self.real_repo_apply_result,
+            "target_repository_verification": self.target_repository_verification,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
@@ -699,6 +701,7 @@ class CompanyRun:
             real_repo_apply_proposal_id=data.get("real_repo_apply_proposal_id"),
             real_repo_apply_grant_id=data.get("real_repo_apply_grant_id"),
             real_repo_apply_result=data.get("real_repo_apply_result"),
+            target_repository_verification=data.get("target_repository_verification"),
             created_at=data.get("created_at") or _utc_now_iso(),
             updated_at=data.get("updated_at") or _utc_now_iso(),
             completed_at=data.get("completed_at"),

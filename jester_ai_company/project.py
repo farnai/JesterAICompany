@@ -72,6 +72,11 @@ class DuplicateRepositoryError(ProjectError):
     pass
 
 
+class TargetRepositoryMismatchError(ProjectError):
+    """Raised when target repository does not match expected project repository identity."""
+    pass
+
+
 # ==============================================================================
 # Helper Utilities
 # ==============================================================================
@@ -151,6 +156,7 @@ class RepositoryRef:
     root_path: str
     target_branch: str = "main"
     expected_remote: Optional[str] = None
+    allow_untracked: bool = False
 
     def __post_init__(self) -> None:
         if not self.repository_id or not isinstance(self.repository_id, str) or not self.repository_id.strip():
@@ -167,6 +173,7 @@ class RepositoryRef:
         object.__setattr__(self, "target_branch", self.target_branch.strip())
         if self.expected_remote:
             object.__setattr__(self, "expected_remote", self.expected_remote.strip())
+        object.__setattr__(self, "allow_untracked", bool(self.allow_untracked))
 
     @property
     def canonical_root(self) -> Path:
@@ -180,6 +187,7 @@ class RepositoryRef:
             "root_path": self.root_path,
             "target_branch": self.target_branch,
             "expected_remote": self.expected_remote,
+            "allow_untracked": self.allow_untracked,
         }
 
     @classmethod
@@ -192,6 +200,7 @@ class RepositoryRef:
             root_path=data.get("root_path", ""),
             target_branch=data.get("target_branch", "main"),
             expected_remote=data.get("expected_remote"),
+            allow_untracked=bool(data.get("allow_untracked", False)),
         )
 
 
@@ -278,7 +287,11 @@ def inspect_repository_state(repo_ref: RepositoryRef) -> RepositoryStateFingerpr
 
     # Determine cleanliness
     code, stat_out, _ = run_git(["status", "--porcelain"], cwd=root)
-    is_clean = (code == 0 and stat_out.strip() == "")
+    code_tr, tracked_out, _ = run_git(["status", "--porcelain", "--untracked-files=no"], cwd=root)
+    if repo_ref.allow_untracked:
+        is_clean = (code_tr == 0 and tracked_out.strip() == "")
+    else:
+        is_clean = (code == 0 and stat_out.strip() == "")
 
     return RepositoryStateFingerprint(
         repository_id=repo_ref.repository_id,
@@ -286,6 +299,198 @@ def inspect_repository_state(repo_ref: RepositoryRef) -> RepositoryStateFingerpr
         branch=branch,
         head_commit=head,
         is_clean=is_clean,
+    )
+
+
+# ==============================================================================
+# Target Repository Identity Guard (STEP 19D TARGET CORRECTION)
+# ==============================================================================
+
+@dataclass(frozen=True)
+class TargetRepositoryVerification:
+    """Deterministic verification record of target repository identity and safety."""
+    project_id: str
+    project_name: str
+    repository_root: str
+    repository_head: str
+    branch: str
+    working_tree_state: str
+    remote_url: Optional[str] = None
+    is_valid: bool = True
+    verified_at: str = field(default_factory=_utc_now_iso)
+    details: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "project_name": self.project_name,
+            "repository_root": self.repository_root,
+            "repository_head": self.repository_head,
+            "branch": self.branch,
+            "working_tree_state": self.working_tree_state,
+            "remote_url": self.remote_url,
+            "is_valid": self.is_valid,
+            "verified_at": self.verified_at,
+            "details": self.details,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TargetRepositoryVerification":
+        return cls(
+            project_id=str(data.get("project_id", "")),
+            project_name=str(data.get("project_name", "")),
+            repository_root=str(data.get("repository_root", "")),
+            repository_head=str(data.get("repository_head", "")),
+            branch=str(data.get("branch", "")),
+            working_tree_state=str(data.get("working_tree_state", "")),
+            remote_url=data.get("remote_url"),
+            is_valid=bool(data.get("is_valid", True)),
+            verified_at=str(data.get("verified_at", "")),
+            details=dict(data.get("details", {})),
+        )
+
+
+def verify_target_repository_identity(
+    project: Project,
+    candidate_repo_path: Optional[Union[str, Path]] = None,
+    expected_head: Optional[str] = None,
+    expected_branch: Optional[str] = None,
+    expected_remote: Optional[str] = None,
+    require_clean: bool = False,
+) -> TargetRepositoryVerification:
+    """Fail-closed verification of target repository identity before any live company run.
+
+    Enforces:
+    1. Canonicalized filesystem root matching between registered Project and candidate path.
+    2. Zero acceptance of scratch/shadow repositories (e.g. scratch\\jester, scratch\\JesteChat).
+    3. Git remote verification against authoritative repository remote (e.g. farnai/Jester.git).
+    4. Authoritative repository identity markers on disk (e.g. docs/JESTER_PRODUCT_FOUNDATION.md).
+    5. Git top-level alignment and branch / HEAD resolution.
+    6. Exposure of Project ID, Project Name, Repository Root, Repository HEAD, Branch, Working Tree State.
+    """
+    if not isinstance(project, Project):
+        raise ProjectValidationError("Expected Project instance for repository identity verification.")
+
+    repo_root = project.repository.canonical_root
+    if not repo_root.exists():
+        raise TargetRepositoryMismatchError(f"Target repository root does not exist on disk: '{repo_root}'.")
+    if not repo_root.is_dir():
+        raise TargetRepositoryMismatchError(f"Target repository root is not a directory: '{repo_root}'.")
+
+    # 1. Candidate path alignment check
+    if candidate_repo_path is not None:
+        cand_resolved = Path(candidate_repo_path).resolve()
+        if cand_resolved != repo_root:
+            raise TargetRepositoryMismatchError(
+                f"Candidate repository '{cand_resolved}' does not match registered Project '{project.project_id}' "
+                f"repository root '{repo_root}'."
+            )
+
+    # 2. Check Git repository validity
+    git_dir = repo_root / ".git"
+    if not git_dir.exists():
+        raise TargetRepositoryMismatchError(f"Directory is not a Git repository (no .git): '{repo_root}'.")
+
+    code, toplevel_out, err = run_git(["rev-parse", "--show-toplevel"], cwd=repo_root)
+    if code != 0:
+        raise TargetRepositoryMismatchError(f"Failed to inspect git repository top-level: {err.strip()}")
+    observed_toplevel = Path(toplevel_out.strip()).resolve()
+    if observed_toplevel != repo_root:
+        raise TargetRepositoryMismatchError(
+            f"Git top-level mismatch: observed '{observed_toplevel}' != configured '{repo_root}'."
+        )
+
+    # 3. Resolve Git Remote
+    code, remotes_out, _ = run_git(["remote", "-v"], cwd=repo_root)
+    remote_text = remotes_out.strip() if code == 0 else ""
+
+    # 4. Anti-Shadow / Scratch Defense (Prevents scratch/jester, scratch/JesteChat, etc.)
+    posix_path = repo_root.as_posix().lower()
+    root_parts = [p.lower() for p in repo_root.parts]
+
+    # Universal check: if project_id is prj_jester, NEVER allow scratch shadows or JesteChat
+    if project.project_id == "prj_jester":
+        # Disallow any scratch directory or JesteChat
+        if "/scratch/jester" in posix_path or "/scratch/jestechat" in posix_path or "scratch" in root_parts or "jestechat" in root_parts:
+            raise TargetRepositoryMismatchError(
+                f"REJECTED: '{repo_root}' is a scratch shadow repository, not the authoritative Jester project."
+            )
+        # Disallow JesterAI.git remote (scratch repo remote)
+        if "jesterai.git" in remote_text.lower():
+            raise TargetRepositoryMismatchError(
+                f"REJECTED: Repository remote '{remote_text}' points to JesterAI.git, not authoritative farnai/Jester.git."
+            )
+        # Check required authoritative remote
+        authoritative_remote = expected_remote or project.repository.expected_remote or "farnai/jester"
+        if authoritative_remote.lower() not in remote_text.lower():
+            raise TargetRepositoryMismatchError(
+                f"REJECTED: Repository remote does not contain expected authoritative remote '{authoritative_remote}'. "
+                f"Found: '{remote_text}'."
+            )
+        # Check required authoritative repository markers
+        if not (repo_root / "docs" / "JESTER_PRODUCT_FOUNDATION.md").is_file():
+            raise TargetRepositoryMismatchError(
+                f"REJECTED: Authoritative marker 'docs/JESTER_PRODUCT_FOUNDATION.md' missing in '{repo_root}'."
+            )
+        if not (repo_root / "backend" / "app" / "main.py").is_file():
+            raise TargetRepositoryMismatchError(
+                f"REJECTED: Authoritative marker 'backend/app/main.py' missing in '{repo_root}'."
+            )
+
+    # 5. Generic expected_remote check if set on RepositoryRef
+    if project.repository.expected_remote and project.repository.expected_remote.lower() not in remote_text.lower():
+        raise TargetRepositoryMismatchError(
+            f"Repository remote does not match expected_remote '{project.repository.expected_remote}'. Observed: '{remote_text}'."
+        )
+
+    # 6. Resolve HEAD and Branch
+    head = resolve_repo_head_commit(repo_root)
+    if expected_head and head != expected_head:
+        raise TargetRepositoryMismatchError(
+            f"Repository HEAD '{head}' does not match expected commit '{expected_head}'."
+        )
+
+    code, branch_out, _ = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root)
+    branch = branch_out.strip() if code == 0 else "DETACHED"
+    if expected_branch and branch != expected_branch and branch != "DETACHED":
+        raise TargetRepositoryMismatchError(
+            f"Repository branch '{branch}' does not match expected branch '{expected_branch}'."
+        )
+
+    # 7. Working tree state
+    code, stat_out, _ = run_git(["status", "--porcelain"], cwd=repo_root)
+    code_tr, tracked_out, _ = run_git(["status", "--porcelain", "--untracked-files=no"], cwd=repo_root)
+    lines = [l for l in stat_out.strip().splitlines() if l.strip()]
+    tracked_mods = [l for l in tracked_out.strip().splitlines() if l.strip()]
+    untracked_files = [l for l in lines if l.startswith("??")]
+
+    if not lines:
+        wt_state = "CLEAN"
+    elif not tracked_mods:
+        wt_state = f"CLEAN_TRACKED ({len(untracked_files)} untracked files)"
+    else:
+        wt_state = f"DIRTY ({len(tracked_mods)} modified, {len(untracked_files)} untracked)"
+
+    if require_clean:
+        if tracked_mods:
+            raise TargetRepositoryMismatchError(f"Target repository working tree has tracked modifications: {wt_state}.")
+        if not getattr(project.repository, "allow_untracked", False) and wt_state != "CLEAN":
+            raise TargetRepositoryMismatchError(f"Target repository working tree is not clean: {wt_state}.")
+
+    return TargetRepositoryVerification(
+        project_id=project.project_id,
+        project_name=project.name,
+        repository_root=repo_root.as_posix(),
+        repository_head=head,
+        branch=branch,
+        working_tree_state=wt_state,
+        remote_url=remote_text,
+        is_valid=True,
+        details={
+            "tracked_changes_count": len(tracked_mods),
+            "untracked_files_count": len(untracked_files),
+            "canonical_root": str(repo_root),
+        },
     )
 
 

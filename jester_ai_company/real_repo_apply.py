@@ -233,13 +233,21 @@ def compute_repo_fingerprint(repo_root: Path) -> RepositoryStateFingerprint:
     )
 
 
-def verify_target_repo_cleanliness(repo_root: Path) -> Tuple[bool, str]:
-    """Verify that target repository working tree is 100% clean."""
-    code, stdout, stderr = run_git(["status", "--porcelain"], cwd=repo_root)
+def verify_target_repo_cleanliness(repo_root: Path, allow_untracked: bool = False) -> Tuple[bool, str]:
+    """Verify that target repository working tree is clean.
+    
+    If allow_untracked is True, untracked files are excluded (--untracked-files=no),
+    preserving the distinction between tracked state and pre-existing untracked files.
+    """
+    cmd = ["status", "--porcelain"]
+    if allow_untracked:
+        cmd.append("--untracked-files=no")
+    code, stdout, stderr = run_git(cmd, cwd=repo_root)
     if code != 0:
         raise TargetRepositoryInvalidError(f"Failed to inspect git status: {stderr.strip()}")
     trimmed = stdout.strip()
     return (trimmed == ""), trimmed
+
 
 
 # ==============================================================================
@@ -274,6 +282,16 @@ class RealRepoApplyProposal:
     proposal_sha256: str
     project_id: Optional[str] = None
     repository_id: Optional[str] = None
+
+    @property
+    def target_repo_root(self) -> str:
+        """Alias for target_repository_root."""
+        return self.target_repository_root
+
+    @property
+    def status(self) -> str:
+        """Lifecycle status of proposal before founder grant."""
+        return "READY_FOR_APPROVAL"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -535,6 +553,7 @@ def build_real_repo_apply_proposal(
     qa_execution_report_file_path: Path,
     project_id: Optional[str] = None,
     repository_id: Optional[str] = None,
+    allow_untracked: bool = False,
 ) -> RealRepoApplyProposal:
     """Build an immutable, typed proposal for human review. PERFORMS ZERO REPOSITORY MUTATION."""
     # 1. Eligibility validation
@@ -564,9 +583,9 @@ def build_real_repo_apply_proposal(
     changed_files = tuple(patch_meta.get("changed_files", []))
 
     # Cleanliness check & Crash State Classification (Principles 3 & 4)
-    is_clean, dirty_stdout = verify_target_repo_cleanliness(repo_resolved)
+    is_clean, dirty_stdout = verify_target_repo_cleanliness(repo_resolved, allow_untracked=allow_untracked)
     if not is_clean:
-        crash_state = classify_crash_state(repo_resolved, patch_text, changed_files)
+        crash_state = classify_crash_state(repo_resolved, patch_text, changed_files, allow_untracked=allow_untracked)
         if crash_state == CrashStateClassification.PARTIAL_OR_UNKNOWN_STATE:
             raise CrashRecoveryBlockError(
                 f"Target repository '{repo_resolved}' has an unresolved crash/partial apply state ({crash_state.value}). "
@@ -711,13 +730,15 @@ def precheck_code_patch_applicability(repo_root: Path, patch_text: str) -> None:
     if not patch_text or not patch_text.strip():
         raise PatchPrecheckFailedError("Cannot precheck empty CODE_PATCH text.")
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False, encoding="utf-8") as f:
-        f.write(patch_text)
+    # Normalize to LF and write in binary mode to prevent Windows newline translation
+    normalized_patch = patch_text.replace("\r\n", "\n").encode("utf-8")
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".patch", delete=False) as f:
+        f.write(normalized_patch)
         temp_patch_path = Path(f.name)
 
     try:
         code, stdout, stderr = run_git(
-            ["-c", "core.hooksPath=/dev/null", "apply", "--check", "--whitespace=nowarn", str(temp_patch_path)],
+            ["-c", "core.hooksPath=/dev/null", "apply", "--check", "--whitespace=nowarn", "--ignore-whitespace", str(temp_patch_path)],
             cwd=repo_root,
         )
         if code != 0:
@@ -729,13 +750,14 @@ def precheck_code_patch_applicability(repo_root: Path, patch_text: str) -> None:
 
 def apply_code_patch_to_real_repo(repo_root: Path, patch_text: str) -> None:
     """Deterministically apply CODE_PATCH to real repository working tree via git apply (shell=False)."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False, encoding="utf-8") as f:
-        f.write(patch_text)
+    normalized_patch = patch_text.replace("\r\n", "\n").encode("utf-8")
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".patch", delete=False) as f:
+        f.write(normalized_patch)
         temp_patch_path = Path(f.name)
 
     try:
         code, stdout, stderr = run_git(
-            ["-c", "core.hooksPath=/dev/null", "apply", "--whitespace=nowarn", str(temp_patch_path)],
+            ["-c", "core.hooksPath=/dev/null", "apply", "--whitespace=nowarn", "--ignore-whitespace", str(temp_patch_path)],
             cwd=repo_root,
         )
         if code != 0:
@@ -800,6 +822,7 @@ def rollback_real_repo_apply(
     repo_root: Path,
     patch_text: str,
     expected_files: Tuple[str, ...],
+    allow_untracked: bool = False,
 ) -> None:
     """Safely restore the real repository to exact clean pre-apply state (Principles 5 & 6).
 
@@ -808,14 +831,15 @@ def rollback_real_repo_apply(
     """
     logger.info("Initiating targeted safe rollback for repository '%s'", repo_root)
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False, encoding="utf-8") as f:
-        f.write(patch_text)
+    normalized_patch = patch_text.replace("\r\n", "\n").encode("utf-8")
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".patch", delete=False) as f:
+        f.write(normalized_patch)
         temp_patch_path = Path(f.name)
 
     try:
         # 1. Primary rollback: git apply --reverse
         code, stdout, stderr = run_git(
-            ["-c", "core.hooksPath=/dev/null", "apply", "--reverse", "--whitespace=nowarn", str(temp_patch_path)],
+            ["-c", "core.hooksPath=/dev/null", "apply", "--reverse", "--whitespace=nowarn", "--ignore-whitespace", str(temp_patch_path)],
             cwd=repo_root,
         )
         if code != 0:
@@ -829,7 +853,7 @@ def rollback_real_repo_apply(
                 target_file.unlink(missing_ok=True)
 
         # 2. Check clean state; if not clean, perform targeted checkout on expected files
-        is_clean, status_out = verify_target_repo_cleanliness(repo_root)
+        is_clean, status_out = verify_target_repo_cleanliness(repo_root, allow_untracked=allow_untracked)
         if not is_clean:
             logger.warning("Working tree not fully clean after reverse apply. Performing targeted checkout on expected files.")
             for rel_path in expected_files:
@@ -840,7 +864,7 @@ def rollback_real_repo_apply(
                 else:
                     if target_file.is_file():
                         target_file.unlink(missing_ok=True)
-            is_clean, status_out = verify_target_repo_cleanliness(repo_root)
+            is_clean, status_out = verify_target_repo_cleanliness(repo_root, allow_untracked=allow_untracked)
 
         if not is_clean:
             raise RollbackFailedError(
@@ -861,9 +885,10 @@ def classify_crash_state(
     repo_root: Path,
     patch_text: str,
     expected_files: Tuple[str, ...],
+    allow_untracked: bool = False,
 ) -> CrashStateClassification:
     """Classify repository state to detect incomplete or crashed transactions."""
-    is_clean, _ = verify_target_repo_cleanliness(repo_root)
+    is_clean, _ = verify_target_repo_cleanliness(repo_root, allow_untracked=allow_untracked)
     if is_clean:
         return CrashStateClassification.NOT_APPLIED
 

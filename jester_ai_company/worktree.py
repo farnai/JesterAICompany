@@ -108,7 +108,7 @@ def _utc_now_iso() -> str:
 
 def run_git(args: List[str], cwd: Path, timeout: float = 30.0) -> Tuple[int, str, str]:
     """Execute an application-owned git command using an argument array (shell=False)."""
-    cmd = ["git"] + args
+    cmd = ["git", "-c", "core.longpaths=true"] + args
     try:
         proc = subprocess.run(
             cmd,
@@ -457,7 +457,8 @@ class WorktreeManager:
 
         # 3. Ensure worktrees directory exists
         self.worktrees_dir.mkdir(parents=True, exist_ok=True)
-        worktree_path = (self.worktrees_dir / grant.grant_id).resolve()
+        worktree_name = grant.grant_id if len(grant.grant_id) <= 40 else f"{grant.grant_id[:24]}_{hashlib.sha256(grant.grant_id.encode()).hexdigest()[:8]}"
+        worktree_path = (self.worktrees_dir / worktree_name).resolve()
 
         # If previous stale worktree exists at path, clean it up
         if worktree_path.exists():
@@ -484,7 +485,8 @@ class WorktreeManager:
             raise WorktreeError(f"Invalid base_commit_hash for QA worktree: '{base_commit_hash}'.")
 
         self.worktrees_dir.mkdir(parents=True, exist_ok=True)
-        worktree_path = (self.worktrees_dir / session_id).resolve()
+        worktree_name = session_id if len(session_id) <= 40 else f"{session_id[:24]}_{hashlib.sha256(session_id.encode()).hexdigest()[:8]}"
+        worktree_path = (self.worktrees_dir / worktree_name).resolve()
 
         if worktree_path.exists():
             run_git(["worktree", "remove", "--force", str(worktree_path)], cwd=self.repo_root)

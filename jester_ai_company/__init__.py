@@ -38,8 +38,11 @@ from .project import (
     RepositoryRef,
     RepositoryStateFingerprint,
     RepositoryValidationError,
+    TargetRepositoryMismatchError,
+    TargetRepositoryVerification,
     inspect_repository_state,
     validate_grant_against_project_policy,
+    verify_target_repository_identity,
 )
 from .knowledge import (
     DEFAULT_KNOWLEDGE_REGISTRY,

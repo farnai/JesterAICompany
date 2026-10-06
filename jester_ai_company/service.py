@@ -139,7 +139,10 @@ from .project import (
     ProjectRegistry,
     RepositoryPolicy,
     RepositoryRef,
+    TargetRepositoryMismatchError,
+    TargetRepositoryVerification,
     validate_grant_against_project_policy,
+    verify_target_repository_identity,
 )
 from .knowledge import (
     DEFAULT_KNOWLEDGE_REGISTRY,
@@ -1184,7 +1187,7 @@ class CompanyService:
             if exec_result.timed_out:
                 error_msg = f"{agent_name.capitalize()} runtime execution timed out after {exec_result.duration_ms:.0f}ms."
             else:
-                error_msg = f"{agent_name.capitalize()} runtime execution failed with exit code {exec_result.exit_code}."
+                error_msg = f"{agent_name.capitalize()} runtime execution failed with exit code {exec_result.exit_code}. stderr: {exec_result.stderr}. stdout: {exec_result.stdout[:500]}"
             logger.warning("%s task %s execution failed: %s", agent_name.capitalize(), task.id, error_msg)
             run.complete(status=RunStatus.FAILED.value, error=error_msg)
             task.complete(status=TaskStatus.FAILED.value, summary=f"Task execution failed: {error_msg}")
@@ -1632,9 +1635,25 @@ class CompanyService:
                 f"Combined input artifact size ({total_bytes} bytes) exceeds maximum allowed limit ({MAX_COMBINED_INPUT_ARTIFACT_SIZE_BYTES} bytes)."
             )
 
+        dev_knowledge = None
+        if project_id:
+            catalog = self.get_project_knowledge_catalog(project_id)
+            if catalog:
+                dev_policy = RoleKnowledgePolicy(
+                    role="developer",
+                    primary_domains=("backend", "architecture"),
+                    max_sources=2,
+                )
+                selected_sources = catalog.select_sources_for_role(dev_policy)
+                dev_knowledge = [
+                    catalog.load_excerpt(s, repository_revision="HEAD", max_chars=800)
+                    for s in selected_sources
+                ]
+
         prompt = build_developer_execution_prompt(
             task,
             verified_artifacts=verified_artifacts,
+            project_knowledge=dev_knowledge,
         )
 
         repo_state_before = self._get_repo_working_tree_state()
@@ -1741,14 +1760,24 @@ class CompanyService:
         # 6. Generate unique grant_id if not provided
         gid = grant_id or f"grant_{task.id}_{uuid.uuid4().hex[:8]}"
 
+        # Reconcile create vs modify based on target repository disk state
+        reconciled_mod = list(approved_files_to_modify or [])
+        reconciled_create = []
+        for f in (approved_files_to_create or []):
+            if (target_repo / f).is_file():
+                if f not in reconciled_mod:
+                    reconciled_mod.append(f)
+            else:
+                reconciled_create.append(f)
+
         grant = ExecutionGrant(
             grant_id=gid,
             task_id=task.id,
             plan_artifact_id=artifact.id,
             plan_sha256=computed_sha,
             base_commit_hash=base_commit,
-            approved_files_to_modify=tuple(approved_files_to_modify or []),
-            approved_files_to_create=tuple(approved_files_to_create or []),
+            approved_files_to_modify=tuple(reconciled_mod),
+            approved_files_to_create=tuple(reconciled_create),
             verification_actions=tuple(verification_actions or []),
             allow_test_modifications=allow_test_modifications,
             max_files_changed=max_files_changed,
@@ -2452,7 +2481,8 @@ class CompanyService:
             if exec_result.timed_out:
                 error_msg = f"[{QAFailureReason.QA_RUNTIME_FAILED.value}] QA runtime execution timed out after {exec_result.duration_ms:.0f}ms."
             else:
-                error_msg = f"[{QAFailureReason.QA_RUNTIME_FAILED.value}] QA runtime execution failed with exit code {exec_result.exit_code}."
+                stderr_diag = f" Stderr: {exec_result.stderr[:300]}" if exec_result.stderr else ""
+                error_msg = f"[{QAFailureReason.QA_RUNTIME_FAILED.value}] QA runtime execution failed with exit code {exec_result.exit_code}.{stderr_diag}"
             logger.warning("QA task %s execution failed: %s", task.id, error_msg)
             run.complete(status=RunStatus.FAILED.value, error=error_msg)
             task.complete(status=TaskStatus.FAILED.value, summary=f"Task execution failed: {error_msg}")
@@ -3066,6 +3096,8 @@ class CompanyService:
                     network_enabled=False,
                     founder_approval_id=patch_meta.get("founder_approval_id", "appr_base"),
                 )
+            elif original_grant.allow_test_modifications:
+                allow_test_modifications = True
 
             # 5. Reconstruct initial QA execution evaluation
             current_verdict_res, current_action_audits, current_veri_results = reconstruct_qa_execution_context(
@@ -3246,7 +3278,7 @@ class CompanyService:
                 plan_exec_res = self.runtime.execute(
                     agent="developer",
                     prompt=repair_plan_prompt,
-                    timeout=timeout or 60.0,
+                    timeout=timeout or 300.0,
                     workspace_dir=self.repo_root,
                     env=sanitize_execution_environment(),
                 )
@@ -3617,6 +3649,18 @@ class CompanyService:
                 )
 
             # 5. Build proposal (performs zero mutation)
+            allow_untracked = False
+            if project_id:
+                proj_obj = self.project_registry.get_project(project_id)
+                if proj_obj and proj_obj.repository:
+                    allow_untracked = proj_obj.repository.allow_untracked
+            if not allow_untracked:
+                for p in self.project_registry.list_projects():
+                    if p.repository and Path(p.repository.root_path).resolve() == resolved_repo:
+                        if p.repository.allow_untracked:
+                            allow_untracked = True
+                            break
+
             proposal = build_real_repo_apply_proposal(
                 target_repo_root=resolved_repo,
                 code_patch_artifact=patch_art,
@@ -3625,6 +3669,7 @@ class CompanyService:
                 qa_execution_report_artifact=qa_exec_art,
                 qa_execution_report_file_path=qa_exec_file_path,
                 project_id=project_id,
+                allow_untracked=allow_untracked,
             )
 
             # 6. Store in proposal registry
@@ -3636,6 +3681,12 @@ class CompanyService:
             repo_state_after = self._get_repo_working_tree_state(resolved_repo)
             if repo_state_before != repo_state_after:
                 raise ExecutionError(f"Target repository mutation detected during prepare_real_repo_apply in '{resolved_repo}'!")
+
+    def get_real_repo_apply_proposal(self, proposal_id: str) -> Optional[RealRepoApplyProposal]:
+        """Retrieve a registered RealRepoApplyProposal by proposal_id."""
+        if not proposal_id:
+            return None
+        return self._real_repo_apply_proposals.get(proposal_id.strip())
 
     def approve_real_repo_apply(
         self,
@@ -3758,9 +3809,21 @@ class CompanyService:
         try:
             # Under external lock: Double pre-mutation TOCTOU check (Principle 4)
             # 1. Cleanliness & Crash State check
-            is_clean, dirty_stdout = verify_target_repo_cleanliness(target_repo)
+            allow_untracked = False
+            if grant.project_id:
+                proj_obj = self.project_registry.get_project(grant.project_id)
+                if proj_obj and proj_obj.repository:
+                    allow_untracked = proj_obj.repository.allow_untracked
+            if not allow_untracked:
+                for p in self.project_registry.list_projects():
+                    if p.repository and Path(p.repository.root_path).resolve() == target_repo:
+                        if p.repository.allow_untracked:
+                            allow_untracked = True
+                            break
+
+            is_clean, dirty_stdout = verify_target_repo_cleanliness(target_repo, allow_untracked=allow_untracked)
             if not is_clean:
-                crash_state = classify_crash_state(target_repo, patch_text, grant.expected_changed_files)
+                crash_state = classify_crash_state(target_repo, patch_text, grant.expected_changed_files, allow_untracked=allow_untracked)
                 if crash_state == CrashStateClassification.PARTIAL_OR_UNKNOWN_STATE:
                     raise CrashRecoveryBlockError(
                         f"Target repository '{target_repo}' has an unresolved crash/partial apply state ({crash_state.value}). "
@@ -3861,6 +3924,7 @@ class CompanyService:
         self,
         objective: CompanyObjective,
         timeout: Optional[float] = None,
+        project_knowledge: Optional[Any] = None,
     ) -> CEOOrchestrationPlan:
         """Invoke the real CEO Agent to formulate an initial macro orchestration plan.
 
@@ -3878,7 +3942,7 @@ class CompanyService:
         if not isinstance(objective, CompanyObjective):
             raise CompanyServiceError("Expected CompanyObjective instance.")
 
-        prompt = build_ceo_planning_prompt(objective)
+        prompt = build_ceo_planning_prompt(objective, project_knowledge=project_knowledge)
         exec_result = self.runtime.execute(
             agent="ceo",
             prompt=prompt,
@@ -3927,6 +3991,19 @@ class CompanyService:
                 f"Conflicting project_id: argument '{project_id}' != objective '{objective.project_id}'."
             )
 
+        # Target Repository Identity Fail-Closed Guard
+        verification_dict = None
+        if bound_project_id:
+            repo_proj = self.project_registry.get_project(bound_project_id)
+            if repo_proj:
+                verification = verify_target_repository_identity(
+                    project=repo_proj,
+                    candidate_repo_path=objective.target_repository,
+                    expected_head=base_commit_hash,
+                    expected_branch=target_branch,
+                )
+                verification_dict = verification.to_dict()
+
         run_id = f"crun_{uuid.uuid4().hex[:8]}"
         run = CompanyRun(
             run_id=run_id,
@@ -3936,10 +4013,12 @@ class CompanyService:
             repository_id=repository_id,
             target_branch=target_branch,
             base_commit_hash=base_commit_hash,
+            target_repository_verification=verification_dict,
         )
         run.add_event(
             event_type="RUN_CREATED",
             reason="CompanyRun created from CompanyObjective",
+            details={"target_repository_verification": verification_dict} if verification_dict else None,
         )
         self.save_company_run(run)
         return run
@@ -3969,8 +4048,27 @@ class CompanyService:
         run.ceo_invocation_count += 1
         self.save_company_run(run)
 
+        ceo_knowledge = None
+        if run.project_id:
+            catalog = self.get_project_knowledge_catalog(run.project_id)
+            if catalog:
+                ceo_policy = RoleKnowledgePolicy(
+                    role="ceo",
+                    primary_domains=("product", "architecture"),
+                    max_sources=2,
+                )
+                selected_sources = catalog.select_sources_for_role(ceo_policy)
+                ceo_knowledge = [
+                    catalog.load_excerpt(s, repository_revision=run.base_commit_hash or "HEAD", max_chars=2500)
+                    for s in selected_sources
+                ]
+
         try:
-            plan = self.propose_initial_company_plan(run.objective, timeout=timeout)
+            plan = self.propose_initial_company_plan(
+                run.objective,
+                timeout=timeout,
+                project_knowledge=ceo_knowledge,
+            )
         except Exception as exc:
             run.transition_to(CompanyRunState.FAILED, error=str(exc))
             run.add_event(
@@ -4011,10 +4109,24 @@ class CompanyService:
             raise PlanValidationError(f"CompanyRun '{run_id}' has no active plan.")
 
         validate_dag_structure(run.active_plan)
+
+        # Target Repository Identity Guard
+        if run.project_id:
+            repo_proj = self.project_registry.get_project(run.project_id)
+            if repo_proj:
+                verification = verify_target_repository_identity(
+                    project=repo_proj,
+                    candidate_repo_path=run.objective.target_repository,
+                    expected_head=run.base_commit_hash,
+                    expected_branch=run.target_branch,
+                )
+                run.target_repository_verification = verification.to_dict()
+
         run.transition_to(CompanyRunState.RUNNING)
         run.add_event(
             event_type="RUN_STARTED",
             reason="CompanyRun transitioned to RUNNING",
+            details={"target_repository_verification": run.target_repository_verification} if run.target_repository_verification else None,
         )
         self.save_company_run(run)
         return run
@@ -4182,7 +4294,7 @@ class CompanyService:
         self.save_company_run(run)
 
         # Ensure project exists
-        proj_id = f"proj_{run.run_id}"
+        proj_id = run.project_id or f"proj_{run.run_id}"
         if proj_id not in self.company.projects:
             self.create_project(proj_id, name=f"Project for {run.objective.title}")
         proj = self.get_project(proj_id)
@@ -4225,6 +4337,21 @@ class CompanyService:
             if lineage:
                 available_arts[ref.artifact_id] = lineage[2]
 
+        role_knowledge = None
+        if run.project_id:
+            catalog = self.get_project_knowledge_catalog(run.project_id)
+            if catalog:
+                role_policy = RoleKnowledgePolicy(
+                    role=role,
+                    primary_domains=("product", "brand") if role in ("product", "marketing") else ("frontend", "brand") if role == "ux" else ("backend", "architecture"),
+                    max_sources=2,
+                )
+                selected_sources = catalog.select_sources_for_role(role_policy)
+                role_knowledge = [
+                    catalog.load_excerpt(s, repository_revision=run.base_commit_hash or "HEAD", max_chars=2500)
+                    for s in selected_sources
+                ]
+
         assemble_specialist_context(
             recipient_role=role,
             objective=run.objective,
@@ -4235,6 +4362,7 @@ class CompanyService:
             summaries=run.employee_summaries,
             constraints=run.objective.constraints,
             company_run_state=run.state,
+            project_knowledge=role_knowledge,
         )
 
         # Closed role dispatch

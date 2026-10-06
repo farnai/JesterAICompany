@@ -233,7 +233,7 @@ Employees exchange typed, content-addressed artifacts on disk rather than relyin
   - Project authority (`RepositoryPolicy`) defines coarse maximum repository boundaries; task authority (`ExecutionGrant`) defines narrower task mutations.
   - Cross-project protection guarantees zero cross-project contamination or unauthorized apply.
 - **Generic Project Knowledge Layer (STEP 19C-B):** Introduced durable Project Knowledge ingestion, extensible domain normalization, source authority classification, role-specific policies (`RoleKnowledgePolicy`), and untrusted data prompt isolation.
-- **Real Jester Read-Only Integration:** Validated directly against the real Jester repository (`700fa1254855885a4c5a175f203b0e278e993288`) with zero mutations, zero worktrees, and fail-closed secret denial.
+- **Real Jester Read-Only Integration:** Validated directly against the authoritative real Jester repository (`C:\Users\fiord\OneDrive\Desktop\Jester` at `2173b2dd72c9802421963788e7dd0d0087af68af`) with zero mutations, zero worktrees, and fail-closed secret denial.
 
 ---
 

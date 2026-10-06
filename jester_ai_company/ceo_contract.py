@@ -80,7 +80,10 @@ class CEOPlanSecurityError(PlanValidationError):
     pass
 
 
-def build_ceo_planning_prompt(objective: CompanyObjective) -> str:
+def build_ceo_planning_prompt(
+    objective: CompanyObjective,
+    project_knowledge: Optional[Any] = None,
+) -> str:
     """Build a deterministic, bounded planning prompt for the CEO agent.
 
     Instructs the CEO to evaluate the CompanyObjective and formulate a pure data
@@ -106,6 +109,11 @@ def build_ceo_planning_prompt(objective: CompanyObjective) -> str:
         else ""
     )
 
+    knowledge_block = ""
+    if project_knowledge:
+        from .context import format_project_knowledge_prompt_block
+        knowledge_block = format_project_knowledge_prompt_block(project_knowledge)
+
     return (
         "SYSTEM INSTRUCTION: You are the CEO of Jester AI Company operating in "
         "ORCHESTRATION PLANNING MODE.\n\n"
@@ -122,6 +130,7 @@ def build_ceo_planning_prompt(objective: CompanyObjective) -> str:
         "10. Critical Developer Fan-In invariant: If a 'developer' work item is planned, it MUST directly depend on BOTH a 'product' work item and a 'ux' work item in 'depends_on'.\n"
         "11. QA is application-owned inside code pipelines; do NOT plan a normal 'developer' -> 'qa' dependency.\n"
         "12. 'depends_on' represents execution ordering; it is NOT automatic artifact sharing.\n\n"
+        f"{knowledge_block}"
         f"COMPANY OBJECTIVE:\n"
         f"ID: {objective.id}\n"
         f"TITLE: {objective.title}\n"
@@ -247,7 +256,7 @@ def parse_and_validate_ceo_plan(
     json_text = extract_ceo_plan_json(raw_text)
 
     try:
-        data = json.loads(json_text)
+        data = json.loads(json_text, strict=False)
     except (json.JSONDecodeError, TypeError) as exc:
         raise CEOPlanExtractionError(f"Malformed JSON in CEO response: {exc}") from exc
 

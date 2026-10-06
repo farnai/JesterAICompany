@@ -366,6 +366,6 @@ STEP 19C-B introduces the first generic, typed Project Knowledge layer in Jester
 
 - **Untrusted Data Delimiters:** Every Project Knowledge excerpt injected into an agent prompt is wrapped inside deterministic `UNTRUSTED REPOSITORY DATA` delimiters with explicit notices instructing the model never to obey instructions embedded within external repository text.
 - **Deterministic Secret Denial:** Sources marked `DENIED` or matching `RepositoryPolicy.denied` fail closed before any content is read from disk.
-- **Zero Real Repository Mutation:** All reading operates in place with zero worktree creation, zero patches, zero grants, and zero disk mutations. Real Jester remains 100% clean and identical to baseline commit `700fa1254855885a4c5a175f203b0e278e993288`.
+- **Zero Real Repository Mutation:** All reading operates in place with zero worktree creation, zero patches, zero grants, and zero disk mutations. Real Jester remains 100% clean and identical to baseline commit `2173b2dd72c9802421963788e7dd0d0087af68af`.
 
 

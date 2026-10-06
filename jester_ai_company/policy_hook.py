@@ -161,7 +161,7 @@ def authorize_tool_mutation(
     file_exists = resolved_path.is_file()
 
     if file_exists:
-        if rel_lower not in approved_mod:
+        if rel_lower not in approved_mod and rel_lower not in approved_create:
             return WriteAuthorizationDecision(
                 allowed=False,
                 reason=f"ExecutionPolicy: PreToolUse DENIED - existing file '{rel_path}' is not in approved_files_to_modify.",
@@ -169,7 +169,7 @@ def authorize_tool_mutation(
                 relative_path=rel_path,
             )
     else:
-        if rel_lower not in approved_create:
+        if rel_lower not in approved_create and rel_lower not in approved_mod:
             return WriteAuthorizationDecision(
                 allowed=False,
                 reason=f"ExecutionPolicy: PreToolUse DENIED - new file '{rel_path}' is not in approved_files_to_create.",

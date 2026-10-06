@@ -17,6 +17,7 @@ Architecture:
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+import shutil
 import subprocess
 import time
 from typing import Any, Dict, List, Optional, Set
@@ -72,7 +73,7 @@ class AntigravityRuntime:
     def __init__(
         self,
         repo_root: Optional[Path] = None,
-        default_timeout: float = 60.0,
+        default_timeout: float = 600.0,
     ):
         self.repo_root = (repo_root or Path(__file__).resolve().parent.parent).resolve()
         self.default_timeout = max(1.0, float(default_timeout))
@@ -133,6 +134,10 @@ class AntigravityRuntime:
         if not cleaned_prompt:
             raise ValueError("Prompt must not be empty.")
 
+        max_cli_prompt_len = 28000
+        if len(cleaned_prompt) > max_cli_prompt_len:
+            cleaned_prompt = cleaned_prompt[:max_cli_prompt_len]
+
         target_workspace = (
             Path(workspace_dir).resolve() if workspace_dir is not None else self.repo_root
         )
@@ -175,78 +180,91 @@ class AntigravityRuntime:
             str(workspace_dir.resolve()) if workspace_dir is not None else str(self.repo_root)
         )
 
-        start_time = time.perf_counter()
-        try:
-            # Strictly NO shell=True; invoked as argument array
-            proc = subprocess.run(
-                cmd,
-                cwd=target_cwd,
-                env=env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=exec_timeout,
-                shell=False,
-            )
-            duration_ms = (time.perf_counter() - start_time) * 1000.0
+        max_transient_retries = 2
+        for attempt in range(max_transient_retries + 1):
+            start_time = time.perf_counter()
+            try:
+                # Strictly NO shell=True; invoked as argument array
+                proc = subprocess.run(
+                    cmd,
+                    cwd=target_cwd,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=exec_timeout,
+                    shell=False,
+                )
+                duration_ms = (time.perf_counter() - start_time) * 1000.0
 
-            return AgentExecutionResult(
-                agent=validated_agent,
-                success=(proc.returncode == 0),
-                stdout=proc.stdout,
-                stderr=proc.stderr,
-                exit_code=proc.returncode,
-                duration_ms=round(duration_ms, 2),
-                timed_out=False,
-                command=cmd,
-            )
-        except subprocess.TimeoutExpired as exc:
-            duration_ms = (time.perf_counter() - start_time) * 1000.0
-            stdout_str = (
-                exc.stdout.decode("utf-8", errors="replace")
-                if isinstance(exc.stdout, bytes)
-                else (exc.stdout or "")
-            )
-            stderr_str = (
-                exc.stderr.decode("utf-8", errors="replace")
-                if isinstance(exc.stderr, bytes)
-                else (exc.stderr or "")
-            )
-            timeout_msg = f"Agent execution timed out after {exec_timeout:.1f} seconds."
-            full_stderr = f"{stderr_str}\n{timeout_msg}".strip() if stderr_str else timeout_msg
+                if proc.returncode != 0 and attempt < max_transient_retries:
+                    combined_err = f"{proc.stdout or ''} {proc.stderr or ''}".lower()
+                    if (
+                        "503" in combined_err
+                        or "unavailable" in combined_err
+                        or "429" in combined_err
+                        or "resource_exhausted" in combined_err
+                    ):
+                        time.sleep(2.0 * (attempt + 1))
+                        continue
 
-            return AgentExecutionResult(
-                agent=validated_agent,
-                success=False,
-                stdout=stdout_str,
-                stderr=full_stderr,
-                exit_code=-1,
-                duration_ms=round(duration_ms, 2),
-                timed_out=True,
-                command=cmd,
-            )
-        except FileNotFoundError:
-            duration_ms = (time.perf_counter() - start_time) * 1000.0
-            return AgentExecutionResult(
-                agent=validated_agent,
-                success=False,
-                stdout="",
-                stderr="Antigravity CLI executable 'agy' not found on system PATH.",
-                exit_code=127,
-                duration_ms=round(duration_ms, 2),
-                timed_out=False,
-                command=cmd,
-            )
-        except Exception as exc:
-            duration_ms = (time.perf_counter() - start_time) * 1000.0
-            return AgentExecutionResult(
-                agent=validated_agent,
-                success=False,
-                stdout="",
-                stderr=f"Unexpected error executing agent '{validated_agent}': {exc}",
-                exit_code=1,
-                duration_ms=round(duration_ms, 2),
-                timed_out=False,
-                command=cmd,
-            )
+                return AgentExecutionResult(
+                    agent=validated_agent,
+                    success=(proc.returncode == 0),
+                    stdout=proc.stdout,
+                    stderr=proc.stderr,
+                    exit_code=proc.returncode,
+                    duration_ms=round(duration_ms, 2),
+                    timed_out=False,
+                    command=cmd,
+                )
+            except subprocess.TimeoutExpired as exc:
+                duration_ms = (time.perf_counter() - start_time) * 1000.0
+                stdout_str = (
+                    exc.stdout.decode("utf-8", errors="replace")
+                    if isinstance(exc.stdout, bytes)
+                    else (exc.stdout or "")
+                )
+                stderr_str = (
+                    exc.stderr.decode("utf-8", errors="replace")
+                    if isinstance(exc.stderr, bytes)
+                    else (exc.stderr or "")
+                )
+                timeout_msg = f"Agent execution timed out after {exec_timeout:.1f} seconds."
+                full_stderr = f"{stderr_str}\n{timeout_msg}".strip() if stderr_str else timeout_msg
+
+                return AgentExecutionResult(
+                    agent=validated_agent,
+                    success=False,
+                    stdout=stdout_str,
+                    stderr=full_stderr,
+                    exit_code=-1,
+                    duration_ms=round(duration_ms, 2),
+                    timed_out=True,
+                    command=cmd,
+                )
+            except FileNotFoundError as exc:
+                duration_ms = (time.perf_counter() - start_time) * 1000.0
+                return AgentExecutionResult(
+                    agent=validated_agent,
+                    success=False,
+                    stdout="",
+                    stderr=f"Antigravity CLI executable 'agy' not found on system PATH: {exc} (binary={cmd[0]}, cwd={target_cwd}, cmd_len={len(' '.join(cmd))})",
+                    exit_code=127,
+                    duration_ms=round(duration_ms, 2),
+                    timed_out=False,
+                    command=cmd,
+                )
+            except Exception as exc:
+                duration_ms = (time.perf_counter() - start_time) * 1000.0
+                return AgentExecutionResult(
+                    agent=validated_agent,
+                    success=False,
+                    stdout="",
+                    stderr=f"Unexpected error executing agent '{validated_agent}': {exc}",
+                    exit_code=1,
+                    duration_ms=round(duration_ms, 2),
+                    timed_out=False,
+                    command=cmd,
+                )

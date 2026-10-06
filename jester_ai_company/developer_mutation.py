@@ -152,14 +152,43 @@ def parse_and_validate_developer_mutation_result(
     if not raw_output or not raw_output.strip():
         raise DeveloperMutationParseError("Empty output received from Developer Agent.")
 
-    json_str: Optional[str] = None
-    fence_matches = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", raw_output, re.DOTALL)
-    if fence_matches:
-        json_str = fence_matches[-1]
-    else:
-        obj_match = re.search(r"(\{.*\})", raw_output, re.DOTALL)
-        if obj_match:
-            json_str = obj_match.group(1)
+    cleaned = raw_output.strip()
+
+    # 1. First check if outermost { ... } parses as valid JSON directly
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        candidate = cleaned[first_brace : last_brace + 1].strip()
+        try:
+            json.loads(candidate, strict=False)
+            json_str = candidate
+        except Exception:
+            pass
+
+    # 2. Match outermost code fences (from first ``` to last ```)
+    if not json_str and "```" in cleaned:
+        first_fence = cleaned.find("```")
+        last_fence = cleaned.rfind("```")
+        if last_fence > first_fence:
+            newline_idx = cleaned.find("\n", first_fence)
+            if newline_idx != -1 and newline_idx < last_fence:
+                inner = cleaned[newline_idx + 1 : last_fence].strip()
+                if inner:
+                    inner_first = inner.find("{")
+                    inner_last = inner.rfind("}")
+                    if inner_first != -1 and inner_last != -1 and inner_last > inner_first:
+                        candidate = inner[inner_first : inner_last + 1].strip()
+                        try:
+                            json.loads(candidate, strict=False)
+                            json_str = candidate
+                        except Exception:
+                            json_str = candidate
+                    else:
+                        json_str = inner
+
+    # 3. Fallback to outer braces even if direct parse failed
+    if not json_str and first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        json_str = cleaned[first_brace : last_brace + 1].strip()
 
     if not json_str:
         # Fallback heuristic: check if output describes completed actions
@@ -172,7 +201,7 @@ def parse_and_validate_developer_mutation_result(
         raise DeveloperMutationParseError("No JSON structure found in Developer mutation output.")
 
     try:
-        data = json.loads(json_str)
+        data = json.loads(json_str, strict=False)
     except json.JSONDecodeError as exc:
         raise DeveloperMutationParseError(f"Malformed JSON in Developer mutation output: {exc}")
 

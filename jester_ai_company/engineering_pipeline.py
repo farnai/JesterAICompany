@@ -45,6 +45,7 @@ from .execution_grant import (
     ProtectedPathError,
     VerificationAction,
 )
+from .worktree import is_test_file
 from .orchestrator import (
     CEOPlannedWorkItem,
     CompanyObjective,
@@ -73,6 +74,7 @@ from .repair import (
     RepairWorkflowStatus,
 )
 from .developer_mutation import DeveloperMutationStatus
+from .project import TargetRepositoryMismatchError, verify_target_repository_identity
 
 
 def _resolve_artifact_file_path(base_output_dir: Path, artifact: Artifact) -> Path:
@@ -203,14 +205,14 @@ class EngineeringPipelineAdapter:
         prod_task = None
         if prod_item.task_id:
             try:
-                prod_task = self.service.get_task(prod_item.task_id, project_id=proj.id)
+                prod_task = self.service.get_task(prod_item.task_id)
             except Exception:
                 prod_task = None
 
         ux_task = None
         if ux_item.task_id:
             try:
-                ux_task = self.service.get_task(ux_item.task_id, project_id=proj.id)
+                ux_task = self.service.get_task(ux_item.task_id)
             except Exception:
                 ux_task = None
 
@@ -273,6 +275,25 @@ class EngineeringPipelineAdapter:
             run.transition_to(CompanyRunState.FAILED, error=err_msg)
             self.service.save_company_run(run)
             raise TargetRepositoryInvalidError(err_msg)
+
+        # Enforce Target Repository Identity Guard
+        if run.project_id:
+            repo_proj = self.service.project_registry.get_project(run.project_id)
+            if repo_proj:
+                try:
+                    verify_target_repository_identity(
+                        project=repo_proj,
+                        candidate_repo_path=target_repo,
+                        expected_head=run.base_commit_hash,
+                        expected_branch=run.target_branch,
+                    )
+                except Exception as exc:
+                    err_msg = f"Target repository identity verification failed: {exc}"
+                    target_item.state = WorkItemState.FAILED.value
+                    run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+                    run.transition_to(CompanyRunState.FAILED, error=err_msg)
+                    self.service.save_company_run(run)
+                    raise TargetRepositoryInvalidError(err_msg) from exc
 
         # Mark work item RUNNING
         target_item.state = WorkItemState.RUNNING.value
@@ -370,8 +391,17 @@ class EngineeringPipelineAdapter:
         # 3. ExecutionGrant Boundary (STEP 13B-1)
         # ----------------------------------------------------------------------
         plan_details = plan_task.result.details if plan_task.result else {}
-        files_to_modify = [f["path"] for f in plan_details.get("files_to_modify", []) if isinstance(f, dict) and "path" in f]
-        files_to_create = [f["path"] for f in plan_details.get("files_to_create", []) if isinstance(f, dict) and "path" in f]
+        raw_mod = [f["path"] for f in plan_details.get("files_to_modify", []) if isinstance(f, dict) and "path" in f]
+        raw_create = [f["path"] for f in plan_details.get("files_to_create", []) if isinstance(f, dict) and "path" in f]
+
+        files_to_modify = list(raw_mod)
+        files_to_create = []
+        for f in raw_create:
+            if (target_repo / f).is_file():
+                if f not in files_to_modify:
+                    files_to_modify.append(f)
+            else:
+                files_to_create.append(f)
         raw_vas = plan_details.get("verification_actions", [])
         verification_actions: List[VerificationAction] = []
         for va in raw_vas:
@@ -383,14 +413,22 @@ class EngineeringPipelineAdapter:
                     )
                 )
 
-        # If plan specified no verification actions, inspect target repo for test files
+        # If plan specified no verification actions, prioritize test files in approved list, then inspect target repo
         if not verification_actions:
-            test_files = list(target_repo.glob("tests/test_*.py")) + list(target_repo.glob("test_*.py"))
+            for f in files_to_modify + files_to_create:
+                if is_test_file(f):
+                    verification_actions.append(VerificationAction("pytest", f))
+                    break
+
+        if not verification_actions:
+            test_files = list(target_repo.rglob("test_*.py"))
             if test_files:
                 rel_test = str(test_files[0].relative_to(target_repo)).replace("\\", "/")
                 verification_actions.append(VerificationAction("pytest", rel_test))
 
         founder_approval_id = f"founder_grant_{run.run_id}"
+        has_tests = any(is_test_file(f) for f in files_to_modify + files_to_create)
+        total_files = len(files_to_modify) + len(files_to_create)
         grant = self.service.create_execution_grant(
             task_id=plan_task.id,
             plan_artifact_id=plan_art.id,
@@ -398,6 +436,10 @@ class EngineeringPipelineAdapter:
             approved_files_to_modify=files_to_modify,
             approved_files_to_create=files_to_create,
             verification_actions=verification_actions,
+            allow_test_modifications=has_tests,
+            max_files_changed=max(3, total_files),
+            max_verification_actions=max(3, len(verification_actions)),
+            max_duration_seconds=int(timeout) if timeout is not None else 600,
             repo_root=target_repo,
             project_id=proj.id,
         )
@@ -669,6 +711,7 @@ class EngineeringPipelineAdapter:
                 founder_approvals=repair_approvals,
                 original_grant=grant,
                 max_repair_iterations=MAX_REPAIR_ITERATIONS,
+                allow_test_modifications=grant.allow_test_modifications,
                 target_repo_root=target_repo,
                 timeout=timeout,
             )

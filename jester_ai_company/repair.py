@@ -517,13 +517,20 @@ def build_developer_repair_planning_prompt(
     ux_content: Optional[str] = None,
 ) -> str:
     """Build a hardened prompt for the Developer Agent in read-only repair planning mode."""
+    product_slice = (product_content.strip())[:5000]
+    ux_slice = (ux_content.strip())[:3000] if ux_content else ""
+    plan_slice = (original_plan_content.strip())[:3000]
+    patch_slice = (previous_patch_text.strip())[:5000]
+    qa_rep_slice = (qa_report_content.strip())[:3000]
+    qa_exec_slice = (qa_execution_report_content.strip())[:3000]
+
     ux_section = ""
-    if ux_content:
+    if ux_slice:
         ux_section = f"""
 ==================================================
 CANONICAL UX SPECIFICATION (UNTRUSTED DATA)
 ==================================================
-{ux_content}
+{ux_slice}
 """
 
     failed_reqs_str = ", ".join(repair_task.failed_requirements) or "None specified"
@@ -569,27 +576,27 @@ ELIGIBLE SCOPE HINT:
 ==================================================
 CANONICAL PRODUCT SPECIFICATION (UNTRUSTED DATA)
 ==================================================
-{product_content}
+{product_slice}
 {ux_section}
 ==================================================
 ORIGINAL DEVELOPER PLAN (UNTRUSTED DATA)
 ==================================================
-{original_plan_content}
+{plan_slice}
 
 ==================================================
 PREVIOUS CODE_PATCH TEXT (UNTRUSTED DATA)
 ==================================================
-{previous_patch_text}
+{patch_slice}
 
 ==================================================
 PREVIOUS QA REPORT (UNTRUSTED DATA)
 ==================================================
-{qa_report_content}
+{qa_rep_slice}
 
 ==================================================
 PREVIOUS QA EXECUTION REPORT (UNTRUSTED DATA)
 ==================================================
-{qa_execution_report_content}
+{qa_exec_slice}
 
 ==================================================
 REQUIRED OUTPUT FORMAT
@@ -630,7 +637,7 @@ def parse_and_validate_developer_repair_plan(raw_output: str) -> DeveloperRepair
     """Parse and validate raw model output into a strict DeveloperRepairPlan."""
     json_text = extract_developer_json_text(raw_output)
     try:
-        data = json.loads(json_text)
+        data = json.loads(json_text, strict=False)
     except json.JSONDecodeError as exc:
         raise DeveloperResultParseError(f"Failed to parse Developer repair plan JSON: {exc}") from exc
 
@@ -794,6 +801,9 @@ def derive_repair_execution_grant(
             raise ProtectedPathError(f"Repair plan proposes modifying protected path '{path}'.")
 
     # 3. Test modification gating
+    effective_allow_tests = allow_test_modifications or (
+        previous_grant.allow_test_modifications if previous_grant else False
+    )
     for path in all_proposed:
         norm_p = path.lower()
         if (
@@ -802,7 +812,7 @@ def derive_repair_execution_grant(
             or norm_p.startswith("test_")
             or norm_p.endswith("_test.py")
         ):
-            if not allow_test_modifications:
+            if not effective_allow_tests:
                 raise TestModificationForbiddenError(
                     f"Repair plan proposes test modification '{path}' but allow_test_modifications is False."
                 )
@@ -842,11 +852,11 @@ def derive_repair_execution_grant(
         approved_files_to_modify=tuple(sorted(cumulative_mod)),
         approved_files_to_create=tuple(sorted(cumulative_create)),
         verification_actions=tuple(plan.proposed_verification_actions),
-        allow_test_modifications=allow_test_modifications,
+        allow_test_modifications=effective_allow_tests,
         max_files_changed=max_files,
         max_bytes_written=100_000,
         max_verification_actions=max(len(plan.proposed_verification_actions), 5),
-        max_duration_seconds=120,
+        max_duration_seconds=max(120, previous_grant.max_duration_seconds if previous_grant else 120),
         network_enabled=False,
         founder_approval_id=founder_approval_id.strip(),
     )

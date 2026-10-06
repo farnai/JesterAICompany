@@ -112,16 +112,29 @@ def extract_research_json_text(raw_text: str) -> str:
 
     cleaned = raw_text.strip()
 
-    # 1. Match code fences (```json ... ``` or ``` ... ```)
-    fenced_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
-    if fenced_match:
-        extracted = fenced_match.group(1).strip()
-        if extracted:
-            return extracted
-
-    # 2. Match outer { ... } if present
+    # 1. First check if outermost { ... } parses as valid JSON directly
     first_brace = cleaned.find("{")
     last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        candidate = cleaned[first_brace : last_brace + 1].strip()
+        try:
+            json.loads(candidate, strict=False)
+            return candidate
+        except Exception:
+            pass
+
+    # 2. Match outermost code fences (from first ``` to last ```)
+    if "```" in cleaned:
+        first_fence = cleaned.find("```")
+        last_fence = cleaned.rfind("```")
+        if last_fence > first_fence:
+            newline_idx = cleaned.find("\n", first_fence)
+            if newline_idx != -1 and newline_idx < last_fence:
+                inner = cleaned[newline_idx + 1 : last_fence].strip()
+                if inner:
+                    return inner
+
+    # 3. Fallback to outer braces even if json.loads failed (let parser report exact syntax error)
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
         return cleaned[first_brace : last_brace + 1].strip()
 
@@ -132,7 +145,7 @@ def parse_and_validate_research_result(raw_text: str) -> ResearchTaskResult:
     """Extract, parse, and validate JSON against ResearchTaskResult contract with provenance integrity."""
     json_text = extract_research_json_text(raw_text)
     try:
-        data = json.loads(json_text)
+        data = json.loads(json_text, strict=False)
     except (json.JSONDecodeError, TypeError) as exc:
         raise ResearchResultParseError(f"Malformed JSON in Research response: {exc}") from exc
 

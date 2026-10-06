@@ -512,17 +512,30 @@ def build_qa_verdict_prompt(
     ux_content: Optional[str] = None,
 ) -> str:
     """Build the final release verdict prompt for read-only QA Agent evaluation."""
+    product_slice = (product_content.strip())[:2500]
+    ux_slice = (ux_content.strip())[:1500] if ux_content else ""
+    plan_slice = (developer_plan_content.strip())[:2000]
+    patch_slice = (code_patch_text.strip())[:4000]
+    qa_report_slice = (qa_report_content.strip())[:2500]
+
     ux_section = ""
-    if ux_content:
+    if ux_slice:
         ux_section = f"""
 ## Canonical UX Specification (Verified Upstream Input)
 ```markdown
-{ux_content.strip()}
+{ux_slice}
 ```
 """
 
-    audit_items = [a.to_dict() for a in action_audits]
-    exec_items = [v.to_dict() for v in verification_results]
+    audit_items = [a.to_dict() if hasattr(a, "to_dict") else dict(a) for a in action_audits]
+    exec_items = []
+    for v in verification_results:
+        vd = v.to_dict() if hasattr(v, "to_dict") else dict(v)
+        if "stdout" in vd and vd["stdout"]:
+            vd["stdout"] = vd["stdout"][-1500:] if len(vd["stdout"]) > 1500 else vd["stdout"]
+        if "stderr" in vd and vd["stderr"]:
+            vd["stderr"] = vd["stderr"][-1000:] if len(vd["stderr"]) > 1000 else vd["stderr"]
+        exec_items.append(vd)
 
     return f"""You are the QA Agent of the Jester AI Company evaluating final release readiness (STEP 14B).
 
@@ -546,13 +559,13 @@ CRITICAL OPERATING BOUNDARIES:
 
 ## Product Specification
 ```markdown
-{product_content.strip()}
+{product_slice}
 ```
 {ux_section}
 
 ## Developer Plan
 ```markdown
-{developer_plan_content.strip()}
+{plan_slice}
 ```
 
 ---
@@ -561,12 +574,12 @@ CRITICAL OPERATING BOUNDARIES:
 
 ## Applied CODE_PATCH
 ```diff
-{code_patch_text.strip()}
+{patch_slice}
 ```
 
 ## Prior QA Inspection Report (STEP 14A Findings)
 ```markdown
-{qa_report_content.strip()}
+{qa_report_slice}
 ```
 
 ---
@@ -622,7 +635,7 @@ def parse_and_validate_qa_verdict(
     """Deterministically parse and validate the QA Agent's final release verdict."""
     json_text = extract_qa_json_text(raw_output)
     try:
-        data = json.loads(json_text)
+        data = json.loads(json_text, strict=False)
     except json.JSONDecodeError as exc:
         raise QAVerdictValidationError(f"Failed to parse QA verdict output as JSON: {exc}") from exc
 
