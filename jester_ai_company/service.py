@@ -28,7 +28,7 @@ import json
 import logging
 from pathlib import Path
 import subprocess
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 import uuid
 
 from .core import (
@@ -132,6 +132,16 @@ from .real_repo_apply import (
     validate_candidate_eligibility,
     validate_real_repo_diff,
     verify_target_repo_cleanliness,
+)
+from .durable_storage import (
+    CompanyRunNotFoundError,
+    DurableRunStorage,
+    GrantIntegrityError,
+    GrantNotFoundError,
+    ProposalIntegrityError,
+    ProposalNotFoundError,
+    ProposalPruneForbiddenError,
+    StorageError,
 )
 from .project import (
     DEFAULT_PROJECT_REGISTRY,
@@ -376,6 +386,8 @@ class CompanyService:
         repo_root: Optional[Path] = None,
         runtime: Optional[AntigravityRuntime] = None,
         enable_engineering_pipeline: bool = True,
+        durable_storage: Optional[DurableRunStorage] = None,
+        is_production: bool = False,
     ):
         self.repo_root = repo_root or Path(__file__).resolve().parent.parent
         self.company = company or create_default_company(self.repo_root)
@@ -383,17 +395,41 @@ class CompanyService:
         self.verbose = verbose
         self.runtime = runtime or AntigravityRuntime(repo_root=self.repo_root)
         self.enable_engineering_pipeline = enable_engineering_pipeline
+        self.is_production = is_production
         self.executor = TaskExecutor(
             company=self.company,
             output_dir=str(self.output_dir),
             verbose=self.verbose,
             repo_root=self.repo_root,
         )
+        self.durable_storage = durable_storage or DurableRunStorage(
+            storage_root=self.output_dir,
+            is_production=is_production,
+        )
         self._real_repo_apply_proposals: Dict[str, RealRepoApplyProposal] = {}
         self._real_repo_apply_grants: Dict[str, RealRepoApplyGrant] = {}
         self._company_runs: Dict[str, CompanyRun] = {}
         self.project_registry: ProjectRegistry = ProjectRegistry()
         self.knowledge_registry: ProjectKnowledgeRegistry = ProjectKnowledgeRegistry()
+
+    @classmethod
+    def create_production(
+        cls,
+        repo_root: Optional[Path] = None,
+        workspace_dir: Optional[Union[str, Path]] = None,
+        verbose: bool = False,
+    ) -> "CompanyService":
+        """Factory for production CompanyService using explicit durable workspace (STEP 20A)."""
+        root = (repo_root or Path(__file__).resolve().parent.parent).resolve()
+        durable_root = Path(workspace_dir or root / ".runs").resolve()
+        durable_storage = DurableRunStorage(storage_root=durable_root, is_production=True)
+        return cls(
+            output_dir=str(durable_root),
+            repo_root=root,
+            verbose=verbose,
+            durable_storage=durable_storage,
+            is_production=True,
+        )
 
     # --------------------------------------------------------------------------
     # Repository Project Management (STEP 19B)
@@ -3586,6 +3622,7 @@ class CompanyService:
         qa_execution_report_artifact_id: str,
         target_repo_root: Optional[Path] = None,
         project_id: Optional[str] = None,
+        company_run_id: Optional[str] = None,
     ) -> RealRepoApplyProposal:
         """Prepare an immutable proposal for human review before real repository mutation (STEP 16).
 
@@ -3672,8 +3709,17 @@ class CompanyService:
                 allow_untracked=allow_untracked,
             )
 
-            # 6. Store in proposal registry
+            # 6. Store in proposal registry & durable storage (STEP 20A)
             self._real_repo_apply_proposals[proposal.proposal_id] = proposal
+            try:
+                self.durable_storage.save_proposal(
+                    proposal=proposal,
+                    patch_file_path=patch_file_path,
+                    qa_execution_file_path=qa_exec_file_path,
+                    company_run_id=company_run_id,
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist proposal to durable storage: %s", exc)
 
             return proposal
 
@@ -3683,10 +3729,53 @@ class CompanyService:
                 raise ExecutionError(f"Target repository mutation detected during prepare_real_repo_apply in '{resolved_repo}'!")
 
     def get_real_repo_apply_proposal(self, proposal_id: str) -> Optional[RealRepoApplyProposal]:
-        """Retrieve a registered RealRepoApplyProposal by proposal_id."""
+        """Retrieve a registered RealRepoApplyProposal by proposal_id from memory or durable storage."""
         if not proposal_id:
             return None
-        return self._real_repo_apply_proposals.get(proposal_id.strip())
+        clean_id = proposal_id.strip()
+        if clean_id in self._real_repo_apply_proposals:
+            return self._real_repo_apply_proposals[clean_id]
+
+        # Durable storage recovery fallback (STEP 20A)
+        try:
+            proposal = self.durable_storage.load_proposal(clean_id, verify_integrity=True)
+            self._real_repo_apply_proposals[clean_id] = proposal
+            return proposal
+        except (ProposalNotFoundError, ProposalIntegrityError, StorageError):
+            return None
+
+    def recover_real_repo_apply_proposal(
+        self,
+        proposal_id: str,
+        verify_integrity: bool = True,
+        target_repo_root: Optional[Union[str, Path]] = None,
+    ) -> RealRepoApplyProposal:
+        """Durable recovery API for Founder approval and restart workflows (STEP 20A).
+
+        Loads proposal from durable storage, re-verifies patch SHA-256 and proposal SHA-256,
+        ensures QA verdict is PASS, and checks target repository binding if provided.
+        """
+        proposal = self.durable_storage.load_proposal(proposal_id, verify_integrity=verify_integrity)
+        self._real_repo_apply_proposals[proposal.proposal_id] = proposal
+
+        if target_repo_root is not None:
+            resolved_target = Path(target_repo_root).resolve()
+            prop_target = Path(proposal.target_repository_root).resolve()
+            if resolved_target != prop_target:
+                raise ProposalMismatchError(
+                    f"Target repository mismatch on recovery: expected '{resolved_target}', proposal has '{prop_target}'."
+                )
+            from .project import run_git
+            code, head_out, _ = run_git(["rev-parse", "HEAD"], cwd=resolved_target)
+            if code == 0:
+                current_head = head_out.strip()
+                if current_head != proposal.base_commit_hash:
+                    raise ProposalMismatchError(
+                        f"Base commit binding mismatch on recovery: current HEAD '{current_head}' "
+                        f"!= proposal base commit '{proposal.base_commit_hash}'."
+                    )
+
+        return proposal
 
     def approve_real_repo_apply(
         self,
@@ -3702,7 +3791,7 @@ class CompanyService:
         if not proposal_id or not proposal_id.strip():
             raise ProposalMismatchError("proposal_id must not be empty.")
 
-        proposal = self._real_repo_apply_proposals.get(proposal_id.strip())
+        proposal = self.get_real_repo_apply_proposal(proposal_id.strip())
         if not proposal:
             raise ProposalMismatchError(f"Proposal '{proposal_id}' not found in registered proposals.")
 
@@ -3720,11 +3809,30 @@ class CompanyService:
                 project_id=project_id,
             )
             self._real_repo_apply_grants[grant.grant_id] = grant
+            try:
+                self.durable_storage.save_grant(grant)
+            except Exception as exc:
+                logger.warning("Failed to persist grant to durable storage: %s", exc)
             return grant
         finally:
             repo_state_after = self._get_repo_working_tree_state(Path(proposal.target_repository_root))
             if repo_state_before != repo_state_after:
                 raise ExecutionError("Target repository mutation detected during approve_real_repo_apply!")
+
+    def get_real_repo_apply_grant(self, grant_id: str) -> Optional[RealRepoApplyGrant]:
+        """Retrieve an issued RealRepoApplyGrant by grant_id from memory or durable storage."""
+        if not grant_id:
+            return None
+        clean_id = grant_id.strip()
+        if clean_id in self._real_repo_apply_grants:
+            return self._real_repo_apply_grants[clean_id]
+
+        try:
+            grant = self.durable_storage.load_grant(clean_id)
+            self._real_repo_apply_grants[clean_id] = grant
+            return grant
+        except (GrantNotFoundError, GrantIntegrityError, StorageError):
+            return None
 
     def execute_real_repo_apply(
         self,
@@ -3747,7 +3855,7 @@ class CompanyService:
             raise ApprovalInvalidError("grant_id must not be empty.")
 
         clean_grant_id = grant_id.strip()
-        grant = self._real_repo_apply_grants.get(clean_grant_id)
+        grant = self.get_real_repo_apply_grant(clean_grant_id)
         if not grant:
             raise ApprovalInvalidError(f"Grant '{grant_id}' not found in registered grants.")
 
@@ -3757,7 +3865,7 @@ class CompanyService:
             raise ApprovalInvalidError(f"Grant '{grant_id}' status is '{grant.status}', expected 'ISSUED'.")
 
         # Cross-project mismatch protection
-        proposal = self._real_repo_apply_proposals.get(grant.proposal_id)
+        proposal = self.get_real_repo_apply_proposal(grant.proposal_id)
         if project_id:
             if grant.project_id and grant.project_id != project_id:
                 raise CrossProjectMismatchError(
@@ -4575,11 +4683,19 @@ class CompanyService:
         return self.get_company_run(run_id)
 
     def get_company_run(self, run_id: str) -> CompanyRun:
-        """Retrieve a CompanyRun by run_id from memory or disk."""
+        """Retrieve a CompanyRun by run_id from memory or durable disk."""
         if run_id in self._company_runs:
             return self._company_runs[run_id]
 
-        # File-backed minimal V1 fallback
+        # 1. Durable storage lookup (STEP 20A)
+        try:
+            run = self.durable_storage.load_company_run(run_id)
+            self._company_runs[run.run_id] = run
+            return run
+        except (CompanyRunNotFoundError, StorageError):
+            pass
+
+        # 2. File-backed flat fallback
         run_file = self.output_dir / "company_runs" / f"{run_id}.json"
         if run_file.is_file():
             try:
@@ -4593,12 +4709,27 @@ class CompanyService:
         raise OrchestrationError(f"CompanyRun '{run_id}' not found.")
 
     def list_company_runs(self) -> List[CompanyRun]:
-        """List all active or loaded CompanyRuns."""
-        return list(self._company_runs.values())
+        """List all active, loaded, or persisted CompanyRuns."""
+        runs_map = {r.run_id: r for r in self._company_runs.values()}
+        try:
+            for r in self.durable_storage.list_company_runs():
+                if r.run_id not in runs_map:
+                    runs_map[r.run_id] = r
+        except Exception:
+            pass
+        return list(runs_map.values())
 
     def save_company_run(self, run: CompanyRun) -> None:
-        """Persist CompanyRun to in-memory store and file-backed JSON."""
+        """Persist CompanyRun to in-memory store and durable storage."""
         self._company_runs[run.run_id] = run
+
+        # 1. Durable storage structured persistence (STEP 20A)
+        try:
+            self.durable_storage.save_company_run(run)
+        except Exception as exc:
+            logger.warning("Failed to save CompanyRun to durable storage: %s", exc)
+
+        # 2. File-backed flat JSON for backwards compatibility
         runs_dir = self.output_dir / "company_runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
         run_file = runs_dir / f"{run.run_id}.json"

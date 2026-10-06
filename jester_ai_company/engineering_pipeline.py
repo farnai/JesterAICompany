@@ -781,6 +781,7 @@ class EngineeringPipelineAdapter:
             qa_execution_report_artifact_id=qa_exec_art.id,
             target_repo_root=target_repo,
             project_id=proj.id,
+            company_run_id=run.run_id,
         )
 
         run.real_repo_apply_proposal_id = proposal.proposal_id

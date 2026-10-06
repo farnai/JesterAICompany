@@ -318,6 +318,46 @@ class RealRepoApplyProposal:
             "repository_id": self.repository_id,
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RealRepoApplyProposal":
+        """Deserialize RealRepoApplyProposal from dictionary with fail-closed validation."""
+        if not isinstance(data, dict):
+            raise ProposalMismatchError("Expected dictionary for RealRepoApplyProposal.")
+
+        expected_files = data.get("expected_changed_files", [])
+        if isinstance(expected_files, (list, set)):
+            expected_files = tuple(expected_files)
+        elif not isinstance(expected_files, tuple):
+            expected_files = tuple()
+
+        diff_stat = data.get("expected_diff_stat", {})
+        if not isinstance(diff_stat, dict):
+            diff_stat = {}
+
+        return cls(
+            schema_version=data.get("schema_version", "1.0"),
+            proposal_id=str(data.get("proposal_id", "")),
+            target_repository_root=str(data.get("target_repository_root", "")),
+            target_branch=str(data.get("target_branch", "")),
+            target_head_hash=str(data.get("target_head_hash", "")),
+            base_commit_hash=str(data.get("base_commit_hash", "")),
+            code_patch_artifact_id=str(data.get("code_patch_artifact_id", "")),
+            code_patch_sha256=str(data.get("code_patch_sha256", "")),
+            patch_version=int(data.get("patch_version", 1)),
+            qa_report_artifact_id=str(data.get("qa_report_artifact_id", "")),
+            qa_report_sha256=str(data.get("qa_report_sha256", "")),
+            qa_execution_report_artifact_id=str(data.get("qa_execution_report_artifact_id", "")),
+            qa_execution_report_sha256=str(data.get("qa_execution_report_sha256", "")),
+            qa_verdict=str(data.get("qa_verdict", "PASS")),
+            expected_changed_files=expected_files,
+            expected_diff_stat=diff_stat,
+            is_clean=bool(data.get("is_clean", False)),
+            created_at=str(data.get("created_at", "")),
+            proposal_sha256=str(data.get("proposal_sha256", "")),
+            project_id=data.get("project_id"),
+            repository_id=data.get("repository_id"),
+        )
+
 
 @dataclass(frozen=True)
 class RealRepoApplyGrant:
@@ -372,6 +412,39 @@ class RealRepoApplyGrant:
             "project_id": self.project_id,
             "repository_id": self.repository_id,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RealRepoApplyGrant":
+        """Deserialize RealRepoApplyGrant from dictionary with fail-closed validation."""
+        if not isinstance(data, dict):
+            raise ApprovalInvalidError("Expected dictionary for RealRepoApplyGrant.")
+
+        expected_files = data.get("expected_changed_files", [])
+        if isinstance(expected_files, (list, set)):
+            expected_files = tuple(expected_files)
+        elif not isinstance(expected_files, tuple):
+            expected_files = tuple()
+
+        return cls(
+            schema_version=data.get("schema_version", "1.0"),
+            grant_id=str(data.get("grant_id", "")),
+            proposal_id=str(data.get("proposal_id", "")),
+            proposal_sha256=str(data.get("proposal_sha256", "")),
+            target_repository_root=str(data.get("target_repository_root", "")),
+            expected_head_hash=str(data.get("expected_head_hash", "")),
+            code_patch_artifact_id=str(data.get("code_patch_artifact_id", "")),
+            code_patch_sha256=str(data.get("code_patch_sha256", "")),
+            qa_execution_report_artifact_id=str(data.get("qa_execution_report_artifact_id", "")),
+            qa_execution_report_sha256=str(data.get("qa_execution_report_sha256", "")),
+            expected_changed_files=expected_files,
+            human_approval_id=str(data.get("human_approval_id", "")),
+            approver=str(data.get("approver", "")),
+            approved_at=str(data.get("approved_at", "")),
+            status=str(data.get("status", "ISSUED")),
+            validity_duration_seconds=int(data.get("validity_duration_seconds", 3600)),
+            project_id=data.get("project_id"),
+            repository_id=data.get("repository_id"),
+        )
 
 
 @dataclass
@@ -542,6 +615,72 @@ def validate_candidate_eligibility(
             f"QA_EXECUTION_REPORT lineage mismatch: targets patch '{qa_patch_id}' (sha: '{qa_patch_sha}'), "
             f"candidate is '{code_patch_artifact.id}' (sha: '{code_patch_artifact.sha256}')."
         )
+
+
+def compute_proposal_sha256(proposal: Any) -> str:
+    """Compute canonical SHA-256 digest of RealRepoApplyProposal or proposal dict."""
+    if isinstance(proposal, RealRepoApplyProposal):
+        target_root = Path(proposal.target_repository_root).as_posix()
+        files = list(proposal.expected_changed_files)
+        diff_stat = dict(proposal.expected_diff_stat)
+        proj_id = proposal.project_id
+        repo_id = proposal.repository_id
+        canonical_dict = {
+            "schema_version": proposal.schema_version,
+            "proposal_id": proposal.proposal_id,
+            "target_repository_root": target_root,
+            "target_branch": proposal.target_branch,
+            "target_head_hash": proposal.target_head_hash,
+            "base_commit_hash": proposal.base_commit_hash,
+            "code_patch_artifact_id": proposal.code_patch_artifact_id,
+            "code_patch_sha256": proposal.code_patch_sha256 or "",
+            "patch_version": proposal.patch_version,
+            "qa_report_artifact_id": proposal.qa_report_artifact_id,
+            "qa_report_sha256": proposal.qa_report_sha256 or "",
+            "qa_execution_report_artifact_id": proposal.qa_execution_report_artifact_id,
+            "qa_execution_report_sha256": proposal.qa_execution_report_sha256 or "",
+            "qa_verdict": proposal.qa_verdict,
+            "expected_changed_files": files,
+            "expected_diff_stat": diff_stat,
+            "is_clean": proposal.is_clean,
+            "created_at": proposal.created_at,
+        }
+    elif isinstance(proposal, dict):
+        target_root = Path(proposal.get("target_repository_root", "")).as_posix()
+        files = list(proposal.get("expected_changed_files", []))
+        diff_stat = dict(proposal.get("expected_diff_stat", {}))
+        proj_id = proposal.get("project_id")
+        repo_id = proposal.get("repository_id")
+        canonical_dict = {
+            "schema_version": proposal.get("schema_version", "1.0"),
+            "proposal_id": proposal.get("proposal_id", ""),
+            "target_repository_root": target_root,
+            "target_branch": proposal.get("target_branch", ""),
+            "target_head_hash": proposal.get("target_head_hash", ""),
+            "base_commit_hash": proposal.get("base_commit_hash", ""),
+            "code_patch_artifact_id": proposal.get("code_patch_artifact_id", ""),
+            "code_patch_sha256": proposal.get("code_patch_sha256", ""),
+            "patch_version": int(proposal.get("patch_version", 1)),
+            "qa_report_artifact_id": proposal.get("qa_report_artifact_id", ""),
+            "qa_report_sha256": proposal.get("qa_report_sha256", ""),
+            "qa_execution_report_artifact_id": proposal.get("qa_execution_report_artifact_id", ""),
+            "qa_execution_report_sha256": proposal.get("qa_execution_report_sha256", ""),
+            "qa_verdict": proposal.get("qa_verdict", "PASS"),
+            "expected_changed_files": files,
+            "expected_diff_stat": diff_stat,
+            "is_clean": bool(proposal.get("is_clean", False)),
+            "created_at": proposal.get("created_at", ""),
+        }
+    else:
+        raise ValueError(f"Expected RealRepoApplyProposal or dict, got {type(proposal)}")
+
+    if proj_id:
+        canonical_dict["project_id"] = proj_id
+    if repo_id:
+        canonical_dict["repository_id"] = repo_id
+
+    canonical_json = json.dumps(canonical_dict, sort_keys=True)
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
 def build_real_repo_apply_proposal(
