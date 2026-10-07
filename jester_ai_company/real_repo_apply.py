@@ -909,9 +909,13 @@ def apply_code_patch_to_real_repo(repo_root: Path, patch_text: str) -> None:
 def validate_real_repo_diff(
     repo_root: Path,
     expected_files: Tuple[str, ...],
+    allow_untracked: bool = False,
 ) -> List[str]:
     """Validate that actual modified/untracked files in real repo match expected changed files."""
-    code, status_out, status_err = run_git(["status", "--porcelain"], cwd=repo_root)
+    cmd = ["status", "--porcelain"]
+    if allow_untracked:
+        cmd.append("--untracked-files=no")
+    code, status_out, status_err = run_git(cmd, cwd=repo_root)
     if code != 0:
         raise PostApplyDiffMismatchError(f"Failed to inspect working tree status after apply: {status_err.strip()}")
 
@@ -1032,7 +1036,7 @@ def classify_crash_state(
         return CrashStateClassification.NOT_APPLIED
 
     try:
-        actual_files = validate_real_repo_diff(repo_root, expected_files)
+        actual_files = validate_real_repo_diff(repo_root, expected_files, allow_untracked=allow_untracked)
         if set(actual_files) == {Path(f).as_posix().lstrip("/").lower() for f in expected_files}:
             return CrashStateClassification.EXACT_APPROVED_PATCH_PRESENT
     except PostApplyDiffMismatchError:

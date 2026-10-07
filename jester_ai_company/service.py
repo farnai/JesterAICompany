@@ -142,6 +142,7 @@ from .durable_storage import (
     ProposalNotFoundError,
     ProposalPruneForbiddenError,
     StorageError,
+    atomic_write_text,
 )
 from .project import (
     DEFAULT_PROJECT_REGISTRY,
@@ -3894,12 +3895,30 @@ class CompanyService:
 
         # Resolve code patch artifact and physical file
         patch_lineage = self.find_artifact(grant.code_patch_artifact_id)
-        if not patch_lineage:
-            raise CandidateNotEligibleError(f"CODE_PATCH artifact '{grant.code_patch_artifact_id}' not found.")
-        patch_task, patch_run, patch_art = patch_lineage
+        if patch_lineage:
+            patch_task, patch_run, patch_art = patch_lineage
+            patch_file_path = _resolve_artifact_file_path(Path(self.output_dir), patch_art)
+            patch_bytes = patch_file_path.read_bytes()
+        else:
+            # Fallback to durable storage proposal patch (STEP 20A / 20C)
+            durable_patch = self.durable_storage.proposals_dir / grant.proposal_id / "patch.diff"
+            if durable_patch.is_file():
+                patch_file_path = durable_patch
+                patch_bytes = durable_patch.read_bytes()
+                default_proj = list(self.company.projects.values())[0] if self.company.projects else None
+                proj_id = grant.project_id or (default_proj.id if default_proj else "prj_default")
+                patch_task = Task(
+                    id=f"task_apply_{grant.proposal_id}",
+                    project_id=proj_id,
+                    title=f"RealRepoApply for {grant.proposal_id}",
+                    goal="Execute human-approved RealRepoApply",
+                    required_roles=["developer"],
+                )
+                if default_proj and patch_task.id not in default_proj.tasks:
+                    default_proj.add_task(patch_task)
+            else:
+                raise CandidateNotEligibleError(f"CODE_PATCH artifact '{grant.code_patch_artifact_id}' not found.")
 
-        patch_file_path = _resolve_artifact_file_path(Path(self.output_dir), patch_art)
-        patch_bytes = patch_file_path.read_bytes()
         actual_sha = hashlib.sha256(patch_bytes).hexdigest()
         if actual_sha != grant.code_patch_sha256:
             raise CandidateNotEligibleError(
@@ -3958,15 +3977,15 @@ class CompanyService:
                 apply_code_patch_to_real_repo(target_repo, patch_text)
             except PatchApplyFailedError as exc:
                 logger.warning("Patch apply failed (%s). Triggering rollback.", exc)
-                rollback_real_repo_apply(target_repo, patch_text, grant.expected_changed_files)
+                rollback_real_repo_apply(target_repo, patch_text, grant.expected_changed_files, allow_untracked=allow_untracked)
                 raise
 
             # 5. Exact diff equivalence validation (Principle 8)
             try:
-                actual_files = validate_real_repo_diff(target_repo, grant.expected_changed_files)
+                actual_files = validate_real_repo_diff(target_repo, grant.expected_changed_files, allow_untracked=allow_untracked)
             except PostApplyDiffMismatchError as val_exc:
                 logger.warning("Post-apply diff validation failed (%s). Triggering rollback.", val_exc)
-                rollback_real_repo_apply(target_repo, patch_text, grant.expected_changed_files)
+                rollback_real_repo_apply(target_repo, patch_text, grant.expected_changed_files, allow_untracked=allow_untracked)
                 raise
 
             # 6. Consume the grant (single-use protection)
@@ -3987,8 +4006,14 @@ class CompanyService:
                 approved_at=grant.approved_at,
                 status="CONSUMED",
                 validity_duration_seconds=grant.validity_duration_seconds,
+                project_id=grant.project_id,
+                repository_id=grant.repository_id,
             )
             self._real_repo_apply_grants[clean_grant_id] = updated_grant
+            try:
+                self.durable_storage.save_grant(updated_grant)
+            except Exception as exc:
+                logger.warning("Failed to persist consumed grant to durable storage: %s", exc)
 
             end_time = datetime.now(timezone.utc)
             duration_ms = (end_time - start_time).total_seconds() * 1000.0
@@ -4018,6 +4043,14 @@ class CompanyService:
             )
             apply_run.complete(status=RunStatus.SUCCESS.value)
             result.report_artifact_id = report_art.id
+
+            # Save durable receipt in proposal directory if available
+            try:
+                apply_result_path = self.durable_storage.proposals_dir / grant.proposal_id / "apply_result.json"
+                if apply_result_path.parent.is_dir():
+                    atomic_write_text(apply_result_path, json.dumps(result.to_dict(), indent=2))
+            except Exception as exc:
+                logger.warning("Failed to persist apply result to durable storage: %s", exc)
 
             return result
 
