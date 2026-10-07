@@ -13,6 +13,8 @@ export const EmployeeDossierModal: React.FC<EmployeeDossierModalProps> = ({
   onClose,
   onDirectTask,
 }) => {
+  if (!employee) return null
+
   return (
     <div className="modal-backdrop" onClick={onClose} data-testid="employee-dossier-modal">
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>

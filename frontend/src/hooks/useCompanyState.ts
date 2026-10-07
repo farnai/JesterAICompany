@@ -4,10 +4,12 @@ import type {
   CompanyOverview,
   Employee,
   Project,
+  RepositoryProject,
   Task,
   TaskRun,
   VerificationResult,
   ChatMessage,
+  CompanyRun,
 } from '../types/company'
 
 export function useCompanyState(pollInterval: number = 4000) {
@@ -15,10 +17,16 @@ export function useCompanyState(pollInterval: number = 4000) {
   const [overview, setOverview] = useState<CompanyOverview | null>(null)
   const [agents, setAgents] = useState<Employee[]>([])
   const [projects, setProjects] = useState<Project[]>([])
+  const [repositoryProjects, setRepositoryProjects] = useState<RepositoryProject[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [runs, setRuns] = useState<TaskRun[]>([])
   const [verifications, setVerifications] = useState<VerificationResult[]>([])
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [companyRuns, setCompanyRuns] = useState<CompanyRun[]>([])
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('prj_jester')
+  const [proposalDiffs, setProposalDiffs] = useState<Record<string, string>>({})
+
   const [loading, setLoading] = useState<boolean>(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -31,27 +39,35 @@ export function useCompanyState(pollInterval: number = 4000) {
         overviewData,
         agentsData,
         projectsData,
+        repoProjectsData,
         tasksData,
         runsData,
         verisData,
         chatData,
+        cRunsData,
       ] = await Promise.all([
         api.getOverview().catch(() => null),
         api.getAgents().catch(() => []),
         api.getProjects().catch(() => []),
+        api.getRepositoryProjects().catch(() => []),
         api.getTasks().catch(() => []),
         api.getRuns().catch(() => []),
         api.getVerifications().catch(() => []),
         api.getChatMessages(50).catch(() => ({ messages: [] })),
+        api.getCompanyRuns().catch(() => []),
       ])
 
       if (overviewData) setOverview(overviewData)
       if (agentsData) setAgents(agentsData)
       if (projectsData) setProjects(projectsData)
+      if (repoProjectsData && repoProjectsData.length > 0) {
+        setRepositoryProjects(repoProjectsData)
+      }
       if (tasksData) setTasks(tasksData)
       if (runsData) setRuns(runsData)
       if (verisData) setVerifications(verisData)
       if (chatData?.messages) setChatMessages(chatData.messages)
+      if (cRunsData) setCompanyRuns(cRunsData)
 
       setError(null)
     } catch (err: any) {
@@ -75,6 +91,41 @@ export function useCompanyState(pollInterval: number = 4000) {
     }
   }, [fetchState, pollInterval])
 
+  // Active Company Run & Selected Run
+  const activeCompanyRun = useMemo(() => {
+    if (selectedRunId) {
+      const found = companyRuns.find((r) => r.run_id === selectedRunId)
+      if (found) return found
+    }
+    // Prefer non-completed runs first, then newest
+    const active = companyRuns.find(
+      (r) => r.state !== 'COMPLETED' && r.state !== 'FAILED' && r.state !== 'BLOCKED'
+    )
+    return active || companyRuns[0] || null
+  }, [companyRuns, selectedRunId])
+
+  // Active Repository Project
+  const activeProject = useMemo<RepositoryProject | null>(() => {
+    const found = repositoryProjects.find((p) => p.project_id === selectedProjectId)
+    if (found) return found
+    return repositoryProjects[0] || null
+  }, [repositoryProjects, selectedProjectId])
+
+  // Fetch diff for active run's proposal on demand
+  useEffect(() => {
+    const propId = activeCompanyRun?.real_repo_apply_proposal_id
+    if (propId && !proposalDiffs[propId]) {
+      api
+        .getProposalDiff(propId)
+        .then((res) => {
+          if (res?.diff) {
+            setProposalDiffs((prev) => ({ ...prev, [propId]: res.diff }))
+          }
+        })
+        .catch(() => {})
+    }
+  }, [activeCompanyRun?.real_repo_apply_proposal_id, proposalDiffs])
+
   // Purely Derived Domain Representations (derived from real state, no invented values)
   const companyName = useMemo(() => {
     return overview?.company?.name || overview?.company_name || 'Jester AI Company'
@@ -85,11 +136,14 @@ export function useCompanyState(pollInterval: number = 4000) {
   }, [overview])
 
   const activeWorkersCount = useMemo(() => {
+    if (activeCompanyRun?.selected_agents) {
+      return activeCompanyRun.selected_agents.length
+    }
     if (overview?.counts?.active_employees !== undefined) {
       return overview.counts.active_employees
     }
     return agents.filter((a) => a.status === 'ACTIVE').length
-  }, [overview, agents])
+  }, [activeCompanyRun, overview, agents])
 
   const completedTasksCount = useMemo(() => {
     if (overview?.counts?.completed_tasks !== undefined) {
@@ -126,10 +180,55 @@ export function useCompanyState(pollInterval: number = 4000) {
   }, [verifications])
 
   const hasQAFailure = useMemo(() => {
+    if (activeCompanyRun?.qa_verdict === 'FAIL') return true
     return Boolean(latestVerification && !latestVerification.passed)
-  }, [latestVerification])
+  }, [activeCompanyRun, latestVerification])
 
   // Operations
+  const selectRun = (runId: string) => {
+    setSelectedRunId(runId)
+  }
+
+  const selectProject = (projectId: string) => {
+    setSelectedProjectId(projectId)
+  }
+
+  const createObjective = async (data: {
+    title: string
+    description?: string
+    project_id?: string
+    constraints?: string[]
+    acceptance_criteria?: string[]
+    target_repository?: string
+  }) => {
+    const res = await api.createCompanyRun({
+      ...data,
+      project_id: data.project_id || activeProject?.project_id || 'prj_jester',
+      auto_run: true,
+    })
+    await fetchState(false)
+    setSelectedRunId(res.run_id)
+    return res
+  }
+
+  const approveRun = async (runId: string, approver: string = 'Human Founder') => {
+    const res = await api.approveCompanyRun(runId, approver)
+    await fetchState(false)
+    return res
+  }
+
+  const rejectRun = async (runId: string, reason: string = 'Rejected by Human Founder') => {
+    const res = await api.rejectCompanyRun(runId, reason)
+    await fetchState(false)
+    return res
+  }
+
+  const applyRun = async (runId: string) => {
+    const res = await api.applyCompanyRun(runId)
+    await fetchState(false)
+    return res
+  }
+
   const sendChat = async (content: string) => {
     const res = await api.sendChatMessage(content)
     setChatMessages((prev) => [...prev, res.user_message, res.reply])
@@ -160,10 +259,15 @@ export function useCompanyState(pollInterval: number = 4000) {
     overview,
     agents,
     projects,
+    repositoryProjects,
     tasks,
     runs,
     verifications,
     chatMessages,
+    companyRuns,
+    activeCompanyRun,
+    activeProject,
+    proposalDiffs,
     loading,
     error,
     // Derived Domain State
@@ -178,8 +282,15 @@ export function useCompanyState(pollInterval: number = 4000) {
     hasQAFailure,
     // Operations
     refresh: () => fetchState(false),
+    selectRun,
+    selectProject,
+    createObjective,
+    approveRun,
+    rejectRun,
+    applyRun,
     sendChat,
     executeTask,
     remediateTask,
   }
 }
+

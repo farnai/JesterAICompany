@@ -1,14 +1,126 @@
-import React from 'react'
+import React, { useState } from 'react'
+
+export const ROLE_PORTRAIT_IMAGES: Record<string, string> = {
+  founder: '/portraits/founder.jpg',
+  owner: '/portraits/founder.jpg',
+  ceo: '/portraits/ceo.jpg',
+  developer: '/portraits/developer.jpg',
+  qa: '/portraits/qa.jpg',
+  qa_engineer: '/portraits/qa.jpg',
+  product: '/portraits/product.jpg',
+  product_manager: '/portraits/product.jpg',
+  ux: '/portraits/ux.jpg',
+  ux_designer: '/portraits/ux.jpg',
+  designer: '/portraits/ux.jpg',
+  research: '/portraits/research.jpg',
+  researcher: '/portraits/research.jpg',
+  marketing: '/portraits/marketing.jpg',
+  marketing_specialist: '/portraits/marketing.jpg',
+}
+
+export const ROLE_PERSONA_NAMES: Record<string, string> = {
+  founder: 'You',
+  owner: 'You',
+  ceo: 'Alex',
+  product: 'Nino',
+  product_manager: 'Nino',
+  ux: 'Elena',
+  ux_designer: 'Elena',
+  designer: 'Elena',
+  developer: 'Dato',
+  qa: 'Maya',
+  qa_engineer: 'Maya',
+  research: 'Luka',
+  researcher: 'Luka',
+  marketing: 'Giorgi',
+  marketing_specialist: 'Giorgi',
+}
 
 interface PortraitProps {
   role: string
   size?: number
   className?: string
+  shape?: 'circle' | 'card' | 'rounded'
+  borderRadius?: number | string
+  /** Fill the parent box (parent controls dimensions/radius); photo framing stays consistent. */
+  fill?: boolean
 }
 
-export const RolePortrait: React.FC<PortraitProps> = ({ role, size = 48, className = '' }) => {
+export const RolePortrait: React.FC<PortraitProps> = ({
+  role,
+  size = 48,
+  className = '',
+  shape = 'circle',
+  borderRadius,
+  fill = false,
+}) => {
   const normRole = role.toLowerCase().replace(/[\s-]/g, '_')
+  const [imgFailed, setImgFailed] = useState(false)
+  const photoUrl = ROLE_PORTRAIT_IMAGES[normRole]
 
+  const getTestId = () => {
+    switch (normRole) {
+      case 'owner':
+      case 'founder':
+        return 'portrait-owner'
+      case 'ceo':
+        return 'portrait-ceo'
+      case 'developer':
+        return 'portrait-developer'
+      case 'qa':
+      case 'qa_engineer':
+        return 'portrait-qa'
+      case 'product':
+      case 'product_manager':
+        return 'portrait-pm'
+      case 'ux':
+      case 'ux_designer':
+      case 'designer':
+        return 'portrait-designer'
+      case 'research':
+      case 'researcher':
+        return 'portrait-researcher'
+      case 'marketing':
+      case 'marketing_specialist':
+        return 'portrait-marketing'
+      default:
+        return 'portrait-default'
+    }
+  }
+
+  // If a photo portrait is available and not in error state, render modern photo
+  if (photoUrl && !imgFailed) {
+    const computedRadius =
+      borderRadius !== undefined
+        ? borderRadius
+        : shape === 'circle'
+        ? '50%'
+        : shape === 'card'
+        ? '14px 14px 0 0'
+        : '14px'
+
+    return (
+      <img
+        src={photoUrl}
+        alt={`${role} portrait`}
+        width={size}
+        height={size}
+        className={`role-photo-portrait ${className}`}
+        data-testid={getTestId()}
+        onError={() => setImgFailed(true)}
+        style={{
+          width: fill ? '100%' : size,
+          height: fill ? '100%' : size,
+          objectFit: 'cover',
+          objectPosition: 'center 20%',
+          borderRadius: fill ? 0 : computedRadius,
+          display: 'block',
+        }}
+      />
+    )
+  }
+
+  // Graceful vector SVG fallback
   switch (normRole) {
     case 'owner':
     case 'founder':
@@ -23,14 +135,11 @@ export const RolePortrait: React.FC<PortraitProps> = ({ role, size = 48, classNa
           data-testid="portrait-owner"
         >
           <circle cx="24" cy="24" r="22" fill="#FFF2EB" stroke="#F95924" strokeWidth="2" />
-          {/* Founder: confident, crisp tailored collar, warm hair */}
           <path d="M16 19C16 14.5817 19.5817 11 24 11C28.4183 11 32 14.5817 32 19V22C32 26.4183 28.4183 30 24 30C19.5817 30 16 26.4183 16 22V19Z" fill="#F0C6A5" />
           <path d="M15 17C15 12 19 9 24 9C29 9 33 12 33 17C30 15 27 15 24 16C21 17 18 16 15 17Z" fill="#3D291F" />
-          {/* Eyes & smile */}
           <circle cx="20.5" cy="21" r="1.5" fill="#2E231D" />
           <circle cx="27.5" cy="21" r="1.5" fill="#2E231D" />
           <path d="M22 25.5C22.8 26.3 25.2 26.3 26 25.5" stroke="#9E694D" strokeWidth="1.2" strokeLinecap="round" />
-          {/* Shoulders & blazer with orange collar accent */}
           <path d="M11 41C11 34.5 16 33 24 33C32 33 37 34.5 37 41" fill="#1E293B" />
           <path d="M21 33L24 38L27 33" fill="#F95924" />
         </svg>
@@ -48,7 +157,6 @@ export const RolePortrait: React.FC<PortraitProps> = ({ role, size = 48, classNa
           data-testid="portrait-ceo"
         >
           <circle cx="24" cy="24" r="22" fill="#F4F4F0" stroke="#71716A" strokeWidth="2" />
-          {/* CEO: focused executive haircut, dark blazer, tie */}
           <path d="M16 20C16 15.5 19.5 12 24 12C28.5 12 32 15.5 32 20V22C32 26.5 28.5 30 24 30C19.5 30 16 26.5 16 22V20Z" fill="#E8C39E" />
           <path d="M15 18C15 12 19 10 24 10C29 10 33 12 33 18C31 16 28 15 24 15C20 15 17 16 15 18Z" fill="#1C1C1A" />
           <circle cx="20.5" cy="21" r="1.5" fill="#1C1C1A" />
@@ -72,14 +180,11 @@ export const RolePortrait: React.FC<PortraitProps> = ({ role, size = 48, classNa
           data-testid="portrait-developer"
         >
           <circle cx="24" cy="24" r="22" fill="#EFF6FF" stroke="#3B82F6" strokeWidth="2" />
-          {/* Developer: modern spectacles, headphones, teal sweater */}
           <path d="M16 20C16 15.5 19.5 12 24 12C28.5 12 32 15.5 32 20V22C32 26.5 28.5 30 24 30C19.5 30 16 26.5 16 22V20Z" fill="#F6D4B7" />
           <path d="M15 18C16 11 20 10 24 10C28 10 32 11 33 18C30 16 27 16 24 16C21 16 18 16 15 18Z" fill="#3B2E2A" />
-          {/* Modern square specs */}
           <rect x="18" y="19" width="5" height="4" rx="1" stroke="#1E293B" strokeWidth="1.4" fill="rgba(255,255,255,0.4)" />
           <rect x="25" y="19" width="5" height="4" rx="1" stroke="#1E293B" strokeWidth="1.4" fill="rgba(255,255,255,0.4)" />
           <line x1="23" y1="21" x2="25" y2="21" stroke="#1E293B" strokeWidth="1.4" />
-          {/* Shoulders */}
           <path d="M10 41C10 34 16 33 24 33C32 33 38 34 38 41" fill="#0D9488" />
         </svg>
       )
@@ -97,14 +202,12 @@ export const RolePortrait: React.FC<PortraitProps> = ({ role, size = 48, classNa
           data-testid="portrait-qa"
         >
           <circle cx="24" cy="24" r="22" fill="#ECFDF5" stroke="#10B981" strokeWidth="2" />
-          {/* QA Engineer: sharp inspecting gaze, magnifying loop/stylus badge, emerald polo */}
           <path d="M16 20C16 15.5 19.5 12 24 12C28.5 12 32 15.5 32 20V22C32 26.5 28.5 30 24 30C19.5 30 16 26.5 16 22V20Z" fill="#F3CBAB" />
           <path d="M15 17C17 11 22 10 26 10C30 10 33 13 33 18C30 17 26 16 23 16C20 16 17 16 15 17Z" fill="#4B382A" />
           <circle cx="20.5" cy="21" r="1.5" fill="#1C1C1A" />
           <circle cx="27.5" cy="21" r="1.5" fill="#1C1C1A" />
           <path d="M22 26C23 26.5 25 26.5 26 26" stroke="#8C6747" strokeWidth="1.2" strokeLinecap="round" />
           <path d="M10 41C10 34 16 33 24 33C32 33 38 34 38 41" fill="#047857" />
-          {/* Verification check emblem */}
           <circle cx="32" cy="34" r="5" fill="#10B981" />
           <path d="M30 34L31.5 35.5L34 33" stroke="#FFFFFF" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>

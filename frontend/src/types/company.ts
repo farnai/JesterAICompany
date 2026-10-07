@@ -176,6 +176,272 @@ export interface ChatResponse {
   messages: ChatMessage[]
 }
 
+export type NavigationTab =
+  | 'floor'
+  | 'objective'
+  | 'history'
+  | 'approvals'
+  | 'projects'
+  | 'artifacts'
+  | 'git'
+  | 'settings'
+
+export interface TargetRepositoryVerification {
+  project_id: string
+  repository_id?: string
+  project_name?: string
+  repository_root?: string
+  target_root_path?: string
+  target_branch?: string
+  repository_head: string
+  branch: string
+  working_tree_state: string
+  remote_url?: string
+  is_valid: boolean
+  is_git_repository?: boolean
+  tracked_dirty_files?: string[]
+  untracked_files?: string[]
+  error_message?: string | null
+  verified_at?: string
+  details?: {
+    tracked_changes_count: number
+    untracked_files_count: number
+    canonical_root: string
+  }
+}
+
+export interface RepositoryProject {
+  project_id: string
+  name: string
+  description?: string
+  repository: {
+    repository_id: string
+    project_id?: string
+    root_path: string
+    target_branch: string
+    expected_remote?: string | null
+    allow_untracked?: boolean
+    allowed_paths?: string[]
+    prohibited_paths?: string[]
+    max_files_per_apply?: number
+    read_only_by_default?: boolean
+    requires_founder_approval?: boolean
+  }
+  policy?: {
+    read_allowed: string[]
+    mutation_allowed: string[]
+    denied: string[]
+  }
+  status?: string
+  created_at?: string
+  verification?: TargetRepositoryVerification
+}
+
+export interface CompanyObjective {
+  id: string
+  title: string
+  description?: string
+  constraints?: string[]
+  acceptance_criteria?: string[]
+  target_repository?: string
+  project_id?: string
+  created_at?: string
+  created_by?: string
+}
+
+export interface WorkItem {
+  work_item_id: string
+  role: string
+  objective: string
+  depends_on: string[]
+  expected_outputs: string[]
+  priority: number
+  state: 'PENDING' | 'READY' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'BLOCKED' | string
+  refinement_count?: number
+  task_id?: string
+  run_id?: string
+}
+
+export interface CEOPlan {
+  schema_version?: string
+  plan_id: string
+  objective_id: string
+  version: number
+  work_items: WorkItem[]
+  completion_criteria: string[]
+  constraints: string[]
+  created_at: string
+}
+
+export interface ArtifactRef {
+  artifact_id: string
+  name: string
+  type: string
+  sha256: string
+  path: string
+  producer_role?: string
+}
+
+export interface EmployeeSummary {
+  role: string
+  task_id?: string
+  run_id?: string
+  status: string
+  summary: string
+  blockers?: string[]
+  created_at?: string
+  artifact_refs: ArtifactRef[]
+}
+
+export interface CompanyEvent {
+  id?: string
+  event_id?: string
+  producer?: string
+  summary?: string
+  timestamp: string
+  event_type: string
+  company_run_id?: string
+  work_item_id?: string | null
+  role?: string | null
+  task_id?: string | null
+  artifact_refs?: any[]
+  reason?: string
+  details?: Record<string, any>
+}
+
+export interface RealRepoApplyProposal {
+  schema_version?: string
+  proposal_id: string
+  company_run_id?: string
+  target_root_path?: string
+  target_repository_root?: string
+  target_branch?: string
+  target_head_hash?: string
+  base_commit_hash?: string
+  code_patch_artifact_id?: string
+  code_patch_sha256?: string
+  patch_sha256?: string
+  patch_version?: number
+  qa_report_artifact_id?: string
+  qa_report_sha256?: string
+  qa_execution_report_artifact_id?: string
+  qa_execution_report_sha256?: string
+  qa_verdict?: 'PASS' | 'FAIL' | 'BLOCKED' | 'REPAIRING' | string
+  expected_changed_files?: string[]
+  touched_paths?: string[]
+  expected_diff_stat?: {
+    files_changed: number
+    insertions: number
+    deletions: number
+  }
+  is_clean?: boolean
+  created_at: string
+  proposal_sha256?: string
+  project_id?: string
+  repository_id?: string | null
+  patch_content?: string
+  diff?: string
+  status?: string
+}
+
+export interface RealRepoApplyGrant {
+  schema_version?: string
+  grant_id: string
+  proposal_id: string
+  company_run_id?: string
+  proposal_sha256?: string
+  target_root_path?: string
+  target_repository_root?: string
+  expected_head_hash?: string
+  base_commit_hash?: string
+  code_patch_artifact_id?: string
+  code_patch_sha256?: string
+  expected_patch_sha256?: string
+  qa_execution_report_artifact_id?: string
+  qa_execution_report_sha256?: string
+  expected_changed_files?: string[]
+  human_approval_id?: string
+  approver?: string
+  authorized_by?: string
+  approved_at?: string
+  authorized_at?: string
+  authorized_file_budget?: number
+  status: 'ISSUED' | 'AUTHORIZED' | 'CONSUMED' | 'EXPIRED' | 'REVOKED' | string
+  validity_duration_seconds?: number
+  project_id?: string
+  repository_id?: string | null
+}
+
+export interface Step20CReceipt {
+  status: string
+  company_run_id: string
+  proposal_id: string
+  grant_id: string
+  founder_auth_id: string
+  stored_patch_sha256: string
+  recomputed_patch_sha256: string
+  target_repository: string
+  target_branch: string
+  head_before: string
+  head_after: string
+  targeted_test_command: string
+  targeted_test_passed: number
+  targeted_test_duration: string
+  regression_command: string
+  regression_passed: number
+  regression_duration: string
+  authorized_files: string[]
+  actual_changed_files: string[]
+}
+
+export interface CompanyRun {
+  run_id: string
+  state:
+    | 'CREATED'
+    | 'PLANNING'
+    | 'PLAN_READY'
+    | 'RUNNING'
+    | 'WAITING_FOR_HUMAN'
+    | 'READY_FOR_HUMAN_APPLY'
+    | 'APPLYING'
+    | 'COMPLETED'
+    | 'BLOCKED'
+    | 'FAILED'
+    | string
+  objective?: CompanyObjective | null
+  project_id: string
+  repository_id?: string
+  target_branch?: string
+  base_commit_hash?: string
+  active_plan?: CEOPlan
+  work_item_states?: Record<string, string>
+  ceo_invocation_count?: number
+  specialist_invocation_count?: number
+  replan_count?: number
+  employee_summaries?: EmployeeSummary[]
+  events?: CompanyEvent[]
+  code_patch_artifact_id?: string
+  qa_execution_report_artifact_id?: string
+  real_repo_apply_proposal_id?: string
+  real_repo_apply_grant_id?: string
+  target_repository_verification?: TargetRepositoryVerification
+  created_at: string
+  updated_at?: string
+  completed_at?: string | null
+  error?: string | null
+
+  // Enriched fields from Control Center API
+  selected_agents: string[]
+  skipped_agents: string[]
+  selection_reasoning: string
+  qa_verdict?: 'PASS' | 'FAIL' | 'BLOCKED' | 'REPAIRING' | string | null
+  qa_summary?: string | null
+  proposal?: RealRepoApplyProposal | null
+  grant?: RealRepoApplyGrant | null
+  receipt?: Step20CReceipt | null
+  real_repo_apply_result?: any
+}
+
 // =============================================================================
 // UI STATE (Separated from backend domain models)
 // =============================================================================
@@ -184,8 +450,11 @@ export type ViewMode = 'flow' | 'studio'
 
 export interface UIState {
   activeView: ViewMode
+  activeNavTab: NavigationTab
   isChatOpen: boolean
   selectedEmployee: Employee | null
   selectedTask: Task | null
+  selectedCompanyRun: CompanyRun | null
   remediatingTask: Task | null
 }
+

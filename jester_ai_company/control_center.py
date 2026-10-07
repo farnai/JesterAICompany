@@ -22,7 +22,16 @@ import sys
 from typing import Any, Dict, List, Optional
 import urllib.parse
 
+from .context import CompanyObjective
 from .core import TaskStatus
+from .orchestrator import CompanyRun, CompanyRunState
+from .project import (
+    Project as RepositoryProject,
+    RepositoryPolicy,
+    RepositoryRef,
+    inspect_repository_state,
+    verify_target_repository_identity,
+)
 from .service import (
     CompanyService,
     CompanyServiceError,
@@ -31,9 +40,151 @@ from .service import (
     RunNotFoundError,
     TaskNotFoundError,
 )
+import uuid
 
 DASHBOARD_HTML_PATH = Path(__file__).resolve().parent / "dashboard.html"
 FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+FRONTEND_PUBLIC_DIR = Path(__file__).resolve().parent.parent / "frontend" / "public"
+
+
+def ensure_default_repository_project(service: CompanyService) -> None:
+    """Ensure the authoritative Jester project is registered under ProjectRegistry."""
+    if service.get_repository_project("prj_jester") is not None:
+        return
+
+    real_jester_path = Path(r"C:\Users\fiord\OneDrive\Desktop\Jester").resolve()
+    root_path_str = str(real_jester_path) if real_jester_path.exists() else str(service.repo_root)
+
+    repo_ref = RepositoryRef(
+        repository_id="repo_jester",
+        root_path=root_path_str,
+        target_branch="main",
+        expected_remote="git@github.com:farnai/Jester.git",
+        allow_untracked=True,
+    )
+    repo_policy = RepositoryPolicy(
+        read_allowed=(
+            "docs/**",
+            "backend/**",
+            "frontend/**",
+            "tests/**",
+            "scripts/**",
+            "*.md",
+            "*.ini",
+            "*.txt",
+        ),
+        mutation_allowed=("backend/**", "tests/**"),
+        denied=(".git", ".git/**", ".env*", "*.key", "*.secret"),
+    )
+    project = RepositoryProject(
+        project_id="prj_jester",
+        name="Jester — People Discovery & Relationship Intelligence Engine",
+        description="High-performance People Discovery and Relationship Intelligence platform",
+        repository=repo_ref,
+        policy=repo_policy,
+    )
+    service.register_repository_project(project, validate_repo=False)
+
+
+def enrich_company_run_data(run: CompanyRun, service: CompanyService) -> Dict[str, Any]:
+    """Enrich CompanyRun dict representation with real workforce and proposal context."""
+    run_dict = run.to_dict()
+
+    # 1. Selected and skipped workforce
+    selected_agents: List[str] = []
+    if run.active_plan and run.active_plan.work_items:
+        for wi in run.active_plan.work_items:
+            if wi.role and wi.role not in selected_agents:
+                selected_agents.append(wi.role)
+
+    if any(s.role == "qa" for s in run.employee_summaries) and "qa" not in selected_agents:
+        selected_agents.append("qa")
+
+    if not selected_agents and run.employee_summaries:
+        for s in run.employee_summaries:
+            if s.role and s.role not in selected_agents:
+                selected_agents.append(s.role)
+
+    all_roles = ["product", "research", "ux", "marketing", "developer", "qa"]
+    skipped_agents = [r for r in all_roles if r not in selected_agents]
+
+    # 2. Selection reasoning
+    reasoning = ""
+    if run.objective and run.objective.constraints:
+        for c in run.objective.constraints:
+            if "specialist" in c.lower() or "orchestrate" in c.lower() or "delivery" in c.lower():
+                reasoning = c
+                break
+    if not reasoning and run.objective:
+        reasoning = f"Plan formulated for objective: {run.objective.title}"
+    if not reasoning:
+        reasoning = "CEO dynamic workforce allocation based on objective constraints."
+
+    # 3. QA Verdict and summary
+    qa_verdict = None
+    qa_summary = None
+    for s in run.employee_summaries:
+        if s.role == "qa":
+            qa_summary = s.summary
+            if "PASS" in s.summary.upper():
+                qa_verdict = "PASS"
+            elif "FAIL" in s.summary.upper():
+                qa_verdict = "FAIL"
+            elif "BLOCK" in s.summary.upper():
+                qa_verdict = "BLOCKED"
+            break
+
+    # 4. Proposal details if available
+    proposal_dict = None
+    if run.real_repo_apply_proposal_id:
+        try:
+            prop = service.durable_storage.load_proposal(run.real_repo_apply_proposal_id, verify_integrity=False)
+            if prop:
+                proposal_dict = prop.to_dict()
+                if prop.qa_verdict:
+                    qa_verdict = prop.qa_verdict
+        except Exception:
+            pass
+
+    # 5. Grant details if available
+    grant_dict = None
+    if run.real_repo_apply_grant_id:
+        try:
+            grant = service.durable_storage.load_grant(run.real_repo_apply_grant_id)
+            if grant:
+                grant_dict = grant.to_dict()
+        except Exception:
+            pass
+    elif proposal_dict:
+        # Check if grant exists for this proposal in durable storage
+        try:
+            for g in service.durable_storage.list_grants():
+                if g.proposal_id == run.real_repo_apply_proposal_id:
+                    grant_dict = g.to_dict()
+                    break
+        except Exception:
+            pass
+
+    # 6. Step 20c receipt if available
+    receipt_dict = None
+    try:
+        receipt_file = service.output_dir / "step_20c_receipt.json"
+        if receipt_file.is_file():
+            rcpt = json.loads(receipt_file.read_text(encoding="utf-8"))
+            if rcpt.get("company_run_id") == run.run_id:
+                receipt_dict = rcpt
+    except Exception:
+        pass
+
+    run_dict["selected_agents"] = selected_agents
+    run_dict["skipped_agents"] = skipped_agents
+    run_dict["selection_reasoning"] = reasoning
+    run_dict["qa_verdict"] = qa_verdict
+    run_dict["qa_summary"] = qa_summary
+    run_dict["proposal"] = proposal_dict
+    run_dict["grant"] = grant_dict
+    run_dict["receipt"] = receipt_dict
+    return run_dict
 
 
 class ControlCenterHandler(BaseHTTPRequestHandler):
@@ -113,9 +264,11 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                 self._send_html("<h1>Jester AI Company Control Center</h1><p>Dashboard HTML not found.</p>")
             return
 
-        # 1b. Static Assets (/assets/* or root public files)
-        if path.startswith("/assets/"):
+        # 1b. Static Assets (/assets/*, /portraits/* or root public files)
+        if path.startswith(("/assets/", "/portraits/")) or path in ("/office_backdrop.jpg", "/favicon.svg"):
             asset_file = FRONTEND_DIST_DIR / path.lstrip("/")
+            if not asset_file.is_file():
+                asset_file = FRONTEND_PUBLIC_DIR / path.lstrip("/")
             if asset_file.is_file():
                 suffix = asset_file.suffix.lower()
                 content_types = {
@@ -123,6 +276,9 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                     ".css": "text/css; charset=utf-8",
                     ".svg": "image/svg+xml",
                     ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".webp": "image/webp",
                     ".ico": "image/x-icon",
                     ".json": "application/json; charset=utf-8",
                 }
@@ -262,7 +418,82 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"messages": msgs})
             return
 
-        # 13. 404 Fallback
+        # 13. Repository Projects (STEP 21)
+        if path == "/api/repository-projects":
+            projs = []
+            for p in self.service.list_repository_projects():
+                p_dict = p.to_dict()
+                try:
+                    v = verify_target_repository_identity(project=p)
+                    p_dict["verification"] = v.to_dict()
+                except Exception as exc:
+                    p_dict["verification"] = {"is_valid": False, "error": str(exc)}
+                projs.append(p_dict)
+            self._send_json(HTTPStatus.OK, projs)
+            return
+
+        if path.startswith("/api/repository-projects/"):
+            p_id = path[len("/api/repository-projects/"):]
+            p = self.service.get_repository_project(p_id)
+            if p:
+                p_dict = p.to_dict()
+                try:
+                    v = verify_target_repository_identity(project=p)
+                    p_dict["verification"] = v.to_dict()
+                except Exception as exc:
+                    p_dict["verification"] = {"is_valid": False, "error": str(exc)}
+                self._send_json(HTTPStatus.OK, p_dict)
+            else:
+                self._send_error_json(HTTPStatus.NOT_FOUND, f"Repository project '{p_id}' not found.")
+            return
+
+        # 14. Company Runs (STEP 21)
+        if path == "/api/company-runs":
+            runs = [enrich_company_run_data(r, self.service) for r in self.service.list_company_runs()]
+            runs.sort(key=lambda r: r.get("created_at", "") or "", reverse=True)
+            self._send_json(HTTPStatus.OK, runs)
+            return
+
+        if path == "/api/company-runs/active":
+            runs = self.service.list_company_runs()
+            if runs:
+                active_runs = [r for r in runs if r.state not in ("COMPLETED", "FAILED", "BLOCKED")]
+                target_run = active_runs[-1] if active_runs else runs[-1]
+                self._send_json(HTTPStatus.OK, enrich_company_run_data(target_run, self.service))
+            else:
+                self._send_error_json(HTTPStatus.NOT_FOUND, "No company runs found.")
+            return
+
+        if path.startswith("/api/company-runs/"):
+            run_id = path[len("/api/company-runs/"):]
+            try:
+                run = self.service.get_company_run(run_id)
+                self._send_json(HTTPStatus.OK, enrich_company_run_data(run, self.service))
+            except Exception as exc:
+                self._send_error_json(HTTPStatus.NOT_FOUND, f"Company run '{run_id}' not found: {exc}")
+            return
+
+        # 15. Proposals & Diff (STEP 21)
+        if path.startswith("/api/proposals/") and path.endswith("/diff"):
+            parts = path.split("/")
+            prop_id = parts[3]
+            try:
+                patch_str = self.service.durable_storage.load_proposal_patch(prop_id, verify_integrity=False)
+                self._send_json(HTTPStatus.OK, {"proposal_id": prop_id, "diff": patch_str})
+            except Exception as exc:
+                self._send_error_json(HTTPStatus.NOT_FOUND, f"Proposal patch '{prop_id}' not found: {exc}")
+            return
+
+        if path.startswith("/api/proposals/"):
+            prop_id = path[len("/api/proposals/"):]
+            try:
+                prop = self.service.durable_storage.load_proposal(prop_id, verify_integrity=False)
+                self._send_json(HTTPStatus.OK, prop.to_dict())
+            except Exception as exc:
+                self._send_error_json(HTTPStatus.NOT_FOUND, f"Proposal '{prop_id}' not found: {exc}")
+            return
+
+        # 16. 404 Fallback
         self._send_error_json(HTTPStatus.NOT_FOUND, f"Endpoint not found: {self.path}")
 
     # --------------------------------------------------------------------------
@@ -410,6 +641,108 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                 self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
             return
 
+        # 6. Create & Execute Company Run: POST /api/company-runs (STEP 21)
+        if path == "/api/company-runs":
+            title = payload.get("title")
+            if not title:
+                self._send_error_json(HTTPStatus.BAD_REQUEST, "Field 'title' is required.")
+                return
+
+            description = payload.get("description", title)
+            project_id = payload.get("project_id", "prj_jester")
+            constraints = payload.get("constraints", [])
+            acceptance_criteria = payload.get("acceptance_criteria", [])
+            target_repository = payload.get("target_repository")
+            auto_run = payload.get("auto_run", True)
+
+            # Auto-resolve target repository from project if not explicitly given
+            if not target_repository:
+                proj = self.service.get_repository_project(project_id)
+                if proj and proj.repository:
+                    target_repository = proj.repository.root_path
+
+            objective = CompanyObjective(
+                id=f"obj_{uuid.uuid4().hex[:8]}",
+                title=title,
+                description=description,
+                constraints=constraints,
+                acceptance_criteria=acceptance_criteria,
+                target_repository=target_repository,
+                project_id=project_id,
+            )
+
+            try:
+                run = self.service.create_company_run(
+                    objective=objective,
+                    project_id=project_id,
+                )
+                if auto_run:
+                    self.service.start_company_run(run.run_id)
+                    run = self.service.run_company_until_boundary(run.run_id, max_steps=10)
+                self._send_json(HTTPStatus.CREATED, enrich_company_run_data(run, self.service))
+            except Exception as exc:
+                self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            return
+
+        # 7. Founder Approve Repo Apply: POST /api/company-runs/{run_id}/approve (STEP 21)
+        if path.startswith("/api/company-runs/") and path.endswith("/approve"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                run_id = parts[3]
+                founder_approval_id = payload.get("founder_approval_id", f"appr_{uuid.uuid4().hex[:8]}")
+                approver = payload.get("approver", "Human Founder")
+                try:
+                    grant = self.service.approve_company_repo_apply(
+                        run_id=run_id,
+                        founder_approval_id=founder_approval_id,
+                        approver=approver,
+                    )
+                    run = self.service.get_company_run(run_id)
+                    self._send_json(HTTPStatus.OK, {
+                        "status": "APPROVED",
+                        "grant": grant.to_dict(),
+                        "run": enrich_company_run_data(run, self.service),
+                    })
+                except Exception as exc:
+                    self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                return
+
+        # 8. Founder Reject Repo Apply: POST /api/company-runs/{run_id}/reject (STEP 21)
+        if path.startswith("/api/company-runs/") and path.endswith("/reject"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                run_id = parts[3]
+                reason = payload.get("reason", "Rejected by Human Founder")
+                try:
+                    run = self.service.get_company_run(run_id)
+                    run.transition_to(CompanyRunState.BLOCKED)
+                    run.add_event("FOUNDER_REJECTED", reason=reason)
+                    self.service.save_company_run(run)
+                    self._send_json(HTTPStatus.OK, {
+                        "status": "REJECTED",
+                        "run": enrich_company_run_data(run, self.service),
+                    })
+                except Exception as exc:
+                    self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                return
+
+        # 9. Real Repo Apply Execution: POST /api/company-runs/{run_id}/apply (STEP 21)
+        if path.startswith("/api/company-runs/") and path.endswith("/apply"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                run_id = parts[3]
+                try:
+                    result = self.service.apply_approved_company_repo(run_id=run_id)
+                    run = self.service.get_company_run(run_id)
+                    self._send_json(HTTPStatus.OK, {
+                        "status": "APPLIED",
+                        "result": result.to_dict(),
+                        "run": enrich_company_run_data(run, self.service),
+                    })
+                except Exception as exc:
+                    self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                return
+
         self._send_error_json(HTTPStatus.NOT_FOUND, f"POST endpoint not found: {self.path}")
 
 
@@ -422,6 +755,7 @@ def create_server(
     """Factory to create and configure a ThreadingHTTPServer with CompanyService bound."""
     svc = service or CompanyService()
     svc.ensure_default_project()
+    ensure_default_repository_project(svc)
     if load_history:
         svc.load_history_from_disk()
 
@@ -431,6 +765,7 @@ def create_server(
 
     server = ThreadingHTTPServer((host, port), BoundControlCenterHandler)
     return server
+
 
 
 def run_control_center(
@@ -465,3 +800,8 @@ def run_control_center(
         print("\nShutting down Control Center...")
     finally:
         server.server_close()
+
+
+if __name__ == "__main__":
+    run_control_center()
+

@@ -436,6 +436,13 @@ class DurableRunStorage:
                     runs.append(run)
                 except Exception as exc:
                     logger.warning("Skipping corrupted CompanyRun '%s': %s", entry.name, exc)
+            elif entry.is_file() and entry.suffix == ".json" and entry.stem.startswith("crun_"):
+                try:
+                    run = self.load_company_run(entry.stem)
+                    if not any(r.run_id == run.run_id for r in runs):
+                        runs.append(run)
+                except Exception as exc:
+                    logger.warning("Skipping corrupted CompanyRun '%s': %s", entry.name, exc)
         return runs
 
     # --------------------------------------------------------------------------

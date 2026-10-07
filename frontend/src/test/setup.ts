@@ -22,3 +22,11 @@ if (typeof globalThis.DOMMatrixReadOnly === 'undefined') {
 if (typeof window !== 'undefined' && window.HTMLElement) {
   window.HTMLElement.prototype.scrollIntoView = function () {}
 }
+
+// Default fallback mocks for Step 21 API endpoints so legacy tests do not trigger hanging HTTP fetches
+import { vi } from 'vitest'
+import { api } from '../api/client'
+
+vi.spyOn(api, 'getCompanyRuns').mockResolvedValue([])
+vi.spyOn(api, 'getRepositoryProjects').mockResolvedValue([])
+
