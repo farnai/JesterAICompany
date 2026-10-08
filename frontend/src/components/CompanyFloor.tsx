@@ -2,6 +2,7 @@ import React, { useRef, useMemo } from 'react'
 import { RolePortrait, ROLE_PERSONA_NAMES } from './Portraits'
 import { EmployeeWorkstation } from './EmployeeWorkstation'
 import { WorkforceConnectionOverlay } from './WorkforceConnectionOverlay'
+import { FounderClarificationCard } from './FounderClarificationCard'
 import { ceoPresence, normRole, roleLabel, sortRoles, CANONICAL_ROLE_ORDER } from './presentation'
 import type { CompanyRun, Employee, Task, TaskRun, VerificationResult } from '../types/company'
 
@@ -13,6 +14,7 @@ interface CompanyFloorProps {
   onSelectEmployee?: (employee: Employee) => void
   onInspectArtifact?: (artifactPath: string) => void
   onOpenApproval?: () => void
+  onSubmitClarification?: (response: string) => Promise<any> | void
   activeTask?: Task | null
   taskRuns?: TaskRun[]
   verifications?: VerificationResult[]
@@ -25,6 +27,7 @@ export const CompanyFloor: React.FC<CompanyFloorProps> = ({
   onSelectEmployee,
   onInspectArtifact,
   onOpenApproval,
+  onSubmitClarification,
   activeTask,
   taskRuns,
   verifications,
@@ -252,6 +255,16 @@ export const CompanyFloor: React.FC<CompanyFloorProps> = ({
           </div>
         </div>
       </section>
+
+      {/* =================================================================== */}
+      {/* FOUNDER CLARIFICATION CARD (When CEO requires Founder input)       */}
+      {/* =================================================================== */}
+      {run && (run.state === 'WAITING_FOR_CLARIFICATION' || Boolean(run.clarification_request)) && (
+        <FounderClarificationCard
+          run={run}
+          onSubmitClarification={onSubmitClarification}
+        />
+      )}
 
       {/* =================================================================== */}
       {/* ACTIVE RUN TEAM                                                      */}

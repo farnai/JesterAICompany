@@ -387,6 +387,11 @@ from .ceo_contract import (
     build_ceo_planning_prompt,
     extract_ceo_plan_json,
     parse_and_validate_ceo_plan,
+    CEODecisionType,
+    CEODecisionResult,
+    build_ceo_evaluation_prompt,
+    parse_and_validate_ceo_decision,
+    evaluate_objective_heuristically,
 )
 from .context import (
     CONTEXT_ENVELOPE_SCHEMA_VERSION,
@@ -696,6 +701,11 @@ __all__ = [
     "build_ceo_planning_prompt",
     "extract_ceo_plan_json",
     "parse_and_validate_ceo_plan",
+    "CEODecisionType",
+    "CEODecisionResult",
+    "build_ceo_evaluation_prompt",
+    "parse_and_validate_ceo_decision",
+    "evaluate_objective_heuristically",
     "CONTEXT_ENVELOPE_SCHEMA_VERSION",
     "MAX_CEO_CONTEXT_CHARS",
     "MAX_SPECIALIST_CONTEXT_CHARS",

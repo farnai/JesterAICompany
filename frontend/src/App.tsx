@@ -41,6 +41,7 @@ export default function App() {
     approveRun,
     rejectRun,
     applyRun,
+    submitClarification,
     sendChat,
     executeTask,
     remediateTask,
@@ -172,6 +173,9 @@ export default function App() {
                     onSelectEmployee={(emp) => setSelectedEmployee(emp)}
                     onInspectArtifact={(path) => setInspectingArtifactPath(path)}
                     onOpenApproval={() => setIsApprovalModalOpen(true)}
+                    onSubmitClarification={(response) =>
+                      activeCompanyRun ? submitClarification(activeCompanyRun.run_id, response) : undefined
+                    }
                     activeTask={activeTask}
                     taskRuns={runs}
                     verifications={verifications}

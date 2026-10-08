@@ -74,6 +74,7 @@ class CompanyRunState(str, Enum):
     PLAN_READY = "PLAN_READY"
     RUNNING = "RUNNING"
     WAITING_FOR_HUMAN = "WAITING_FOR_HUMAN"
+    WAITING_FOR_CLARIFICATION = "WAITING_FOR_CLARIFICATION"
     READY_FOR_HUMAN_APPLY = "READY_FOR_HUMAN_APPLY"
     APPLYING = "APPLYING"
     COMPLETED = "COMPLETED"
@@ -89,8 +90,16 @@ VALID_COMPANY_RUN_TRANSITIONS: Dict[str, Set[str]] = {
     },
     CompanyRunState.PLANNING.value: {
         CompanyRunState.PLAN_READY.value,
+        CompanyRunState.WAITING_FOR_CLARIFICATION.value,
+        CompanyRunState.WAITING_FOR_HUMAN.value,
         CompanyRunState.FAILED.value,
         CompanyRunState.BLOCKED.value,
+    },
+    CompanyRunState.WAITING_FOR_CLARIFICATION.value: {
+        CompanyRunState.PLANNING.value,
+        CompanyRunState.RUNNING.value,
+        CompanyRunState.BLOCKED.value,
+        CompanyRunState.FAILED.value,
     },
     CompanyRunState.PLAN_READY.value: {
         CompanyRunState.RUNNING.value,
@@ -101,6 +110,7 @@ VALID_COMPANY_RUN_TRANSITIONS: Dict[str, Set[str]] = {
     CompanyRunState.RUNNING.value: {
         CompanyRunState.COMPLETED.value,
         CompanyRunState.WAITING_FOR_HUMAN.value,
+        CompanyRunState.WAITING_FOR_CLARIFICATION.value,
         CompanyRunState.READY_FOR_HUMAN_APPLY.value,
         CompanyRunState.PLANNING.value,
         CompanyRunState.BLOCKED.value,
@@ -538,6 +548,12 @@ class CompanyRun:
     real_repo_apply_grant_id: Optional[str] = None
     real_repo_apply_result: Optional[Dict[str, Any]] = None
     target_repository_verification: Optional[Dict[str, Any]] = None
+    investigation_count: int = 0
+    max_investigations: int = 2
+    investigation_findings: List[str] = field(default_factory=list)
+    founder_clarifications: List[Dict[str, Any]] = field(default_factory=list)
+    last_ceo_decision: Optional[Dict[str, Any]] = None
+    clarification_request: Optional[Dict[str, Any]] = None
     created_at: str = field(default_factory=_utc_now_iso)
     updated_at: str = field(default_factory=_utc_now_iso)
     completed_at: Optional[str] = None
@@ -668,6 +684,12 @@ class CompanyRun:
             "real_repo_apply_grant_id": self.real_repo_apply_grant_id,
             "real_repo_apply_result": self.real_repo_apply_result,
             "target_repository_verification": self.target_repository_verification,
+            "investigation_count": self.investigation_count,
+            "max_investigations": self.max_investigations,
+            "investigation_findings": list(self.investigation_findings),
+            "founder_clarifications": list(self.founder_clarifications),
+            "last_ceo_decision": self.last_ceo_decision,
+            "clarification_request": self.clarification_request,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
@@ -736,6 +758,12 @@ class CompanyRun:
             real_repo_apply_grant_id=data.get("real_repo_apply_grant_id"),
             real_repo_apply_result=data.get("real_repo_apply_result"),
             target_repository_verification=data.get("target_repository_verification"),
+            investigation_count=int(data.get("investigation_count", 0)),
+            max_investigations=int(data.get("max_investigations", 2)),
+            investigation_findings=list(data.get("investigation_findings", [])),
+            founder_clarifications=list(data.get("founder_clarifications", [])),
+            last_ceo_decision=data.get("last_ceo_decision"),
+            clarification_request=data.get("clarification_request"),
             created_at=data.get("created_at") or _utc_now_iso(),
             updated_at=data.get("updated_at") or _utc_now_iso(),
             completed_at=data.get("completed_at"),

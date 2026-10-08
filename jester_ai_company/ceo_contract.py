@@ -8,11 +8,17 @@ Enforces the boundary between the untrusted CEO LLM and the deterministic applic
 - Zero executable authority in parsed plans
 """
 
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
 import json
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Set
 import uuid
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 from .dag import (
     MAX_GRAPH_DEPTH,
@@ -85,6 +91,16 @@ class CEOPlanExtractionError(PlanValidationError):
 
 class CEOPlanSecurityError(PlanValidationError):
     """Raised when CEO output attempts to express privileged or unauthorized authority."""
+    pass
+
+
+class CEODecisionValidationError(PlanValidationError):
+    """Raised when CEO decision evaluation result fails contract validation."""
+    pass
+
+
+class CEODecisionSecurityError(CEOPlanSecurityError):
+    """Raised when CEO decision evaluation result contains unauthorized privileged authority."""
     pass
 
 
@@ -421,3 +437,297 @@ def parse_and_validate_ceo_plan(
     validate_dag_structure(plan)
 
     return plan
+
+
+# -----------------------------------------------------------------------------
+# STEP 23B.2: CEO Requirement Evaluation & Autonomous Investigation Contract
+# -----------------------------------------------------------------------------
+
+class CEODecisionType(str, Enum):
+    """The three controlled outcomes of CEO requirement evaluation."""
+    EXECUTE = "EXECUTE"
+    INVESTIGATE = "INVESTIGATE"
+    ASK_FOUNDER = "ASK_FOUNDER"
+
+
+@dataclass
+class CEODecisionResult:
+    """Structured, validated decision result of CEO requirement evaluation (STEP 23B.2)."""
+    decision: str
+    reasoning_summary: str
+    known_facts: List[str] = field(default_factory=list)
+    assumptions: List[str] = field(default_factory=list)
+    missing_critical_information: List[str] = field(default_factory=list)
+    proposed_next_action: str = ""
+    clarification_question: Optional[str] = None
+    investigation_targets: List[str] = field(default_factory=list)
+    created_at: str = field(default_factory=_utc_now_iso)
+
+    def __post_init__(self) -> None:
+        valid_decisions = {d.value for d in CEODecisionType}
+        if self.decision not in valid_decisions:
+            raise CEODecisionValidationError(
+                f"Invalid CEO decision '{self.decision}' (missing or invalid 'decision'). Must be one of: {sorted(valid_decisions)}."
+            )
+        if not self.reasoning_summary or not str(self.reasoning_summary).strip():
+            raise CEODecisionValidationError("CEODecisionResult must include a non-empty 'reasoning_summary'.")
+        if self.decision == CEODecisionType.ASK_FOUNDER.value:
+            if not self.clarification_question or not str(self.clarification_question).strip():
+                raise CEODecisionValidationError("CEODecisionResult with ASK_FOUNDER must include a 'clarification_question'.")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "decision": self.decision,
+            "reasoning_summary": self.reasoning_summary,
+            "known_facts": list(self.known_facts),
+            "assumptions": list(self.assumptions),
+            "missing_critical_information": list(self.missing_critical_information),
+            "proposed_next_action": self.proposed_next_action,
+            "clarification_question": self.clarification_question,
+            "investigation_targets": list(self.investigation_targets),
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CEODecisionResult":
+        if not isinstance(data, dict):
+            raise CEODecisionValidationError("Expected dictionary for CEODecisionResult.")
+
+        for key in data.keys():
+            k_lower = key.lower()
+            if (
+                k_lower in PRIVILEGED_TOP_LEVEL_KEYS
+                or k_lower in PRIVILEGED_WORK_ITEM_KEYS
+                or "grant" in k_lower
+                or "bypass" in k_lower
+                or "skip_qa" in k_lower
+                or "override" in k_lower
+            ):
+                raise CEODecisionSecurityError(f"Prohibited authority key '{key}' in CEO decision result.")
+
+        decision = data.get("decision")
+        if not decision or not isinstance(decision, str):
+            raise CEODecisionValidationError("CEODecisionResult missing or invalid 'decision'.")
+        decision_clean = decision.strip().upper()
+        valid_decisions = {d.value for d in CEODecisionType}
+        if decision_clean not in valid_decisions:
+            raise CEODecisionValidationError(
+                f"CEODecisionResult missing or invalid 'decision': '{decision_clean}'. Must be one of: {sorted(valid_decisions)}."
+            )
+
+        reasoning = data.get("reasoning_summary") or data.get("reasoning")
+        if not reasoning or not isinstance(reasoning, str):
+            raise CEODecisionValidationError("CEODecisionResult missing or invalid 'reasoning_summary'.")
+
+        known_facts = [str(f) for f in data.get("known_facts", [])]
+        assumptions = [str(a) for a in data.get("assumptions", [])]
+        missing_info = [str(m) for m in data.get("missing_critical_information", [])]
+        proposed_action = str(data.get("proposed_next_action", "")).strip()
+        clarification_q = data.get("clarification_question")
+        if clarification_q is not None:
+            clarification_q = str(clarification_q).strip() or None
+        targets = [str(t) for t in data.get("investigation_targets", [])]
+
+        return cls(
+            decision=decision_clean,
+            reasoning_summary=reasoning.strip(),
+            known_facts=known_facts,
+            assumptions=assumptions,
+            missing_critical_information=missing_info,
+            proposed_next_action=proposed_action,
+            clarification_question=clarification_q,
+            investigation_targets=targets,
+            created_at=data.get("created_at") or _utc_now_iso(),
+        )
+
+
+def build_ceo_evaluation_prompt(
+    objective: CompanyObjective,
+    project_knowledge: Optional[Any] = None,
+    investigation_findings: Optional[List[str]] = None,
+    founder_clarifications: Optional[List[Dict[str, Any]]] = None,
+    investigation_count: int = 0,
+    max_investigations: int = 2,
+) -> str:
+    """Build a deterministic evaluation prompt for the CEO to evaluate requirements."""
+    prompt_lines = [
+        "You are the CEO of Jester AI Company.",
+        "Your task is to evaluate the Founder's objective and decide the immediate workflow outcome.",
+        "",
+        "AVAILABLE OUTCOMES:",
+        "1. EXECUTE: Sufficient unambiguous information to proceed with DAG planning.",
+        "2. INVESTIGATE: Read-only codebase / doc inspection can resolve uncertainty.",
+        "3. ASK_FOUNDER: Essential missing business / policy / scope information requires human decision.",
+        "",
+        f"OBJECTIVE TITLE: {objective.title}",
+        f"OBJECTIVE DESCRIPTION: {objective.description}",
+        f"CONSTRAINTS: {objective.constraints}",
+        f"ACCEPTANCE CRITERIA: {objective.acceptance_criteria}",
+        f"INVESTIGATION BUDGET: {investigation_count}/{max_investigations} used",
+    ]
+
+    if investigation_findings:
+        prompt_lines.append("")
+        prompt_lines.append("AUTONOMOUS INVESTIGATION FINDINGS SO FAR:")
+        for finding in investigation_findings:
+            prompt_lines.append(f"- {finding}")
+
+    if founder_clarifications:
+        prompt_lines.append("")
+        prompt_lines.append("FOUNDER CLARIFICATIONS PROVIDED:")
+        for clar in founder_clarifications:
+            resp = clar.get("response", "")
+            prompt_lines.append(f"- {resp}")
+
+    prompt_lines.extend([
+        "",
+        "STRICT OUTPUT INSTRUCTIONS:",
+        "Output ONLY a single JSON object matching this schema:",
+        "{",
+        '  "decision": "EXECUTE" | "INVESTIGATE" | "ASK_FOUNDER",',
+        '  "reasoning_summary": "Concise summary of rationale",',
+        '  "known_facts": ["fact 1", "fact 2"],',
+        '  "assumptions": ["assumption 1"],',
+        '  "missing_critical_information": ["missing info"],',
+        '  "proposed_next_action": "Action to be taken",',
+        '  "clarification_question": "Required only if ASK_FOUNDER, else null",',
+        '  "investigation_targets": ["files or topics to inspect if INVESTIGATE"]',
+        "}",
+    ])
+
+    return "\n".join(prompt_lines)
+
+
+def parse_and_validate_ceo_decision(raw_output: str) -> CEODecisionResult:
+    """Extract and validate CEODecisionResult from raw LLM output."""
+    if not raw_output or not isinstance(raw_output, str) or not raw_output.strip():
+        raise CEOPlanExtractionError("Raw CEO evaluation output is empty or whitespace.")
+
+    cleaned = raw_output.strip()
+    if len(cleaned) > MAX_RAW_CEO_OUTPUT_CHARS:
+        raise CEOPlanExtractionError(
+            f"Raw CEO output exceeded maximum allowed length ({len(cleaned)} > {MAX_RAW_CEO_OUTPUT_CHARS})."
+        )
+
+    json_str = extract_ceo_plan_json(cleaned)
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        raise CEOPlanExtractionError(f"Extracted payload is not valid JSON: {exc}")
+
+    return CEODecisionResult.from_dict(data)
+
+
+def evaluate_objective_heuristically(
+    objective: CompanyObjective,
+    project_knowledge: Optional[Any] = None,
+    investigation_findings: Optional[List[str]] = None,
+    founder_clarifications: Optional[List[Dict[str, Any]]] = None,
+    investigation_count: int = 0,
+    max_investigations: int = 2,
+    repo_root: Optional[Path] = None,
+) -> CEODecisionResult:
+    """Deterministic heuristic evaluator for testing and fallback evaluation."""
+    # 1. If Founder already clarified, check if resolution is reached
+    if founder_clarifications and len(founder_clarifications) > 0:
+        latest = founder_clarifications[-1].get("response", "").strip()
+        if latest:
+            return CEODecisionResult(
+                decision=CEODecisionType.EXECUTE.value,
+                reasoning_summary=f"Founder clarification received: '{latest}'. Ambiguity is resolved.",
+                known_facts=[f"Founder clarified: {latest}"],
+                assumptions=[],
+                missing_critical_information=[],
+                proposed_next_action="Formulate DAG orchestration plan and proceed to specialist execution.",
+                clarification_question=None,
+                investigation_targets=[],
+            )
+
+    # 2. Check for fundamental business policy / external vendor choices
+    full_text = f"{objective.title} {objective.description}".lower()
+    policy_keywords = [
+        "pricing", "subscription", "charge", "billing", "choose vendor", "select provider",
+        "which provider", "external auth provider", "delete all inactive", "delete all users",
+        "business policy", "policy choice", "decide whether", "tier"
+    ]
+    if any(pk in full_text for pk in policy_keywords):
+        return CEODecisionResult(
+            decision=CEODecisionType.ASK_FOUNDER.value,
+            reasoning_summary="Objective entails a critical business policy or external vendor decision requiring Founder authority.",
+            known_facts=[f"Objective: {objective.title}"],
+            assumptions=[],
+            missing_critical_information=["Founder policy decision / provider preference"],
+            proposed_next_action="Awaiting Founder business policy decision.",
+            clarification_question=f"Please specify the preferred business policy or provider choice for '{objective.title}'.",
+            investigation_targets=[],
+        )
+
+    # 3. Check for clear acceptance criteria
+    if objective.acceptance_criteria and any(str(a).strip() for a in objective.acceptance_criteria):
+        return CEODecisionResult(
+            decision=CEODecisionType.EXECUTE.value,
+            reasoning_summary="Objective is clear with explicit acceptance criteria and unambiguous execution scope.",
+            known_facts=[f"Criteria: {c}" for c in objective.acceptance_criteria],
+            assumptions=[],
+            missing_critical_information=[],
+            proposed_next_action="Proceed to DAG plan formulation.",
+            clarification_question=None,
+            investigation_targets=[],
+        )
+
+    # 4. If investigation budget is exhausted -> MUST ASK_FOUNDER
+    if investigation_count >= max_investigations:
+        return CEODecisionResult(
+            decision=CEODecisionType.ASK_FOUNDER.value,
+            reasoning_summary=f"Autonomous investigation budget exhausted ({investigation_count}/{max_investigations}). Code inspection could not establish specific expected behavior without Founder clarification.",
+            known_facts=list(investigation_findings or []),
+            assumptions=[],
+            missing_critical_information=["Acceptance criteria", "Expected behavior"],
+            proposed_next_action="Awaiting Founder response to resume company run.",
+            clarification_question=f"Could you specify the expected behavior or acceptance criteria for '{objective.title}'?",
+            investigation_targets=[],
+        )
+
+    # 5. Handle underspecified objectives (investigation budget remains)
+    is_georgian = bool(re.search(r"[\u10A0-\u10FF]", f"{objective.title} {objective.description}"))
+    targets: List[str] = []
+    if "auth" in full_text:
+        auth_file = "backend/app/routers/auth.py"
+        if repo_root and (repo_root / auth_file).exists():
+            targets.append(auth_file)
+        else:
+            targets.append("auth")
+    if "რეგისტრაცია" in full_text or "registration" in full_text or "register" in full_text:
+        targets.append("registration")
+
+    for token in full_text.split():
+        cleaned_token = token.strip("(),;:'\"")
+        if "/" in cleaned_token or cleaned_token.endswith(".py") or cleaned_token.endswith(".ts") or cleaned_token.endswith(".tsx"):
+            if cleaned_token not in targets:
+                targets.insert(0, cleaned_token)
+
+    for fallback in ["backend/app", "docs", "tests"]:
+        if fallback not in targets:
+            targets.append(fallback)
+
+    if is_georgian:
+        reasoning = (
+            f"Georgian objective '{objective.title}' (ქართულენოვანი) is underspecified with empty acceptance criteria. "
+            f"Autonomous read-only inspection of repository structure, routes, and docs will clarify scope."
+        )
+    else:
+        reasoning = (
+            f"Objective '{objective.title}' has empty acceptance criteria. "
+            f"Autonomous read-only inspection of repository code and tests will investigate implementation context."
+        )
+
+    return CEODecisionResult(
+        decision=CEODecisionType.INVESTIGATE.value,
+        reasoning_summary=reasoning,
+        known_facts=[f"Objective title: {objective.title}", f"Language: {'Georgian' if is_georgian else 'English'}"],
+        assumptions=[],
+        missing_critical_information=["Acceptance criteria", "Target files", "Expected behavior"],
+        proposed_next_action="Conduct read-only inspection of repository structure and docs.",
+        clarification_question=None,
+        investigation_targets=targets,
+    )

@@ -242,6 +242,16 @@ export function useCompanyState(pollInterval: number = 4000) {
     return res
   }
 
+  const submitClarification = async (
+    runId: string,
+    response: string,
+    author: string = 'Human Founder'
+  ) => {
+    const res = await api.submitClarification(runId, response, author)
+    await fetchState(false)
+    return res
+  }
+
   const sendChat = async (content: string) => {
     const res = await api.sendChatMessage(content)
     setChatMessages((prev) => [...prev, res.user_message, res.reply])
@@ -301,6 +311,7 @@ export function useCompanyState(pollInterval: number = 4000) {
     approveRun,
     rejectRun,
     applyRun,
+    submitClarification,
     sendChat,
     executeTask,
     remediateTask,

@@ -28,6 +28,9 @@ import json
 import logging
 from pathlib import Path
 import subprocess
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 import uuid
 
@@ -262,6 +265,11 @@ from .context import (
 from .ceo_contract import (
     build_ceo_planning_prompt,
     parse_and_validate_ceo_plan,
+    CEODecisionType,
+    CEODecisionResult,
+    build_ceo_evaluation_prompt,
+    parse_and_validate_ceo_decision,
+    evaluate_objective_heuristically,
 )
 from .execution_grant import (
     ExecutionGrant,
@@ -4347,27 +4355,147 @@ class CompanyService:
         self.save_company_run(run)
         return run
 
+    def evaluate_company_objective(
+        self,
+        run: CompanyRun,
+        project_knowledge: Optional[Any] = None,
+    ) -> CEODecisionResult:
+        """Evaluate a CompanyObjective to determine whether to EXECUTE, INVESTIGATE, or ASK_FOUNDER (STEP 23B.2)."""
+        heuristic = evaluate_objective_heuristically(
+            objective=run.objective,
+            project_knowledge=project_knowledge,
+            investigation_findings=run.investigation_findings,
+            founder_clarifications=run.founder_clarifications,
+            investigation_count=run.investigation_count,
+            max_investigations=run.max_investigations,
+            repo_root=self.repo_root,
+        )
+
+        # In production mode for investigable objectives, consult LLM if configured
+        if self.is_production and heuristic.decision == CEODecisionType.INVESTIGATE.value:
+            prompt = build_ceo_evaluation_prompt(
+                objective=run.objective,
+                project_knowledge=project_knowledge,
+                investigation_findings=run.investigation_findings,
+                founder_clarifications=run.founder_clarifications,
+                investigation_count=run.investigation_count,
+                max_investigations=run.max_investigations,
+            )
+            try:
+                exec_result = self.runtime.execute(
+                    agent="ceo",
+                    prompt=prompt,
+                    timeout=60.0,
+                )
+                if exec_result.success and exec_result.stdout:
+                    try:
+                        return parse_and_validate_ceo_decision(exec_result.stdout)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        return heuristic
+
+    def investigate_objective(
+        self,
+        run_id: str,
+        decision: CEODecisionResult,
+    ) -> List[str]:
+        """Perform safe, read-only autonomous investigation of repository files, tests, and docs (STEP 23B.2)."""
+        run = self.get_company_run(run_id)
+        if run.state == CompanyRunState.CREATED.value:
+            run.transition_to(CompanyRunState.PLANNING)
+            self.save_company_run(run)
+        elif run.state != CompanyRunState.PLANNING.value:
+            raise TransitionPolicyError(
+                f"Cannot investigate objective in state '{run.state}', expected 'PLANNING' or 'CREATED'."
+            )
+
+        run.investigation_count += 1
+        findings: List[str] = []
+
+        # Resolve target repository root
+        target_root = None
+        if run.project_id:
+            proj = self.project_registry.get_project(run.project_id)
+            if proj and proj.repository and proj.repository.canonical_root.exists():
+                target_root = proj.repository.canonical_root
+
+        if not target_root and run.objective.target_repository:
+            cand = Path(run.objective.target_repository).resolve()
+            if cand.exists():
+                target_root = cand
+
+        if not target_root:
+            target_root = self.repo_root
+
+        # Check for target keywords in backend and tests
+        targets = decision.investigation_targets or ["backend/app", "docs", "tests"]
+        for target in targets:
+            candidate_file = target_root / target
+            if candidate_file.is_file():
+                findings.append(f"Inspected file: {target}")
+            elif candidate_file.is_dir():
+                findings.append(f"Found directory: {target}")
+            else:
+                term = target.lower()
+                backend_dir = target_root / "backend" / "app"
+                matched_files = []
+                if backend_dir.is_dir():
+                    for py_file in backend_dir.rglob("*.py"):
+                        if term in py_file.name.lower():
+                            matched_files.append(py_file.relative_to(target_root).as_posix())
+                if matched_files:
+                    findings.append(f"Found matching file: {matched_files[0]}")
+                else:
+                    findings.append(f"Inspected target not found: {target}")
+
+        if not findings:
+            findings.append(f"Target repository canonical root inspected: {target_root.as_posix()}")
+
+        # Append to run findings
+        for f in findings:
+            if f not in run.investigation_findings:
+                run.investigation_findings.append(f)
+
+        run.add_event(
+            event_type="CEO_INVESTIGATION_COMPLETED",
+            reason=f"Autonomous read-only investigation #{run.investigation_count} completed",
+            details={
+                "investigation_count": run.investigation_count,
+                "max_investigations": run.max_investigations,
+                "targets": decision.investigation_targets,
+                "findings": findings,
+            },
+        )
+        self.save_company_run(run)
+        return findings
+
     def plan_company_run(
         self,
         run_id: str,
         timeout: Optional[float] = None,
     ) -> CompanyRun:
-        """Execute the CEO planning phase for a CompanyRun.
+        """Execute the CEO planning phase for a CompanyRun with Step 23B.2 requirement evaluation & investigation.
 
         Enforces:
-        - State transition: CREATED -> PLANNING.
-        - Real CEO planning invocation via propose_initial_company_plan.
+        - State transition: CREATED / WAITING_FOR_CLARIFICATION -> PLANNING.
         - Increments ceo_invocation_count by exactly 1.
-        - Validated plan attached to run and immutable plan history updated.
-        - State transition: PLANNING -> PLAN_READY.
+        - Autonomous evaluation: EXECUTE, INVESTIGATE, or ASK_FOUNDER.
+        - Bounded read-only investigation up to max_investigations budget.
+        - If ASK_FOUNDER: durable transition to WAITING_FOR_CLARIFICATION.
+        - If EXECUTE: real CEO planning invocation via propose_initial_company_plan.
+        - Transition PLANNING -> PLAN_READY.
         - Fail-closed on error: transition to FAILED with error recorded.
         - Audit events recorded.
         """
         run = self.get_company_run(run_id)
-        run.transition_to(CompanyRunState.PLANNING)
+        if run.state != CompanyRunState.PLANNING.value:
+            run.transition_to(CompanyRunState.PLANNING)
         run.add_event(
             event_type="PLANNING_STARTED",
-            reason="CEO initial planning invocation started",
+            reason="CEO planning invocation started",
         )
         run.ceo_invocation_count += 1
         self.save_company_run(run)
@@ -4387,6 +4515,64 @@ class CompanyService:
                     for s in selected_sources
                 ]
 
+        # STEP 23B.2: Controlled Decision Evaluation Loop
+        decision: Optional[CEODecisionResult] = None
+        while True:
+            decision = self.evaluate_company_objective(
+                run=run,
+                project_knowledge=ceo_knowledge,
+            )
+            run.last_ceo_decision = decision.to_dict()
+            self.save_company_run(run)
+
+            if decision.decision == CEODecisionType.EXECUTE.value:
+                break
+
+            elif decision.decision == CEODecisionType.INVESTIGATE.value:
+                if run.investigation_count >= run.max_investigations:
+                    # Budget exhausted! Forced ASK_FOUNDER
+                    decision = CEODecisionResult(
+                        decision=CEODecisionType.ASK_FOUNDER.value,
+                        reasoning_summary=f"Autonomous investigation budget exhausted ({run.investigation_count}/{run.max_investigations}). Residual ambiguity requires Founder guidance.",
+                        known_facts=list(run.investigation_findings),
+                        assumptions=[],
+                        missing_critical_information=["Target specification and acceptance criteria"],
+                        proposed_next_action="Awaiting Founder clarification.",
+                        clarification_question=decision.clarification_question or f"Investigation into '{run.objective.title}' reached budget limit without conclusive specification. Please provide explicit acceptance criteria.",
+                    )
+                    run.last_ceo_decision = decision.to_dict()
+                    self.save_company_run(run)
+                    break
+                # Perform read-only investigation
+                self.investigate_objective(run.run_id, decision)
+                run = self.get_company_run(run.run_id)
+                # Loop to re-evaluate with updated findings
+
+            elif decision.decision == CEODecisionType.ASK_FOUNDER.value:
+                break
+
+        # Handle ASK_FOUNDER decision
+        if decision.decision == CEODecisionType.ASK_FOUNDER.value:
+            run.clarification_request = {
+                "question": decision.clarification_question,
+                "reason": decision.reasoning_summary,
+                "known_facts": list(decision.known_facts or run.investigation_findings),
+                "assumptions": list(decision.assumptions),
+                "missing_critical_information": list(decision.missing_critical_information),
+                "proposed_next_action": decision.proposed_next_action,
+                "investigation_count": run.investigation_count,
+                "requested_at": _utc_now_iso(),
+            }
+            run.transition_to(CompanyRunState.WAITING_FOR_CLARIFICATION)
+            run.add_event(
+                event_type="WAITING_FOR_FOUNDER_CLARIFICATION",
+                reason=decision.reasoning_summary,
+                details=run.clarification_request,
+            )
+            self.save_company_run(run)
+            return run
+
+        # If EXECUTE: Formulate DAG plan
         try:
             plan = self.propose_initial_company_plan(
                 run.objective,
@@ -4414,6 +4600,43 @@ class CompanyService:
         )
         self.save_company_run(run)
         return run
+
+    def submit_founder_clarification(
+        self,
+        run_id: str,
+        response: str,
+        author: str = "Founder",
+    ) -> CompanyRun:
+        """Submit Founder clarification for a run waiting in WAITING_FOR_CLARIFICATION (STEP 23B.2)."""
+        run = self.get_company_run(run_id)
+        if run.state != CompanyRunState.WAITING_FOR_CLARIFICATION.value:
+            raise TransitionPolicyError(
+                f"Cannot submit clarification for CompanyRun '{run_id}': state is '{run.state}', "
+                f"expected '{CompanyRunState.WAITING_FOR_CLARIFICATION.value}'."
+            )
+
+        if not response or not str(response).strip():
+            raise CompanyServiceError("Clarification response must not be empty.")
+
+        clean_resp = str(response).strip()
+        clar_record = {
+            "response": clean_resp,
+            "author": author,
+            "submitted_at": _utc_now_iso(),
+            "in_response_to": run.clarification_request.get("question") if run.clarification_request else None,
+        }
+        run.founder_clarifications.append(clar_record)
+        run.clarification_request = None
+        run.transition_to(CompanyRunState.PLANNING)
+        run.add_event(
+            event_type="FOUNDER_CLARIFICATION_RECEIVED",
+            reason=f"Founder clarification provided: '{clean_resp}'",
+            details=clar_record,
+        )
+        self.save_company_run(run)
+
+        # Resume planning using the accumulated context
+        return self.plan_company_run(run_id)
 
     def start_company_run(self, run_id: str) -> CompanyRun:
         """Start execution of a planned CompanyRun.

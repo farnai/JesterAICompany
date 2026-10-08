@@ -160,6 +160,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ proposal_id: proposalId, grant_id: grantId }),
     }),
+  submitClarification: (
+    runId: string,
+    response: string,
+    author: string = 'Human Founder'
+  ) =>
+    request<{ status: string; run: CompanyRun }>(`/company-runs/${runId}/clarify`, {
+      method: 'POST',
+      body: JSON.stringify({ response, author }),
+    }),
 
   // 7. Tasks
   getTasks: (projectId?: string) => {

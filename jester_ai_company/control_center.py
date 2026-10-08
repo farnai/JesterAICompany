@@ -188,6 +188,12 @@ def enrich_company_run_data(run: CompanyRun, service: CompanyService) -> Dict[st
     run_dict["proposal"] = proposal_dict
     run_dict["grant"] = grant_dict
     run_dict["receipt"] = receipt_dict
+    run_dict["clarification_request"] = getattr(run, "clarification_request", None)
+    run_dict["investigation_findings"] = getattr(run, "investigation_findings", [])
+    run_dict["investigation_count"] = getattr(run, "investigation_count", 0)
+    run_dict["max_investigations"] = getattr(run, "max_investigations", 2)
+    run_dict["last_ceo_decision"] = getattr(run, "last_ceo_decision", None)
+    run_dict["founder_clarifications"] = getattr(run, "founder_clarifications", [])
     return run_dict
 
 
@@ -739,8 +745,10 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                 if auto_run:
                     def _run_lifecycle(r_id: str) -> None:
                         try:
-                            # Step 1: CEO planning (CREATED -> PLANNING -> PLAN_READY)
-                            self.service.plan_company_run(r_id)
+                            # Step 1: CEO planning (CREATED -> PLANNING -> PLAN_READY or WAITING_FOR_CLARIFICATION)
+                            planned_run = self.service.plan_company_run(r_id)
+                            if planned_run.state == CompanyRunState.WAITING_FOR_CLARIFICATION.value:
+                                return
                             # Step 2: Start execution (PLAN_READY -> RUNNING)
                             self.service.start_company_run(r_id)
                             # Step 3: Run specialist DAG until boundary
@@ -892,6 +900,75 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                     self._send_json(HTTPStatus.OK, {
                         "status": "APPLIED",
                         "result": result.to_dict(),
+                        "run": enrich_company_run_data(run, self.service),
+                    })
+                except Exception as exc:
+                    self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                return
+
+        # 10. Founder Clarification: POST /api/company-runs/{run_id}/clarify (STEP 23B.2)
+        if path.startswith("/api/company-runs/") and path.endswith("/clarify"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                run_id = parts[3]
+                response_text = payload.get("response") or payload.get("clarification")
+                author = payload.get("author", "Human Founder")
+                auto_run = payload.get("auto_run", True)
+                sync_exec = payload.get("sync", False)
+
+                if not response_text or not str(response_text).strip():
+                    self._send_error_json(HTTPStatus.BAD_REQUEST, "Field 'response' is required.")
+                    return
+
+                try:
+                    target_run = self.service.get_company_run(run_id)
+                except Exception as exc:
+                    self._send_error_json(HTTPStatus.NOT_FOUND, f"Company run '{run_id}' not found: {exc}")
+                    return
+
+                if target_run.state != CompanyRunState.WAITING_FOR_CLARIFICATION.value:
+                    self._send_error_json(
+                        HTTPStatus.BAD_REQUEST,
+                        f"CompanyRun '{run_id}' is in state '{target_run.state}', not 'WAITING_FOR_CLARIFICATION'.",
+                    )
+                    return
+
+                try:
+                    def _resume_lifecycle(r_id: str, resp: str, auth: str) -> None:
+                        try:
+                            resumed_run = self.service.submit_founder_clarification(
+                                run_id=r_id,
+                                response=resp,
+                                author=auth,
+                            )
+                            if resumed_run.state == CompanyRunState.PLAN_READY.value and auto_run:
+                                self.service.start_company_run(r_id)
+                                self.service.run_company_until_boundary(r_id, max_steps=10)
+                        except Exception as exc:
+                            logger.error("Resume lifecycle failed for run %s: %s", r_id, exc, exc_info=True)
+
+                    if sync_exec:
+                        _resume_lifecycle(run_id, str(response_text).strip(), author)
+                        run = self.service.get_company_run(run_id)
+                    else:
+                        run = self.service.submit_founder_clarification(
+                            run_id=run_id,
+                            response=str(response_text).strip(),
+                            author=author,
+                        )
+                        if auto_run and run.state == CompanyRunState.PLAN_READY.value:
+                            worker = threading.Thread(
+                                target=lambda: (
+                                    self.service.start_company_run(run_id),
+                                    self.service.run_company_until_boundary(run_id, max_steps=10)
+                                ),
+                                daemon=True,
+                                name=f"Worker-Resume-{run_id}",
+                            )
+                            worker.start()
+
+                    self._send_json(HTTPStatus.OK, {
+                        "status": "CLARIFIED",
                         "run": enrich_company_run_data(run, self.service),
                     })
                 except Exception as exc:

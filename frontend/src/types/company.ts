@@ -402,6 +402,7 @@ export interface CompanyRun {
     | 'PLAN_READY'
     | 'RUNNING'
     | 'WAITING_FOR_HUMAN'
+    | 'WAITING_FOR_CLARIFICATION'
     | 'READY_FOR_HUMAN_APPLY'
     | 'APPLYING'
     | 'COMPLETED'
@@ -439,6 +440,30 @@ export interface CompanyRun {
   grant?: RealRepoApplyGrant | null
   receipt?: Step20CReceipt | null
   real_repo_apply_result?: any
+
+  // Step 23B.2 Clarification & Investigation fields
+  clarification_request?: {
+    question: string
+    reason?: string
+    reasoning?: string
+    known_facts?: string[]
+    assumptions?: string[]
+    missing_critical_information?: string[]
+    missing_information?: string[]
+    proposed_next_action?: string
+    investigation_count?: number
+    requested_at?: string
+  } | null
+  investigation_findings?: string[]
+  investigation_count?: number
+  max_investigations?: number
+  last_ceo_decision?: any
+  founder_clarifications?: Array<{
+    response: string
+    author: string
+    submitted_at: string
+    in_response_to?: string
+  }>
 }
 
 // =============================================================================
