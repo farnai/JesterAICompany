@@ -27,6 +27,8 @@ from .orchestrator import (
     DAGValidationError,
     OrchestrationError,
     PlanValidationError,
+    PROHIBITED_QA_CAPABILITIES,
+    SUPPORTED_QA_CAPABILITIES,
     WorkItemState,
 )
 
@@ -51,6 +53,9 @@ PRIVILEGED_TOP_LEVEL_KEYS: Set[str] = {
     "commands",
     "actions",
     "action_type",
+    "certification",
+    "certify",
+    "qa_certification",
 }
 
 PRIVILEGED_WORK_ITEM_KEYS: Set[str] = {
@@ -67,6 +72,9 @@ PRIVILEGED_WORK_ITEM_KEYS: Set[str] = {
     "approval",
     "approved",
     "actions",
+    "certification",
+    "certify",
+    "qa_certification",
 }
 
 
@@ -93,6 +101,7 @@ def build_ceo_planning_prompt(
         raise PlanValidationError("Expected CompanyObjective instance.")
 
     roles_str = ", ".join(f"'{r}'" for r in sorted(RECOGNIZED_MACRO_ROLES))
+    qa_caps_str = ", ".join(f"'{c}'" for c in sorted(SUPPORTED_QA_CAPABILITIES))
     constraints_str = (
         "\n".join(f"- {c}" for c in objective.constraints)
         if objective.constraints
@@ -128,7 +137,7 @@ def build_ceo_planning_prompt(
         f"8. Maximum graph depth is {MAX_GRAPH_DEPTH} (root nodes have depth 1).\n"
         f"9. Eligible macro specialist roles are: {roles_str}. Never assign work items to 'ceo'.\n"
         "10. Critical Developer Fan-In invariant: If a 'developer' work item is planned, it MUST directly depend on BOTH a 'product' work item and a 'ux' work item in 'depends_on'.\n"
-        "11. QA is application-owned inside code pipelines; do NOT plan a normal 'developer' -> 'qa' dependency.\n"
+        f"11. QA Role Contract: Engineering QA certification is strictly application-owned inside code pipelines. If a 'qa' work item is planned in the DAG, it must be delegated ONLY for non-mutating planning or audit work with an explicit 'capability' field matching one of: {qa_caps_str}. A 'qa' work item must NEVER depend on 'developer', must NEVER request certification or patch verification, and must NEVER issue execution grants or apply permissions.\n"
         "12. 'depends_on' represents execution ordering; it is NOT automatic artifact sharing.\n\n"
         f"{knowledge_block}"
         f"COMPANY OBJECTIVE:\n"
@@ -151,6 +160,7 @@ def build_ceo_planning_prompt(
         '    {\n'
         '      "work_item_id": "<unique_id>",\n'
         f'      "role": "<one of: {roles_str}>",\n'
+        f'      "capability": "<required for qa: one of {qa_caps_str}; optional for other roles>",\n'
         '      "objective": "<clear macro task goal>",\n'
         '      "depends_on": ["<prerequisite_work_item_id>", ...],\n'
         '      "expected_outputs": ["<deliverable_name>", ...],\n'
@@ -369,10 +379,14 @@ def parse_and_validate_ceo_plan(
         except (ValueError, TypeError):
             priority_val = 1
 
+        raw_cap = item_data.get("capability") or item_data.get("work_type")
+        clean_cap = str(raw_cap).strip().lower() if raw_cap and isinstance(raw_cap, str) else None
+
         parsed_items.append(
             CEOPlannedWorkItem(
                 work_item_id=clean_id,
                 role=clean_role,
+                capability=clean_cap,
                 objective=objective_text.strip(),
                 depends_on=clean_deps,
                 expected_outputs=clean_outputs,

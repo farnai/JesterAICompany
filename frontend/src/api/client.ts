@@ -118,24 +118,36 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  // 5. Proposals & Diff (STEP 21)
+  // 5. Proposals & Diff (STEP 21 & STEP 22E)
   getProposal: (proposalId: string) =>
     request<RealRepoApplyProposal>(`/proposals/${proposalId}`),
-  getProposalDiff: (proposalId: string) =>
-    request<{
+  getProposalDiff: (proposalId: string, runId?: string) => {
+    const query = runId ? `?run_id=${encodeURIComponent(runId)}` : ''
+    return request<{
       proposal_id: string
       diff: string
       patch_sha256?: string
       touched_paths?: string[]
-    }>(`/proposals/${proposalId}/diff`),
+    }>(`/proposals/${proposalId}/diff${query}`)
+  },
+  getRunDiff: (runId: string) =>
+    request<{
+      run_id: string
+      proposal_id: string
+      diff: string
+    }>(`/company-runs/${runId}/diff`),
 
-  // 6. Human Approval & Real Repo Apply Boundaries (STEP 21)
-  approveCompanyRun: (runId: string, approver: string = 'Human Founder') =>
+  // 6. Human Approval & Real Repo Apply Boundaries (STEP 21 & STEP 22E)
+  approveCompanyRun: (
+    runId: string,
+    approver: string = 'Human Founder',
+    proposalId?: string
+  ) =>
     request<{ status: string; grant: RealRepoApplyGrant; run: CompanyRun }>(
       `/company-runs/${runId}/approve`,
       {
         method: 'POST',
-        body: JSON.stringify({ approver }),
+        body: JSON.stringify({ approver, proposal_id: proposalId }),
       }
     ),
   rejectCompanyRun: (runId: string, reason: string = 'Rejected by Human Founder') =>
@@ -143,9 +155,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ reason }),
     }),
-  applyCompanyRun: (runId: string) =>
+  applyCompanyRun: (runId: string, proposalId?: string, grantId?: string) =>
     request<{ status: string; result: any; run: CompanyRun }>(`/company-runs/${runId}/apply`, {
       method: 'POST',
+      body: JSON.stringify({ proposal_id: proposalId, grant_id: grantId }),
     }),
 
   // 7. Tasks

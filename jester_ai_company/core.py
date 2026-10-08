@@ -139,6 +139,7 @@ class ArtifactVerificationError(HandoffError):
 # Agents NEVER invoke each other directly. All workflow execution is 100% application-owned.
 ALLOWED_HANDOFF_EDGES: Set[Tuple[str, str]] = {
     ("research", "product"),
+    ("research", "qa"),
     ("product", "ux"),
     ("product", "marketing"),
     ("product", "developer"),
@@ -233,9 +234,10 @@ class TaskRun:
         sha256: Optional[str] = None,
         producer_role: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        artifact_id: Optional[str] = None,
     ) -> Artifact:
         art = Artifact(
-            id=str(uuid.uuid4())[:8],
+            id=artifact_id or str(uuid.uuid4())[:8],
             name=name,
             artifact_type=artifact_type,
             path=path,

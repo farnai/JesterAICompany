@@ -481,4 +481,397 @@ describe('STEP 21 — Jester AI Company Control Center Tests', () => {
       expect(api.getRepositoryProjects).toHaveBeenCalled()
     })
   })
+
+  // ============================================================================
+  // STEP 22E — RUN-SCOPED DIFF & PROPOSAL ISOLATION TESTS
+  // ============================================================================
+
+  it('16. Run in planning/running state without proposal renders 0 files and truthful pending state', () => {
+    const runningRun: CompanyRun = {
+      ...mockRunReady,
+      run_id: 'crun_running_test',
+      state: 'RUNNING',
+      real_repo_apply_proposal_id: null,
+      proposal: null,
+      grant: null,
+      receipt: null,
+      qa_verdict: null,
+      qa_summary: null,
+    }
+
+    render(
+      <OperationalContextPanel
+        run={runningRun}
+        patchDiff={null}
+      />
+    )
+
+    // Must show Proposed Changes (0 files)
+    expect(screen.getByText(/Proposed Changes \(0 files\)/i)).toBeInTheDocument()
+
+    // Must show truthful pending notice
+    expect(
+      screen.getByText(/No proposed changes yet — awaiting Developer implementation & QA verification/i)
+    ).toBeInTheDocument()
+
+    // Must NOT show hardcoded Step 20 fake diff or files
+    expect(screen.queryByText('backend/app/core/canonical.py')).toBeNull()
+    expect(screen.queryByText(/Raises ValueError if u1 == u2/)).toBeNull()
+    expect(screen.queryByText(/test_self_pair_rejected/)).toBeNull()
+  })
+
+  it('17. QA tab displays PENDING instead of false PASS when qa_verdict is null', () => {
+    const runningRun: CompanyRun = {
+      ...mockRunReady,
+      run_id: 'crun_qa_pending',
+      state: 'RUNNING',
+      real_repo_apply_proposal_id: null,
+      proposal: null,
+      qa_verdict: null,
+      qa_summary: null,
+    }
+
+    render(
+      <OperationalContextPanel
+        run={runningRun}
+        patchDiff={null}
+      />
+    )
+
+    // Switch to QA tab
+    fireEvent.click(screen.getByTestId('tab-qa'))
+
+    // Must show PENDING, NOT PASS
+    expect(screen.getByText('PENDING')).toBeInTheDocument()
+    expect(screen.queryByText('PASS')).toBeNull()
+    expect(
+      screen.getByText(/QA verification has not yet run for this lifecycle/i)
+    ).toBeInTheDocument()
+  })
+
+  it('18. Diff tab displays truthful notice when no proposal exists', () => {
+    const runWithoutProp: CompanyRun = {
+      ...mockRunReady,
+      run_id: 'crun_no_prop',
+      state: 'PLANNING',
+      real_repo_apply_proposal_id: null,
+      proposal: null,
+    }
+
+    render(
+      <OperationalContextPanel
+        run={runWithoutProp}
+        patchDiff={null}
+      />
+    )
+
+    // Switch to Diff tab
+    fireEvent.click(screen.getByTestId('tab-diff'))
+
+    expect(
+      screen.getByText(/No certified proposal patch formulated yet for this run/i)
+    ).toBeInTheDocument()
+  })
+
+  it('19. Run A proposal is never exposed when switching to Run B without proposal', () => {
+    // Run A has a proposal
+    const runA: CompanyRun = { ...mockRunReady, run_id: 'crun_run_a' }
+    // Run B has no proposal
+    const runB: CompanyRun = {
+      ...mockRunReady,
+      run_id: 'crun_run_b',
+      state: 'RUNNING',
+      real_repo_apply_proposal_id: null,
+      proposal: null,
+    }
+
+    const { rerender } = render(
+      <OperationalContextPanel
+        run={runA}
+        patchDiff={mockProposal.patch_content}
+      />
+    )
+    expect(screen.getByText('src/core/seed.ts')).toBeInTheDocument()
+
+    // Select Run B: patchDiff is null, proposal is null
+    rerender(
+      <OperationalContextPanel
+        run={runB}
+        patchDiff={null}
+      />
+    )
+
+    // Must NOT expose Run A's patch or files
+    expect(screen.queryByText('src/core/seed.ts')).toBeNull()
+    expect(screen.getByText(/Proposed Changes \(0 files\)/i)).toBeInTheDocument()
+  })
+
+  it('20. When Run B has its own verified proposal, UI renders Run B exact patch', () => {
+    const runBProposal: RealRepoApplyProposal = {
+      ...mockProposal,
+      proposal_id: 'prop_run_b',
+      company_run_id: 'crun_run_b',
+      expected_changed_files: ['backend/app/core/canonical.py', 'tests/core/test_canonical.py'],
+      patch_content: 'diff --git a/backend/app/core/canonical.py\n+non_negative_validation\n',
+    }
+
+    const runB: CompanyRun = {
+      ...mockRunReady,
+      run_id: 'crun_run_b',
+      state: 'READY_FOR_HUMAN_APPLY',
+      real_repo_apply_proposal_id: 'prop_run_b',
+      proposal: runBProposal,
+    }
+
+    render(
+      <OperationalContextPanel
+        run={runB}
+        patchDiff={runBProposal.patch_content}
+      />
+    )
+
+    // Displays Run B files
+    expect(screen.getByText(/Proposed Changes \(2 files\)/i)).toBeInTheDocument()
+    expect(screen.getByText('backend/app/core/canonical.py')).toBeInTheDocument()
+    expect(screen.getByText('tests/core/test_canonical.py')).toBeInTheDocument()
+  })
+
+  it('21. STEP 22F: Approval modal displays full untruncated patch without [truncated for preview]', () => {
+    const longDiff = `diff --git a/backend/app/core/canonical.py b/backend/app/core/canonical.py
+index d6a0178..5df88eb 100644
+--- a/backend/app/core/canonical.py
++++ b/backend/app/core/canonical.py
+@@ -20,11 +20,17 @@ def canonical_pair_seed(u1: uuid.UUID, ver1: int, u2: uuid.UUID, ver2: int) -> str:
+-    Raises ValueError if u1 == u2.
++    Raises ValueError if u1 == u2 or if ver1 or ver2 is negative.
++    if ver1 < 0 and ver2 < 0:
++        raise ValueError(f"Version must be non-negative: ver1={ver1}, ver2={ver2}")
++    elif ver1 < 0:
++        raise ValueError(f"Version must be non-negative: ver1={ver1}")
++    elif ver2 < 0:
++        raise ValueError(f"Version must be non-negative: ver2={ver2}")
+diff --git a/tests/core/test_canonical.py b/tests/core/test_canonical.py
+index 3b10614..68980ea 100644
+--- a/tests/core/test_canonical.py
++++ b/tests/core/test_canonical.py
+@@ -127,6 +128,34 @@ def test_canonical_pair_seed_self_rejection_different_versions():
++def test_canonical_pair_seed_negative_version_rejection():
++    u1 = uuid.UUID("11111111-1111-1111-1111-111111111111")
++    u2 = uuid.UUID("22222222-2222-2222-2222-222222222222")
++    with pytest.raises(ValueError, match="Version must be non-negative: ver1=-1"):
++        canonical_pair_seed(u1, -1, u2, 1)
++    with pytest.raises(ValueError, match="Version must be non-negative: ver2=-1"):
++        canonical_pair_seed(u1, 1, u2, -1)
++    with pytest.raises(ValueError, match="Version must be non-negative: ver1=-1, ver2=-1"):
++        canonical_pair_seed(u1, -1, u2, -1)
++def test_canonical_pair_seed_zero_version_allowed():
++    u1 = uuid.UUID("11111111-1111-1111-1111-111111111111")
++    u2 = uuid.UUID("22222222-2222-2222-2222-222222222222")
++    assert canonical_pair_seed(u1, 0, u2, 0) == "11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222:0:0"
++${'# Extra padding comment to make diff length > 1600 characters\n'.repeat(15)}`
+
+    expect(longDiff.length).toBeGreaterThan(1500)
+
+    render(
+      <FounderApprovalGateModal
+        onClose={vi.fn()}
+        run={mockRunReady}
+        activeProject={mockRepoProject}
+        patchDiff={longDiff}
+        onApprove={vi.fn()}
+        onReject={vi.fn()}
+      />
+    )
+
+    // Complete diff review container is present
+    expect(screen.getByTestId('modal-diff-container')).toBeInTheDocument()
+
+    // Must NEVER contain truncation notice
+    expect(screen.queryByText(/\[truncated for preview\]/i)).toBeNull()
+
+    // Both files are parsed and listed
+    expect(screen.getByText(/All Files \(2\)/i)).toBeInTheDocument()
+    expect(screen.getAllByText('backend/app/core/canonical.py').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText('tests/core/test_canonical.py').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('22. STEP 22F/22G: Per-file navigation filters displayed diff lines', () => {
+    const multiFileDiff = `diff --git a/backend/app/core/canonical.py b/backend/app/core/canonical.py
+--- a/backend/app/core/canonical.py
++++ b/backend/app/core/canonical.py
+@@ -1,1 +1,2 @@
++import uuid
+diff --git a/tests/core/test_canonical.py b/tests/core/test_canonical.py
+--- a/tests/core/test_canonical.py
++++ b/tests/core/test_canonical.py
+@@ -1,1 +1,2 @@
++import pytest`
+
+    render(
+      <FounderApprovalGateModal
+        onClose={vi.fn()}
+        run={mockRunReady}
+        activeProject={mockRepoProject}
+        patchDiff={multiFileDiff}
+        onApprove={vi.fn()}
+        onReject={vi.fn()}
+      />
+    )
+
+    // Both files' diff lines are visible in All Files view
+    expect(screen.getByText('import uuid')).toBeInTheDocument()
+    expect(screen.getByText('import pytest')).toBeInTheDocument()
+
+    // Click on test_canonical.py tab in file navigator
+    const testFileTab = screen.getByTitle('tests/core/test_canonical.py')
+    fireEvent.click(testFileTab)
+
+    // Only test_canonical.py code lines are displayed; canonical.py code lines are hidden
+    expect(screen.queryByText('import uuid')).toBeNull()
+    expect(screen.getByText('import pytest')).toBeInTheDocument()
+  })
+
+  it('23. STEP 22F: QA evidence displays verification metrics and test counts', () => {
+    render(
+      <FounderApprovalGateModal
+        onClose={vi.fn()}
+        run={mockRunReady}
+        activeProject={mockRepoProject}
+        patchDiff="diff --git a/a.py b/a.py\n+x\n"
+        onApprove={vi.fn()}
+        onReject={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText(/14 pytest cases/i)).toBeInTheDocument()
+    expect(screen.getByText(/14 Passed \(100%\)/i)).toBeInTheDocument()
+    expect(screen.getByText(/0 Failures · 0 Regressions/i)).toBeInTheDocument()
+    expect(screen.getByText(/QA VERDICT: PASS/i)).toBeInTheDocument()
+  })
+
+  it('24. STEP 22G: Factual change summary is derived from verified run data or shows truthful fallback', () => {
+    // 1. Run with product employee summary
+    const runWithSummary: CompanyRun = {
+      ...mockRunReady,
+      employee_summaries: [
+        {
+          role: 'product',
+          task_id: 'task_p1',
+          run_id: 'run_p1',
+          status: 'COMPLETED',
+          summary: 'Specifically specifies fail-fast validation raising ValueError when ver1 < 0 or ver2 < 0 while preserving standard non-negative (>= 0) version behavior.',
+          artifact_refs: [],
+          blockers: [],
+          created_at: '2026-10-07T22:33:52Z',
+        },
+      ],
+    }
+
+    const { rerender } = render(
+      <FounderApprovalGateModal
+        onClose={vi.fn()}
+        run={runWithSummary}
+        activeProject={mockRepoProject}
+        patchDiff="diff --git a/a.py b/a.py\n+x\n"
+        onApprove={vi.fn()}
+        onReject={vi.fn()}
+      />
+    )
+
+    expect(screen.getByTestId('change-summary-banner')).toHaveTextContent(
+      /fail-fast validation raising ValueError when ver1 < 0 or ver2 < 0/i
+    )
+
+    // 2. Run without summaries shows truthful fallback
+    const runWithoutSummary: CompanyRun = {
+      ...mockRunReady,
+      employee_summaries: [],
+      active_plan: undefined,
+      objective: undefined,
+    }
+
+    rerender(
+      <FounderApprovalGateModal
+        onClose={vi.fn()}
+        run={runWithoutSummary}
+        activeProject={mockRepoProject}
+        patchDiff="diff --git a/a.py b/a.py\n+x\n"
+        onApprove={vi.fn()}
+        onReject={vi.fn()}
+      />
+    )
+
+    expect(screen.getByTestId('change-summary-banner')).toHaveTextContent(
+      /No verified change summary available — inspect the diff/i
+    )
+  })
+
+  it('25. STEP 22G: Collapsible repository details and QA evidence drawers expand on demand', () => {
+    render(
+      <FounderApprovalGateModal
+        onClose={vi.fn()}
+        run={mockRunReady}
+        activeProject={mockRepoProject}
+        patchDiff="diff --git a/a.py b/a.py\n+x\n"
+        onApprove={vi.fn()}
+        onReject={vi.fn()}
+      />
+    )
+
+    // Drawers are closed by default so code diff has maximum vertical height
+    expect(screen.queryByTestId('repo-details-drawer')).toBeNull()
+    expect(screen.queryByTestId('qa-evidence-drawer')).toBeNull()
+
+    // Toggle Repo Details
+    const repoToggle = screen.getByTestId('toggle-repo-details-btn')
+    fireEvent.click(repoToggle)
+    expect(screen.getByTestId('repo-details-drawer')).toBeInTheDocument()
+    expect(screen.getByText('Base Commit Hash')).toBeInTheDocument()
+
+    // Toggle QA Evidence
+    const qaToggle = screen.getByTestId('toggle-qa-evidence-btn')
+    fireEvent.click(qaToggle)
+    expect(screen.getByTestId('qa-evidence-drawer')).toBeInTheDocument()
+
+    // Close drawers
+    fireEvent.click(repoToggle)
+    expect(screen.queryByTestId('repo-details-drawer')).toBeNull()
+  })
+
+  it('26. STEP 22G: Approval button is disabled when patch diff is missing or unavailable', () => {
+    render(
+      <FounderApprovalGateModal
+        onClose={vi.fn()}
+        run={mockRunReady}
+        activeProject={mockRepoProject}
+        patchDiff="" // empty/missing diff
+        onApprove={vi.fn()}
+        onReject={vi.fn()}
+      />
+    )
+
+    const approveBtn = screen.getByTestId('approve-proposal-btn')
+    expect(approveBtn).toBeDisabled()
+  })
+
+  it('27. STEP 22G: Opening review modal does not produce approval side effects', () => {
+    const approveSpy = vi.fn()
+    const applySpy = vi.fn()
+
+    render(
+      <FounderApprovalGateModal
+        onClose={vi.fn()}
+        run={mockRunReady}
+        activeProject={mockRepoProject}
+        patchDiff="diff --git a/a.py b/a.py\n+x\n"
+        onApprove={approveSpy}
+        onReject={vi.fn()}
+        onApply={applySpy}
+      />
+    )
+
+    // Merely rendering/inspecting the workspace MUST NOT invoke approve or apply
+    expect(approveSpy).not.toHaveBeenCalled()
+    expect(applySpy).not.toHaveBeenCalled()
+  })
 })

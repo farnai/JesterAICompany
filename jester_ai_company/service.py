@@ -215,6 +215,8 @@ from .qa_result import (
     RequirementCoverage,
     RequirementCoverageStatus,
     build_qa_inspection_prompt,
+    build_qa_planning_execution_prompt,
+    parse_and_validate_qa_planning_result,
     parse_and_validate_qa_result,
 )
 from .research_result import (
@@ -242,6 +244,8 @@ from .orchestrator import (
     HumanEscalation,
     OrchestrationError,
     PlanValidationError,
+    PROHIBITED_QA_CAPABILITIES,
+    SUPPORTED_QA_CAPABILITIES,
     TransitionPolicyError,
     UnsupportedRoleError,
     WorkItemState,
@@ -831,6 +835,10 @@ class CompanyService:
                             artifact_type=a.get("artifact_type", ArtifactType.SPECIFICATION.value),
                             path=a.get("path", ""),
                             durable=a.get("durable", True),
+                            sha256=a.get("sha256"),
+                            producer_role=a.get("producer_role"),
+                            metadata=a.get("metadata"),
+                            artifact_id=a.get("id") or a.get("artifact_id"),
                         )
                 elif "stages" in data:
                     for stage in data["stages"]:
@@ -1250,7 +1258,13 @@ class CompanyService:
             return run
 
         # 4. Materialize durable artifact & complete Run/Task
-        if getattr(typed_result, "status", None) == "completed":
+        res_status = str(getattr(typed_result, "status", "")).strip().upper()
+        if agent_name == "qa":
+            is_success = res_status in ("READY_FOR_QA_EXECUTION", "NEEDS_DEVELOPER_ATTENTION", "COMPLETED")
+        else:
+            is_success = res_status == "COMPLETED"
+
+        if is_success:
             try:
                 materialize_specialist_artifact(
                     base_output_dir=self.output_dir,
@@ -1292,6 +1306,7 @@ class CompanyService:
         """Find an artifact by ID across all projects, tasks, and runs.
 
         Returns (Task, TaskRun, Artifact) if found, else None.
+        Supports durable rehydration from CompanyRuns and durable proposals if service was reconstructed.
         """
         for project in self.company.projects.values():
             for task in project.tasks.values():
@@ -1299,6 +1314,105 @@ class CompanyService:
                     for art in run.artifacts:
                         if art.id == artifact_id:
                             return (task, run, art)
+
+        clean_id = (artifact_id or "").strip()
+        if not clean_id:
+            return None
+
+        # Rehydrate from in-memory CompanyRuns
+        for c_run in list(self._company_runs.values()):
+            art_tuple = self._resolve_artifact_from_company_run(c_run, clean_id)
+            if art_tuple:
+                return art_tuple
+
+        # Rehydrate from durable storage CompanyRuns
+        if hasattr(self, "durable_storage") and self.durable_storage:
+            try:
+                for c_run in self.durable_storage.list_company_runs():
+                    if c_run.run_id not in self._company_runs:
+                        self._company_runs[c_run.run_id] = c_run
+                    art_tuple = self._resolve_artifact_from_company_run(c_run, clean_id)
+                    if art_tuple:
+                        return art_tuple
+            except Exception:
+                pass
+
+            # Fallback: check durable storage proposals for matching code patch artifact
+            try:
+                for prop in self.durable_storage.list_proposals():
+                    if prop.code_patch_artifact_id == clean_id:
+                        patch_file = self.durable_storage.proposals_dir / prop.proposal_id / "patch.diff"
+                        if patch_file.is_file():
+                            rel_path = str(patch_file.relative_to(self.output_dir))
+                            art = Artifact(
+                                id=clean_id,
+                                name="patch.diff",
+                                artifact_type=ArtifactType.CODE_PATCH.value,
+                                path=rel_path,
+                                durable=True,
+                                sha256=prop.code_patch_sha256,
+                                run_id=prop.company_run_id,
+                                producer_role="developer",
+                            )
+                            default_proj = self.ensure_default_project()
+                            task_id = f"task_{clean_id}"
+                            task = default_proj.tasks.get(task_id) or default_proj.create_task(
+                                task_id=task_id,
+                                title=f"Task for {clean_id}",
+                                goal=f"Durable proposal patch for {prop.proposal_id}",
+                            )
+                            run_id = f"run_{clean_id}"
+                            task_run = next((r for r in task.runs if r.id == run_id), None)
+                            if not task_run:
+                                task_run = TaskRun(id=run_id, task_id=task.id, attempt_number=len(task.runs) + 1)
+                                task.runs.append(task_run)
+                            if not any(a.id == art.id for a in task_run.artifacts):
+                                task_run.artifacts.append(art)
+                            return (task, task_run, art)
+            except Exception:
+                pass
+
+        return None
+
+    def _resolve_artifact_from_company_run(
+        self,
+        c_run: Any,
+        artifact_id: str,
+    ) -> Optional[Tuple[Task, TaskRun, Artifact]]:
+        """Rehydrate an Artifact from a CompanyRun's employee_summaries into company project state."""
+        for summary in getattr(c_run, "employee_summaries", []):
+            for ref in summary.artifact_refs:
+                if ref.get("artifact_id") == artifact_id:
+                    rel_path = ref.get("path", "")
+                    art_type = ref.get("type", ArtifactType.SPECIFICATION.value)
+                    art = Artifact(
+                        id=artifact_id,
+                        name=ref.get("name", "artifact"),
+                        artifact_type=art_type,
+                        path=rel_path,
+                        durable=True,
+                        sha256=ref.get("sha256"),
+                        run_id=summary.run_id,
+                        producer_role=summary.role,
+                    )
+                    proj_id = getattr(c_run, "project_id", None)
+                    proj = self.company.projects.get(proj_id) if proj_id else None
+                    if not proj:
+                        proj = self.ensure_default_project()
+                    task = proj.tasks.get(summary.task_id)
+                    if not task:
+                        task = proj.create_task(
+                            task_id=summary.task_id,
+                            title=f"Task: {summary.task_id}",
+                            goal=summary.summary or f"Specialist task {summary.task_id}",
+                        )
+                    task_run = next((r for r in task.runs if r.id == summary.run_id), None)
+                    if not task_run:
+                        task_run = TaskRun(id=summary.run_id, task_id=task.id, attempt_number=len(task.runs) + 1)
+                        task.runs.append(task_run)
+                    if not any(a.id == art.id for a in task_run.artifacts):
+                        task_run.artifacts.append(art)
+                    return (task, task_run, art)
         return None
 
     def attach_input_artifact(
@@ -1582,6 +1696,75 @@ class CompanyService:
             agent_name="marketing",
             prompt=prompt,
             result_parser=parse_and_validate_marketing_result,
+        )
+
+    def execute_qa_planning_task(
+        self,
+        task_id: str,
+        project_id: Optional[str] = None,
+        capability: Optional[str] = None,
+    ) -> TaskRun:
+        """Execute a registered PENDING Task assigned to QA for planning/audit work (STEP 23B.1).
+
+        Enforces:
+        1. Role & Eligibility: Task status == PENDING, required_roles == ['qa'].
+        2. Capability Validation: Capability must be in SUPPORTED_QA_CAPABILITIES.
+           Prohibits certification, grants, patch verification, or apply actions.
+        3. Preflight validation & loading of declared input artifacts.
+        4. Independent Specialist Execution via generic runner with QA planning prompt.
+        5. Deterministic validation via parse_and_validate_qa_planning_result.
+        6. Durable QA Report materialization ('qa_report.md').
+        """
+        task = self.get_task(task_id, project_id=project_id)
+
+        # 1. Eligibility validation
+        if task.status != TaskStatus.PENDING.value:
+            raise InvalidTaskStateError(
+                f"Cannot execute task '{task.id}': Task status is '{task.status}', expected '{TaskStatus.PENDING.value}'."
+            )
+
+        if not task.required_roles:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task has no required roles assigned."
+            )
+
+        normalized_roles = [r.strip().lower() for r in task.required_roles]
+        if normalized_roles != ["qa"]:
+            raise ValueError(
+                f"Cannot execute task '{task.id}': Task is assigned to {task.required_roles}, expected exactly ['qa']."
+            )
+
+        # 2. Capability resolution & validation
+        cap = (capability or "").strip().lower()
+        if not cap:
+            for out in task.expected_output:
+                norm_out = str(out).strip().lower()
+                if norm_out in SUPPORTED_QA_CAPABILITIES:
+                    cap = norm_out
+                    break
+
+        if cap not in SUPPORTED_QA_CAPABILITIES:
+            raise UnsupportedRoleError(
+                f"QA task '{task.id}' has unsupported or missing capability '{cap}'. "
+                f"Ordinary QA work items in DAG only support non-mutating planning/audit: "
+                f"{sorted(SUPPORTED_QA_CAPABILITIES)}."
+            )
+
+        # 3. Preflight validation & loading of input artifacts
+        verified_artifacts = self._verify_and_load_input_artifacts(task)
+
+        # 4. Construct planning prompt
+        prompt = build_qa_planning_execution_prompt(
+            task,
+            verified_artifacts=verified_artifacts or {},
+            capability=cap,
+        )
+
+        return self._execute_specialist_task(
+            task=task,
+            agent_name="qa",
+            prompt=prompt,
+            result_parser=parse_and_validate_qa_planning_result,
         )
 
     def _get_repo_working_tree_state(self, repo_path: Optional[Path] = None) -> str:
@@ -4355,27 +4538,37 @@ class CompanyService:
             self.save_company_run(run)
             raise OrchestrationError(err_msg)
 
-        # Enforce STEP 17B-4 role dispatching
+        # Enforce STEP 17B-4 role dispatching & STEP 23B.1 QA capability validation
         if role == "qa":
-            err_msg = (
-                "Role 'qa' cannot be scheduled as an ordinary CEO-planned DAG work item. "
-                "QA is application-owned inside the engineering pipeline."
-            )
-            target_item.state = WorkItemState.BLOCKED.value
-            run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
-            run.transition_to(CompanyRunState.BLOCKED, error=err_msg)
-            run.add_event(
-                event_type="WORK_ITEM_FAILED",
-                work_item_id=target_item.work_item_id,
-                role=role,
-                reason=err_msg,
-            )
-            run.add_event(
-                event_type="RUN_FAILED",
-                reason=err_msg,
-            )
-            self.save_company_run(run)
-            raise UnsupportedRoleError(err_msg)
+            qa_cap = (target_item.capability or "").strip().lower()
+            if not qa_cap:
+                for out in target_item.expected_outputs:
+                    norm_out = str(out).strip().lower()
+                    if norm_out in SUPPORTED_QA_CAPABILITIES:
+                        qa_cap = norm_out
+                        break
+
+            if qa_cap not in SUPPORTED_QA_CAPABILITIES:
+                err_msg = (
+                    f"QA work item '{target_item.work_item_id}' has unsupported capability '{qa_cap}'. "
+                    f"Ordinary QA in DAG only supports non-mutating planning/audit: {sorted(SUPPORTED_QA_CAPABILITIES)}. "
+                    f"QA certification is strictly application-owned inside code pipelines."
+                )
+                target_item.state = WorkItemState.BLOCKED.value
+                run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
+                run.transition_to(CompanyRunState.BLOCKED, error=err_msg)
+                run.add_event(
+                    event_type="WORK_ITEM_FAILED",
+                    work_item_id=target_item.work_item_id,
+                    role=role,
+                    reason=err_msg,
+                )
+                run.add_event(
+                    event_type="RUN_FAILED",
+                    reason=err_msg,
+                )
+                self.save_company_run(run)
+                raise UnsupportedRoleError(err_msg)
 
         if role == "developer":
             obj_constraints = [str(c).lower() for c in (run.objective.constraints or [])]
@@ -4405,7 +4598,7 @@ class CompanyService:
             # Dispatch Developer macro work item to EngineeringPipelineAdapter
             return self.execute_developer_company_work(run_id=run.run_id, work_item_id=target_item.work_item_id)
 
-        if role not in ("research", "product", "ux", "marketing"):
+        if role not in ("research", "product", "ux", "marketing", "qa"):
             err_msg = f"Unknown or unsupported specialist role '{role}' in work item '{target_item.work_item_id}'."
             target_item.state = WorkItemState.FAILED.value
             run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
@@ -4442,6 +4635,10 @@ class CompanyService:
 
         # Translate to typed Task
         task_id = f"task_{run.run_id}_{target_item.work_item_id}"
+        task_expected = list(target_item.expected_outputs)
+        if target_item.capability and target_item.capability not in task_expected:
+            task_expected.append(target_item.capability)
+
         task = self.create_task(
             project_id=proj.id,
             title=f"[{role.upper()}] {target_item.objective[:60]}",
@@ -4449,7 +4646,7 @@ class CompanyService:
             task_id=task_id,
             constraints=list(run.objective.constraints),
             required_roles=[role],
-            expected_output=list(target_item.expected_outputs),
+            expected_output=task_expected,
         )
         target_item.task_id = task.id
         target_item.run_id = run.run_id
@@ -4516,6 +4713,19 @@ class CompanyService:
                 task_run = self.execute_ux_task(task.id, project_id=proj.id)
             elif role == "marketing":
                 task_run = self.execute_marketing_task(task.id, project_id=proj.id)
+            elif role == "qa":
+                qa_cap = (target_item.capability or "").strip().lower()
+                if not qa_cap:
+                    for out in target_item.expected_outputs:
+                        norm_out = str(out).strip().lower()
+                        if norm_out in SUPPORTED_QA_CAPABILITIES:
+                            qa_cap = norm_out
+                            break
+                task_run = self.execute_qa_planning_task(
+                    task.id,
+                    project_id=proj.id,
+                    capability=qa_cap,
+                )
             else:
                 raise UnsupportedRoleError(f"Unsupported specialist role '{role}'.")
         except Exception as exec_err:
@@ -4661,6 +4871,8 @@ class CompanyService:
 
         self.save_company_run(run)
         return run
+
+    step_company_work = execute_next_company_work
 
     def run_company_until_boundary(
         self,

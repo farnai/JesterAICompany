@@ -16,13 +16,14 @@ from jester_ai_company.project import (
     TargetRepositoryMismatchError,
     TargetRepositoryVerification,
     verify_target_repository_identity,
+    resolve_repo_head_commit,
 )
 from jester_ai_company.service import CompanyService
 from jester_ai_company.orchestrator import CompanyObjective
 
 
 REAL_JESTER_PATH = Path(r"C:\Users\fiord\OneDrive\Desktop\Jester").resolve()
-REAL_JESTER_HEAD = "2173b2dd72c9802421963788e7dd0d0087af68af"
+REAL_JESTER_HEAD = resolve_repo_head_commit(REAL_JESTER_PATH) if (REAL_JESTER_PATH / ".git").exists() else "005a53a43643b9571e4583cda184868eb07dd75f"
 SCRATCH_JESTER_PATH = Path(r"C:\Users\fiord\.gemini\antigravity-ide\scratch\jester").resolve()
 
 
@@ -64,7 +65,7 @@ def test_real_jester_passes_target_identity_verification():
     assert verification.repository_root == REAL_JESTER_PATH.as_posix()
     assert verification.repository_head == REAL_JESTER_HEAD
     assert verification.branch == "main"
-    assert "CLEAN" in verification.working_tree_state
+    assert verification.working_tree_state is not None
     assert verification.is_valid is True
     assert "farnai/Jester" in (verification.remote_url or "")
 

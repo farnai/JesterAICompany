@@ -7,6 +7,8 @@ interface OperationalContextPanelProps {
   patchDiff?: string | null
   onInspectArtifact?: (artifactPath: string) => void
   onOpenApproval?: () => void
+  isCollapsed?: boolean
+  onToggleCollapse?: () => void
 }
 
 type PanelTab = 'activity' | 'artifacts' | 'qa' | 'diff' | 'details'
@@ -16,9 +18,20 @@ export const OperationalContextPanel: React.FC<OperationalContextPanelProps> = (
   patchDiff,
   onInspectArtifact,
   onOpenApproval,
+  isCollapsed,
+  onToggleCollapse,
 }) => {
   const [activeTab, setActiveTab] = useState<PanelTab>('activity')
+  const [internalCollapsed, setInternalCollapsed] = useState<boolean>(false)
   const [expandedFileIndex, setExpandedFileIndex] = useState<number | null>(0)
+
+  const isPanelCollapsed = isCollapsed !== undefined ? isCollapsed : internalCollapsed
+  const handleToggle = onToggleCollapse || (() => setInternalCollapsed(!internalCollapsed))
+
+  // Reset file expansion when switching runs
+  React.useEffect(() => {
+    setExpandedFileIndex(0)
+  }, [run?.run_id])
 
   // Collect real artifacts from employee summaries and top-level run references
   const artifacts = React.useMemo(() => {
@@ -67,7 +80,7 @@ export const OperationalContextPanel: React.FC<OperationalContextPanelProps> = (
     run?.state === 'WAITING_FOR_HUMAN' ||
     Boolean(proposal && !grant && !receipt)
 
-  // Parse files from proposal or patch diff
+  // Parse files from proposal or patch diff - NEVER fall back to hardcoded mock files
   const proposedFiles = React.useMemo(() => {
     if (proposal?.expected_changed_files && proposal.expected_changed_files.length > 0) {
       return proposal.expected_changed_files
@@ -76,34 +89,13 @@ export const OperationalContextPanel: React.FC<OperationalContextPanelProps> = (
       const matches = Array.from(patchDiff.matchAll(/diff --git a\/(.+?) b\//g)).map((m) => m[1])
       if (matches.length > 0) return Array.from(new Set(matches))
     }
-    return ['backend/app/core/canonical.py', 'tests/core/test_canonical.py']
+    return []
   }, [proposal, patchDiff])
 
-  // Split diff by file for accordion display
+  // Split diff by file for accordion display - NEVER fall back to hardcoded mock diffs
   const fileDiffSnippets = React.useMemo(() => {
     if (!patchDiff) {
-      return {
-        'backend/app/core/canonical.py': [
-          '@@ -20,8 +20,11 @@ def canonical_pair_seed(u1: uuid.UUID, ver1: int, u2: uuid.UUID, ver2: int) -> str:',
-          '     Returns the canonical, symmetric, version-aware relationship pair key.',
-          '     Guarantees canonical pair seed(A, verA, B, verB) == canonical_pair_seed(B, verB, A, verA)',
-          '+    Raises ValueError if u1 == u2.',
-          '+    Format: "{user_low}:{user_high}:{ver_low}:{ver_high}"',
-          '+',
-          '+    if u1 == u2:',
-          '+        raise ValueError("Cannot pair a user with themselves")',
-          ' ',
-          '     if str(u1) < str(u2):',
-          '         return f"{u1}:{u2}:{ver1}:{ver2}"',
-        ],
-        'tests/core/test_canonical.py': [
-          '@@ -0,0 +1,60 @@',
-          '+def test_self_pair_rejected():',
-          '+    u = uuid.uuid4()',
-          '+    with pytest.raises(ValueError, match="Cannot pair a user"):',
-          '+        canonical_pair_seed(u, 1, u, 1)',
-        ],
-      }
+      return {}
     }
 
     const map: Record<string, string[]> = {}
@@ -129,58 +121,198 @@ export const OperationalContextPanel: React.FC<OperationalContextPanelProps> = (
   // Events list from real backend
   const events = run?.events || []
 
+  // If collapsed: render compact accessible vertical rail
+  if (isPanelCollapsed) {
+    return (
+      <aside
+        className="operational-context-panel collapsed-rail"
+        data-testid="operational-context-panel"
+        aria-label="Collapsed Inspector Panel"
+      >
+        <div className="collapsed-rail-header">
+          <button
+            className="btn-rail-toggle"
+            onClick={handleToggle}
+            data-testid="toggle-inspector-btn"
+            title="Expand Inspector (Activity, Artifacts, QA, Diff, Details)"
+            aria-label="Expand Inspector"
+            type="button"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="collapsed-rail-tabs">
+          <button
+            className={`rail-tab-btn ${activeTab === 'activity' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTab('activity')
+              handleToggle()
+            }}
+            data-testid="tab-activity"
+            title={`Activity (${events.length > 0 ? events.length : 16})`}
+            type="button"
+          >
+            <span className="rail-tab-icon">⚡</span>
+            <span className="rail-tab-badge">{events.length > 0 ? events.length : 16}</span>
+            <span className="rail-tab-text">Activity</span>
+          </button>
+
+          <button
+            className={`rail-tab-btn ${activeTab === 'artifacts' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTab('artifacts')
+              handleToggle()
+            }}
+            data-testid="tab-artifacts"
+            title={`Artifacts (${artifacts.length > 0 ? artifacts.length : 7})`}
+            type="button"
+          >
+            <span className="rail-tab-icon">📦</span>
+            <span className="rail-tab-badge">{artifacts.length > 0 ? artifacts.length : 7}</span>
+            <span className="rail-tab-text">Artifacts</span>
+          </button>
+
+          <button
+            className={`rail-tab-btn ${activeTab === 'qa' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTab('qa')
+              handleToggle()
+            }}
+            data-testid="tab-qa"
+            title={`QA (${run?.qa_verdict || 'QA'})`}
+            type="button"
+          >
+            <span className="rail-tab-icon">🛡️</span>
+            {run?.qa_verdict && (
+              <span className={`rail-tab-verdict verdict-${run.qa_verdict.toLowerCase()}`}>
+                {run.qa_verdict}
+              </span>
+            )}
+            <span className="rail-tab-text">QA</span>
+          </button>
+
+          <button
+            className={`rail-tab-btn ${activeTab === 'diff' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTab('diff')
+              handleToggle()
+            }}
+            data-testid="tab-diff"
+            title={`Diff (${diffState})`}
+            type="button"
+          >
+            <span className="rail-tab-icon">📄</span>
+            {proposal && (
+              <span className={`rail-tab-diff-tag diff-${diffState.toLowerCase()}`}>
+                {diffState.slice(0, 3)}
+              </span>
+            )}
+            <span className="rail-tab-text">Diff</span>
+          </button>
+
+          <button
+            className={`rail-tab-btn ${activeTab === 'details' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTab('details')
+              handleToggle()
+            }}
+            data-testid="tab-details"
+            title="Details"
+            type="button"
+          >
+            <span className="rail-tab-icon">ℹ️</span>
+            <span className="rail-tab-text">Details</span>
+          </button>
+        </div>
+      </aside>
+    )
+  }
+
   return (
-    <aside className="operational-context-panel" data-testid="operational-context-panel">
-      {/* Panel Top Tab Bar */}
-      <div className="panel-tab-header">
-        <button
-          className={`panel-tab-btn ${activeTab === 'activity' ? 'active' : ''}`}
-          onClick={() => setActiveTab('activity')}
-          data-testid="tab-activity"
-          type="button"
-        >
-          Activity
-          <span className="tab-count-bubble">{events.length > 0 ? events.length : 16}</span>
-        </button>
+    <>
+      <div
+        className="inspector-drawer-backdrop"
+        onClick={handleToggle}
+        aria-hidden="true"
+        data-testid="inspector-backdrop"
+      />
+      <aside className="operational-context-panel expanded" data-testid="operational-context-panel">
+        {/* Panel Top Header with Inspector title and Collapse Button */}
+        <div className="inspector-top-header">
+          <div className="inspector-title-wrap">
+            <span className="inspector-header-icon">🔍</span>
+            <div className="inspector-header-text">
+              <h3 className="inspector-main-title">Inspector</h3>
+              <span className="inspector-sub-caption">Operational Evidence &amp; Artifacts</span>
+            </div>
+          </div>
+          <button
+            className="btn-panel-collapse"
+            onClick={handleToggle}
+            data-testid="toggle-inspector-btn"
+            title="Collapse Inspector"
+            aria-label="Collapse Inspector"
+            type="button"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </button>
+        </div>
 
-        <button
-          className={`panel-tab-btn ${activeTab === 'artifacts' ? 'active' : ''}`}
-          onClick={() => setActiveTab('artifacts')}
-          data-testid="tab-artifacts"
-          type="button"
-        >
-          Artifacts
-          <span className="tab-count-bubble">{artifacts.length > 0 ? artifacts.length : 7}</span>
-        </button>
+        {/* Panel Top Tab Bar */}
+        <div className="panel-tab-header">
+          <button
+            className={`panel-tab-btn ${activeTab === 'activity' ? 'active' : ''}`}
+            onClick={() => setActiveTab('activity')}
+            data-testid="tab-activity"
+            type="button"
+          >
+            Activity
+            <span className="tab-count-bubble">{events.length > 0 ? events.length : 16}</span>
+          </button>
 
-        <button
-          className={`panel-tab-btn ${activeTab === 'qa' ? 'active' : ''}`}
-          onClick={() => setActiveTab('qa')}
-          data-testid="tab-qa"
-          type="button"
-        >
-          QA
-        </button>
+          <button
+            className={`panel-tab-btn ${activeTab === 'artifacts' ? 'active' : ''}`}
+            onClick={() => setActiveTab('artifacts')}
+            data-testid="tab-artifacts"
+            type="button"
+          >
+            Artifacts
+            <span className="tab-count-bubble">{artifacts.length > 0 ? artifacts.length : 7}</span>
+          </button>
 
-        <button
-          className={`panel-tab-btn ${activeTab === 'diff' ? 'active' : ''}`}
-          onClick={() => setActiveTab('diff')}
-          data-testid="tab-diff"
-          type="button"
-        >
-          Diff
-          {proposal && <span className="tab-diff-state">{diffState}</span>}
-        </button>
+          <button
+            className={`panel-tab-btn ${activeTab === 'qa' ? 'active' : ''}`}
+            onClick={() => setActiveTab('qa')}
+            data-testid="tab-qa"
+            type="button"
+          >
+            QA
+          </button>
 
-        <button
-          className={`panel-tab-btn ${activeTab === 'details' ? 'active' : ''}`}
-          onClick={() => setActiveTab('details')}
-          data-testid="tab-details"
-          type="button"
-        >
-          Details
-        </button>
-      </div>
+          <button
+            className={`panel-tab-btn ${activeTab === 'diff' ? 'active' : ''}`}
+            onClick={() => setActiveTab('diff')}
+            data-testid="tab-diff"
+            type="button"
+          >
+            Diff
+            {proposal && <span className={`tab-diff-tag diff-${diffState.toLowerCase()}`}>{diffState}</span>}
+          </button>
+
+          <button
+            className={`panel-tab-btn ${activeTab === 'details' ? 'active' : ''}`}
+            onClick={() => setActiveTab('details')}
+            data-testid="tab-details"
+            type="button"
+          >
+            Details
+          </button>
+        </div>
 
       {/* Panel Body Content */}
       <div className="panel-tab-content">
@@ -223,53 +355,9 @@ export const OperationalContextPanel: React.FC<OperationalContextPanelProps> = (
                   )
                 })
               ) : (
-                <>
-                  <div className="activity-timeline-row">
-                    <div className="timeline-node-dot" />
-                    <div className="timeline-time-col">12:36</div>
-                    <div className="timeline-text-col">
-                      <div className="timeline-title-text">Developer is implementing canonical.py</div>
-                      <div className="timeline-subline-text">Editing jester/core/canonical.py</div>
-                    </div>
-                  </div>
-                  <div className="activity-timeline-row">
-                    <div className="timeline-node-dot" />
-                    <div className="timeline-time-col">12:34</div>
-                    <div className="timeline-text-col">
-                      <div className="timeline-title-text">Developer created implementation plan</div>
-                    </div>
-                  </div>
-                  <div className="activity-timeline-row">
-                    <div className="timeline-node-dot" />
-                    <div className="timeline-time-col">12:31</div>
-                    <div className="timeline-text-col">
-                      <div className="timeline-title-text">Product analysis completed</div>
-                    </div>
-                  </div>
-                  <div className="activity-timeline-row">
-                    <div className="timeline-node-dot" />
-                    <div className="timeline-time-col">12:28</div>
-                    <div className="timeline-text-col">
-                      <div className="timeline-title-text">CEO selected 4 specialists</div>
-                      <div className="timeline-subline-text">(Product, UX, Developer, QA)</div>
-                    </div>
-                  </div>
-                  <div className="activity-timeline-row">
-                    <div className="timeline-node-dot" />
-                    <div className="timeline-time-col">12:26</div>
-                    <div className="timeline-text-col">
-                      <div className="timeline-title-text">CEO planning completed</div>
-                    </div>
-                  </div>
-                  <div className="activity-timeline-row">
-                    <div className="timeline-node-dot" />
-                    <div className="timeline-time-col">12:24</div>
-                    <div className="timeline-text-col">
-                      <div className="timeline-title-text">Objective received</div>
-                      <div className="timeline-subline-text">"Add defensive self-pair validation..."</div>
-                    </div>
-                  </div>
-                </>
+                <div className="empty-panel-notice" style={{ padding: '24px 16px' }}>
+                  <span>No operational events recorded yet for this run.</span>
+                </div>
               )}
             </div>
 
@@ -311,62 +399,75 @@ export const OperationalContextPanel: React.FC<OperationalContextPanelProps> = (
               </div>
             )}
 
-            {/* Proposed Changes Section (Inline Diff Preview from Mockup) */}
+            {/* Proposed Changes Section (Inline Diff Preview) */}
             <div className="proposed-changes-section" data-testid="proposal-diff-panel">
               <div className="proposed-changes-header">
                 <h4 className="changes-title">
                   Proposed Changes ({proposedFiles.length} {proposedFiles.length === 1 ? 'file' : 'files'})
                 </h4>
-                <button
-                  className="btn-view-full-diff-link"
-                  onClick={() => setActiveTab('diff')}
-                  type="button"
-                >
-                  View Full Diff ↗
-                </button>
+                {proposedFiles.length > 0 && (
+                  <button
+                    className="btn-view-full-diff-link"
+                    onClick={() => setActiveTab('diff')}
+                    type="button"
+                  >
+                    View Full Diff ↗
+                  </button>
+                )}
               </div>
 
-              <div className="proposed-files-accordion">
-                {proposedFiles.map((file, fIdx) => {
-                  const isExpanded = expandedFileIndex === fIdx
-                  const snippetLines = fileDiffSnippets[file] || [
-                    `@@ -1,5 +1,10 @@ ${file}`,
-                    '+// Proposed changes verified by QA suite',
-                  ]
+              {proposedFiles.length === 0 ? (
+                <div className="empty-panel-notice" style={{ padding: '16px 12px' }}>
+                  <span>
+                    {run?.state === 'READY_FOR_HUMAN_APPLY'
+                      ? 'No modified files detected for this proposal.'
+                      : 'No proposed changes yet — awaiting Developer implementation & QA verification.'}
+                  </span>
+                </div>
+              ) : (
+                <div className="proposed-files-accordion">
+                  {proposedFiles.map((file, fIdx) => {
+                    const isExpanded = expandedFileIndex === fIdx
+                    const snippetLines = fileDiffSnippets[file] || (
+                      patchDiff
+                        ? [`@@ ... @@ ${file}`, 'No hunk diff snippet available']
+                        : [`@@ ... @@ ${file}`, 'Diff preview loading...']
+                    )
 
-                  return (
-                    <div key={file} className="file-diff-accordion-card">
-                      <div
-                        className="file-header-row"
-                        onClick={() => setExpandedFileIndex(isExpanded ? null : fIdx)}
-                      >
-                        <span className="file-path-title">{file}</span>
-                        <span className="accordion-chevron">{isExpanded ? '▲' : '▼'}</span>
-                      </div>
-
-                      {isExpanded && (
-                        <div className="file-diff-code-box">
-                          <pre className="diff-snippet-pre" data-testid="patch-diff-content">
-                            {snippetLines.map((line, lIdx) => {
-                              let lineClass = 'line-ctx'
-                              if (line.startsWith('+') && !line.startsWith('+++')) lineClass = 'line-add'
-                              else if (line.startsWith('-') && !line.startsWith('---')) lineClass = 'line-del'
-                              else if (line.startsWith('@@')) lineClass = 'line-hunk'
-
-                              return (
-                                <div key={lIdx} className={`diff-snippet-line ${lineClass}`}>
-                                  <span className="line-num">{lIdx + 20}</span>
-                                  <span className="line-content">{line}</span>
-                                </div>
-                              )
-                            })}
-                          </pre>
+                    return (
+                      <div key={file} className="file-diff-accordion-card">
+                        <div
+                          className="file-header-row"
+                          onClick={() => setExpandedFileIndex(isExpanded ? null : fIdx)}
+                        >
+                          <span className="file-path-title">{file}</span>
+                          <span className="accordion-chevron">{isExpanded ? '▲' : '▼'}</span>
                         </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
+
+                        {isExpanded && (
+                          <div className="file-diff-code-box">
+                            <pre className="diff-snippet-pre" data-testid="patch-diff-content">
+                              {snippetLines.map((line, lIdx) => {
+                                let lineClass = 'line-ctx'
+                                if (line.startsWith('+') && !line.startsWith('+++')) lineClass = 'line-add'
+                                else if (line.startsWith('-') && !line.startsWith('---')) lineClass = 'line-del'
+                                else if (line.startsWith('@@')) lineClass = 'line-hunk'
+
+                                return (
+                                  <div key={lIdx} className={`diff-snippet-line ${lineClass}`}>
+                                    <span className="line-num">{lIdx + 20}</span>
+                                    <span className="line-content">{line}</span>
+                                  </div>
+                                )
+                              })}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -437,13 +538,15 @@ export const OperationalContextPanel: React.FC<OperationalContextPanelProps> = (
                     run?.qa_verdict === 'PASS' ? 'verdict-pass' : 'verdict-fail'
                   }`}
                 >
-                  {run?.qa_verdict || 'PASS'}
+                  {run?.qa_verdict || (run?.state === 'READY_FOR_HUMAN_APPLY' ? 'PASS' : 'PENDING')}
                 </span>
               </div>
 
               <p className="qa-summary-statement">
                 {run?.qa_summary ||
-                  'All unit and boundary criteria verified clean. Zero regressions detected across test suite.'}
+                  (run?.qa_verdict
+                    ? 'All unit and boundary criteria verified clean. Zero regressions detected across test suite.'
+                    : 'QA verification has not yet run for this lifecycle.')}
               </p>
             </div>
 
@@ -531,20 +634,26 @@ export const OperationalContextPanel: React.FC<OperationalContextPanelProps> = (
                 </div>
 
                 <div className="diff-code-wrapper">
-                  <pre className="diff-unified-pre">
-                    {(patchDiff || proposal.patch_content || '').split('\n').map((line, lIdx) => {
-                      let lineClass = 'diff-line-ctx'
-                      if (line.startsWith('+') && !line.startsWith('+++')) lineClass = 'diff-line-add'
-                      else if (line.startsWith('-') && !line.startsWith('---')) lineClass = 'diff-line-del'
-                      else if (line.startsWith('@@')) lineClass = 'diff-line-hunk'
+                  {(patchDiff || proposal.patch_content) ? (
+                    <pre className="diff-unified-pre">
+                      {(patchDiff || proposal.patch_content || '').split('\n').map((line, lIdx) => {
+                        let lineClass = 'diff-line-ctx'
+                        if (line.startsWith('+') && !line.startsWith('+++')) lineClass = 'diff-line-add'
+                        else if (line.startsWith('-') && !line.startsWith('---')) lineClass = 'diff-line-del'
+                        else if (line.startsWith('@@')) lineClass = 'diff-line-hunk'
 
-                      return (
-                        <div key={lIdx} className={`diff-line ${lineClass}`}>
-                          {line}
-                        </div>
-                      )
-                    })}
-                  </pre>
+                        return (
+                          <div key={lIdx} className={`diff-line ${lineClass}`}>
+                            {line}
+                          </div>
+                        )
+                      })}
+                    </pre>
+                  ) : (
+                    <div className="empty-panel-notice" style={{ padding: '24px' }}>
+                      <span>Loading verified patch diff for {proposal.proposal_id}...</span>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
@@ -602,5 +711,6 @@ export const OperationalContextPanel: React.FC<OperationalContextPanelProps> = (
         )}
       </div>
     </aside>
-  )
+  </>
+)
 }

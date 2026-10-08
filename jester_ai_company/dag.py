@@ -13,6 +13,8 @@ from .orchestrator import (
     CEOPlannedWorkItem,
     DAGValidationError,
     PlanValidationError,
+    PROHIBITED_QA_CAPABILITIES,
+    SUPPORTED_QA_CAPABILITIES,
     WorkItemState,
 )
 
@@ -100,7 +102,7 @@ def validate_dag_structure(plan: CEOOrchestrationPlan) -> None:
                 )
             dep_set.add(dep_clean)
 
-        # 5. QA code-pipeline rule: Developer -> QA is forbidden in CEO plans
+        # 5. QA code-pipeline rule & Capability boundary (STEP 23B.1)
         if item.role.lower() == "qa":
             for dep in dep_set:
                 if items_by_id[dep].role.lower() == "developer":
@@ -108,6 +110,44 @@ def validate_dag_structure(plan: CEOOrchestrationPlan) -> None:
                         f"Direct Developer -> QA dependency is forbidden in CEO plans "
                         f"('{dep}' -> '{item_id}'). QA is application-owned inside code pipelines."
                     )
+
+            # QA capability validation (Fail-Fast at planning time - STEP 23B.1)
+            cap = (item.capability or "").strip().lower()
+            if not cap:
+                for out in item.expected_outputs:
+                    norm_out = str(out).strip().lower()
+                    if norm_out in SUPPORTED_QA_CAPABILITIES:
+                        cap = norm_out
+                        item.capability = cap
+                        break
+                    for sup in SUPPORTED_QA_CAPABILITIES:
+                        if sup in norm_out:
+                            cap = sup
+                            item.capability = cap
+                            break
+                    if cap:
+                        break
+
+            if not cap:
+                raise PlanValidationError(
+                    f"QA work item '{item_id}' must explicitly specify a supported capability in 'capability'. "
+                    f"Allowed capabilities: {sorted(SUPPORTED_QA_CAPABILITIES)}. "
+                    f"Engineering QA certification is application-owned inside code pipelines."
+                )
+
+            if cap in PROHIBITED_QA_CAPABILITIES:
+                raise PlanValidationError(
+                    f"QA work item '{item_id}' requests forbidden capability '{cap}'. "
+                    f"Ordinary DAG QA work items cannot perform certification, issue grants, or apply changes. "
+                    f"Engineering QA certification is application-owned inside code pipelines."
+                )
+
+            if cap not in SUPPORTED_QA_CAPABILITIES:
+                raise PlanValidationError(
+                    f"QA work item '{item_id}' specifies unsupported capability '{cap}'. "
+                    f"Supported capabilities: {sorted(SUPPORTED_QA_CAPABILITIES)}. "
+                    f"Engineering QA certification is application-owned inside code pipelines."
+                )
 
         # 6. Critical Developer Fan-In invariant:
         # Developer must directly depend on both a Product item and a UX item

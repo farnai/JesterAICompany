@@ -421,9 +421,8 @@ export interface CompanyRun {
   employee_summaries?: EmployeeSummary[]
   events?: CompanyEvent[]
   code_patch_artifact_id?: string
-  qa_execution_report_artifact_id?: string
-  real_repo_apply_proposal_id?: string
-  real_repo_apply_grant_id?: string
+  real_repo_apply_proposal_id?: string | null
+  real_repo_apply_grant_id?: string | null
   target_repository_verification?: TargetRepositoryVerification
   created_at: string
   updated_at?: string

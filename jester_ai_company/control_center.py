@@ -17,10 +17,14 @@ from datetime import datetime, timezone
 import json
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import logging
 from pathlib import Path
 import sys
+import threading
 from typing import Any, Dict, List, Optional
 import urllib.parse
+
+logger = logging.getLogger(__name__)
 
 from .context import CompanyObjective
 from .core import TaskStatus
@@ -464,6 +468,30 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                 self._send_error_json(HTTPStatus.NOT_FOUND, "No company runs found.")
             return
 
+        # 14b. Run-Scoped Proposal Diff (STEP 22E)
+        if path.startswith("/api/company-runs/") and path.endswith("/diff"):
+            parts = path.split("/")
+            run_id = parts[3]
+            try:
+                run = self.service.get_company_run(run_id)
+                if not run.real_repo_apply_proposal_id:
+                    self._send_error_json(
+                        HTTPStatus.NOT_FOUND,
+                        f"Company run '{run_id}' has no verified proposal or patch diff.",
+                    )
+                    return
+                patch_str = self.service.durable_storage.load_proposal_patch(
+                    run.real_repo_apply_proposal_id, verify_integrity=False
+                )
+                self._send_json(HTTPStatus.OK, {
+                    "run_id": run_id,
+                    "proposal_id": run.real_repo_apply_proposal_id,
+                    "diff": patch_str,
+                })
+            except Exception as exc:
+                self._send_error_json(HTTPStatus.NOT_FOUND, f"Diff for company run '{run_id}' not found: {exc}")
+            return
+
         if path.startswith("/api/company-runs/"):
             run_id = path[len("/api/company-runs/"):]
             try:
@@ -473,10 +501,23 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                 self._send_error_json(HTTPStatus.NOT_FOUND, f"Company run '{run_id}' not found: {exc}")
             return
 
-        # 15. Proposals & Diff (STEP 21)
+        # 15. Proposals & Diff (STEP 21 & STEP 22E)
         if path.startswith("/api/proposals/") and path.endswith("/diff"):
             parts = path.split("/")
             prop_id = parts[3]
+            target_run_id = query.get("run_id", [None])[0]
+            if target_run_id:
+                try:
+                    run = self.service.get_company_run(target_run_id)
+                    if run.real_repo_apply_proposal_id != prop_id:
+                        self._send_error_json(
+                            HTTPStatus.BAD_REQUEST,
+                            f"Proposal identity mismatch: proposal '{prop_id}' does not belong to run '{target_run_id}' (run has '{run.real_repo_apply_proposal_id}').",
+                        )
+                        return
+                except Exception as exc:
+                    self._send_error_json(HTTPStatus.NOT_FOUND, f"Company run '{target_run_id}' not found: {exc}")
+                    return
             try:
                 patch_str = self.service.durable_storage.load_proposal_patch(prop_id, verify_integrity=False)
                 self._send_json(HTTPStatus.OK, {"proposal_id": prop_id, "diff": patch_str})
@@ -641,7 +682,7 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                 self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
             return
 
-        # 6. Create & Execute Company Run: POST /api/company-runs (STEP 21)
+        # 6. Create & Execute Company Run: POST /api/company-runs (STEP 21 & STEP 22C)
         if path == "/api/company-runs":
             title = payload.get("title")
             if not title:
@@ -654,12 +695,30 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
             acceptance_criteria = payload.get("acceptance_criteria", [])
             target_repository = payload.get("target_repository")
             auto_run = payload.get("auto_run", True)
+            sync_exec = payload.get("sync", False)
 
             # Auto-resolve target repository from project if not explicitly given
             if not target_repository:
                 proj = self.service.get_repository_project(project_id)
                 if proj and proj.repository:
                     target_repository = proj.repository.root_path
+
+            # Duplicate / concurrent run safety: ensure no run is actively planning or executing
+            active_executing = [
+                r for r in self.service.list_company_runs()
+                if (r.project_id == project_id or not project_id)
+                and r.state in (
+                    CompanyRunState.PLANNING.value,
+                    CompanyRunState.RUNNING.value,
+                    CompanyRunState.APPLYING.value,
+                )
+            ]
+            if active_executing:
+                self._send_error_json(
+                    HTTPStatus.CONFLICT,
+                    f"A company run '{active_executing[0].run_id}' is already actively executing (state: {active_executing[0].state}). Please wait for it to complete or reach a human approval boundary.",
+                )
+                return
 
             objective = CompanyObjective(
                 id=f"obj_{uuid.uuid4().hex[:8]}",
@@ -676,21 +735,87 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                     objective=objective,
                     project_id=project_id,
                 )
+
                 if auto_run:
-                    self.service.start_company_run(run.run_id)
-                    run = self.service.run_company_until_boundary(run.run_id, max_steps=10)
+                    def _run_lifecycle(r_id: str) -> None:
+                        try:
+                            # Step 1: CEO planning (CREATED -> PLANNING -> PLAN_READY)
+                            self.service.plan_company_run(r_id)
+                            # Step 2: Start execution (PLAN_READY -> RUNNING)
+                            self.service.start_company_run(r_id)
+                            # Step 3: Run specialist DAG until boundary
+                            self.service.run_company_until_boundary(r_id, max_steps=10)
+                        except Exception as exc:
+                            logger.error(
+                                "Lifecycle execution failed for company run %s: %s",
+                                r_id,
+                                exc,
+                                exc_info=True,
+                            )
+                            try:
+                                failed_run = self.service.get_company_run(r_id)
+                                if failed_run.state not in (
+                                    CompanyRunState.FAILED.value,
+                                    CompanyRunState.BLOCKED.value,
+                                    CompanyRunState.COMPLETED.value,
+                                ):
+                                    failed_run.transition_to(CompanyRunState.FAILED, error=str(exc))
+                                    failed_run.add_event(
+                                        event_type="RUN_FAILED",
+                                        reason=f"Lifecycle execution failed: {exc}",
+                                    )
+                                    self.service.save_company_run(failed_run)
+                            except Exception:
+                                pass
+
+                    if sync_exec:
+                        _run_lifecycle(run.run_id)
+                        run = self.service.get_company_run(run.run_id)
+                        if run.state == CompanyRunState.FAILED.value and run.error:
+                            raise Exception(run.error)
+                    else:
+                        worker = threading.Thread(
+                            target=_run_lifecycle,
+                            args=(run.run_id,),
+                            daemon=True,
+                            name=f"Worker-{run.run_id}",
+                        )
+                        worker.start()
+
                 self._send_json(HTTPStatus.CREATED, enrich_company_run_data(run, self.service))
             except Exception as exc:
                 self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
             return
 
-        # 7. Founder Approve Repo Apply: POST /api/company-runs/{run_id}/approve (STEP 21)
+        # 7. Founder Approve Repo Apply: POST /api/company-runs/{run_id}/approve (STEP 21 & STEP 22E)
         if path.startswith("/api/company-runs/") and path.endswith("/approve"):
             parts = path.split("/")
             if len(parts) == 5:
                 run_id = parts[3]
                 founder_approval_id = payload.get("founder_approval_id", f"appr_{uuid.uuid4().hex[:8]}")
                 approver = payload.get("approver", "Human Founder")
+                expected_prop_id = payload.get("proposal_id")
+
+                try:
+                    target_run = self.service.get_company_run(run_id)
+                except Exception as exc:
+                    self._send_error_json(HTTPStatus.NOT_FOUND, f"Company run '{run_id}' not found: {exc}")
+                    return
+
+                if not target_run.real_repo_apply_proposal_id:
+                    self._send_error_json(
+                        HTTPStatus.BAD_REQUEST,
+                        f"Cannot approve CompanyRun '{run_id}': No proposal has been generated or verified for this run.",
+                    )
+                    return
+
+                if expected_prop_id and expected_prop_id != target_run.real_repo_apply_proposal_id:
+                    self._send_error_json(
+                        HTTPStatus.BAD_REQUEST,
+                        f"Proposal identity mismatch for CompanyRun '{run_id}': expected '{expected_prop_id}', run has '{target_run.real_repo_apply_proposal_id}'.",
+                    )
+                    return
+
                 try:
                     grant = self.service.approve_company_repo_apply(
                         run_id=run_id,
@@ -726,11 +851,41 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                     self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
                 return
 
-        # 9. Real Repo Apply Execution: POST /api/company-runs/{run_id}/apply (STEP 21)
+        # 9. Real Repo Apply Execution: POST /api/company-runs/{run_id}/apply (STEP 21 & STEP 22E)
         if path.startswith("/api/company-runs/") and path.endswith("/apply"):
             parts = path.split("/")
             if len(parts) == 5:
                 run_id = parts[3]
+                expected_prop_id = payload.get("proposal_id")
+                expected_grant_id = payload.get("grant_id")
+
+                try:
+                    target_run = self.service.get_company_run(run_id)
+                except Exception as exc:
+                    self._send_error_json(HTTPStatus.NOT_FOUND, f"Company run '{run_id}' not found: {exc}")
+                    return
+
+                if not target_run.real_repo_apply_grant_id:
+                    self._send_error_json(
+                        HTTPStatus.BAD_REQUEST,
+                        f"Cannot apply CompanyRun '{run_id}': No grant has been issued. Explicit founder approval is required.",
+                    )
+                    return
+
+                if expected_grant_id and expected_grant_id != target_run.real_repo_apply_grant_id:
+                    self._send_error_json(
+                        HTTPStatus.BAD_REQUEST,
+                        f"Grant identity mismatch for CompanyRun '{run_id}': expected '{expected_grant_id}', run has '{target_run.real_repo_apply_grant_id}'.",
+                    )
+                    return
+
+                if expected_prop_id and expected_prop_id != target_run.real_repo_apply_proposal_id:
+                    self._send_error_json(
+                        HTTPStatus.BAD_REQUEST,
+                        f"Proposal identity mismatch for CompanyRun '{run_id}': expected '{expected_prop_id}', run has '{target_run.real_repo_apply_proposal_id}'.",
+                    )
+                    return
+
                 try:
                     result = self.service.apply_approved_company_repo(run_id=run_id)
                     run = self.service.get_company_run(run_id)

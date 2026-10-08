@@ -74,6 +74,7 @@ from .repair import (
     RepairWorkflowStatus,
 )
 from .developer_mutation import DeveloperMutationStatus
+from .durable_storage import ProposalNotFoundError
 from .project import TargetRepositoryMismatchError, verify_target_repository_identity
 
 
@@ -875,9 +876,20 @@ class EngineeringPipelineAdapter:
         if not run.real_repo_apply_proposal_id:
             raise ProposalMismatchError(f"CompanyRun '{run.run_id}' has no recorded real_repo_apply_proposal_id.")
 
-        proposal = self.service._real_repo_apply_proposals.get(run.real_repo_apply_proposal_id)
+        proposal = self.service.get_real_repo_apply_proposal(run.real_repo_apply_proposal_id)
         if not proposal:
             raise ProposalMismatchError(f"Proposal '{run.real_repo_apply_proposal_id}' not found in registered proposals.")
+
+        # Cross-run proposal provenance validation
+        try:
+            prov = self.service.durable_storage.load_provenance(proposal.proposal_id)
+            if prov and prov.get("company_run_id") and prov.get("company_run_id") != run.run_id:
+                raise ProposalMismatchError(
+                    f"Proposal '{proposal.proposal_id}' provenance belongs to CompanyRun '{prov.get('company_run_id')}', "
+                    f"cannot be approved under CompanyRun '{run.run_id}'."
+                )
+        except ProposalNotFoundError:
+            pass
 
         if proposal.code_patch_artifact_id != run.code_patch_artifact_id:
             raise ProposalMismatchError(
@@ -885,16 +897,42 @@ class EngineeringPipelineAdapter:
             )
 
         # Verify CODE_PATCH artifact integrity on disk
-        if run.code_patch_artifact_id:
-            patch_lineage = self.service.find_artifact(run.code_patch_artifact_id)
-            if not patch_lineage:
-                raise ArtifactVerificationError(f"CODE_PATCH artifact '{run.code_patch_artifact_id}' not found.")
+        if not run.code_patch_artifact_id:
+            raise ArtifactVerificationError(f"CompanyRun '{run.run_id}' has no recorded code_patch_artifact_id.")
+
+        expected_sha = proposal.code_patch_sha256
+        patch_lineage = self.service.find_artifact(run.code_patch_artifact_id)
+        patch_path = None
+
+        if patch_lineage:
             _, _, patch_art = patch_lineage
-            patch_path = _resolve_artifact_file_path(self.service.output_dir, patch_art)
-            if not patch_path.is_file():
-                raise ArtifactVerificationError(f"CODE_PATCH artifact file not found: {patch_art.path}")
-            if hashlib.sha256(patch_path.read_bytes()).hexdigest() != patch_art.sha256:
-                raise ArtifactVerificationError(f"CODE_PATCH disk checksum mismatch: {patch_art.path}")
+            if patch_art.sha256 and patch_art.sha256 != expected_sha:
+                raise ArtifactVerificationError(
+                    f"CODE_PATCH artifact SHA-256 '{patch_art.sha256}' does not match proposal '{expected_sha}'."
+                )
+            try:
+                candidate_path = _resolve_artifact_file_path(self.service.output_dir, patch_art)
+                if candidate_path.is_file():
+                    patch_path = candidate_path
+            except Exception:
+                patch_path = None
+
+        # Fallback to durable proposal patch if original task path unresolvable
+        if not patch_path or not patch_path.is_file():
+            durable_patch = self.service.durable_storage.proposals_dir / proposal.proposal_id / "patch.diff"
+            if durable_patch.is_file():
+                patch_path = durable_patch
+            else:
+                raise ArtifactVerificationError(f"CODE_PATCH artifact '{run.code_patch_artifact_id}' not found.")
+
+        if not patch_path.is_file():
+            raise ArtifactVerificationError(f"CODE_PATCH artifact file not found: {patch_path}")
+
+        actual_sha = hashlib.sha256(patch_path.read_bytes()).hexdigest()
+        if actual_sha != expected_sha:
+            raise ArtifactVerificationError(
+                f"CODE_PATCH disk checksum mismatch: computed '{actual_sha}' != proposal '{expected_sha}'."
+            )
 
         grant = self.service.approve_real_repo_apply(
             proposal_id=proposal.proposal_id,
@@ -935,9 +973,14 @@ class EngineeringPipelineAdapter:
         if not run.real_repo_apply_grant_id:
             raise ApprovalInvalidError(f"CompanyRun '{run.run_id}' has no real_repo_apply_grant_id. Human approval required.")
 
-        grant = self.service._real_repo_apply_grants.get(run.real_repo_apply_grant_id)
+        grant = self.service.get_real_repo_apply_grant(run.real_repo_apply_grant_id)
         if not grant:
             raise ApprovalInvalidError(f"Grant '{run.real_repo_apply_grant_id}' not found in registered grants.")
+
+        if grant.proposal_id != run.real_repo_apply_proposal_id:
+            raise ApprovalInvalidError(
+                f"Grant proposal '{grant.proposal_id}' does not match run proposal '{run.real_repo_apply_proposal_id}'."
+            )
 
         # Transition to APPLYING
         run.transition_to(CompanyRunState.APPLYING, is_code_workflow=True)

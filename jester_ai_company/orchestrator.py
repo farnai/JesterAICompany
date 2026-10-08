@@ -207,6 +207,32 @@ class CompanyObjective:
         )
 
 
+class QAPlanningCapability(str, Enum):
+    """Supported non-mutating QA Planning and Audit capabilities in CEO DAG plans (STEP 23B.1)."""
+    TEST_STRATEGY = "test_strategy"
+    TEST_MATRIX = "test_matrix"
+    ACCEPTANCE_PLANNING = "acceptance_planning"
+    READ_ONLY_AUDIT = "read_only_audit"
+
+
+SUPPORTED_QA_CAPABILITIES: Set[str] = {c.value for c in QAPlanningCapability}
+
+PROHIBITED_QA_CAPABILITIES: Set[str] = {
+    "certification",
+    "certify",
+    "patch_certification",
+    "patch_verification",
+    "apply_verification",
+    "release_verdict",
+    "grant_issuance",
+    "real_repo_apply",
+    "apply",
+    "approval",
+    "grant",
+    "execution_grant",
+}
+
+
 @dataclass
 class CEOPlannedWorkItem:
     """Individual unit of specialist work declared in a CEOOrchestrationPlan.
@@ -223,10 +249,11 @@ class CEOPlannedWorkItem:
     refinement_count: int = 0
     task_id: Optional[str] = None
     run_id: Optional[str] = None
+    capability: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize work item to dictionary."""
-        return {
+        d = {
             "work_item_id": self.work_item_id,
             "role": self.role,
             "objective": self.objective,
@@ -238,6 +265,9 @@ class CEOPlannedWorkItem:
             "task_id": self.task_id,
             "run_id": self.run_id,
         }
+        if self.capability is not None:
+            d["capability"] = self.capability
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CEOPlannedWorkItem":
@@ -254,6 +284,9 @@ class CEOPlannedWorkItem:
         if state_val not in valid_states:
             raise PlanValidationError(f"Invalid WorkItemState '{state_val}'.")
 
+        cap_raw = data.get("capability") or data.get("work_type")
+        cap = str(cap_raw).strip().lower() if cap_raw and isinstance(cap_raw, str) else None
+
         return cls(
             work_item_id=data["work_item_id"].strip(),
             role=data["role"].strip().lower(),
@@ -265,6 +298,7 @@ class CEOPlannedWorkItem:
             refinement_count=int(data.get("refinement_count", 0)),
             task_id=data.get("task_id"),
             run_id=data.get("run_id"),
+            capability=cap,
         )
 
 

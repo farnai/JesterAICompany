@@ -194,3 +194,300 @@ def test_durable_runs_and_proposals_on_production_server():
         server.shutdown()
         server.server_close()
 
+
+def test_company_run_lifecycle_ordering_step22c(cc_server):
+    """STEP 22C REGRESSION TEST:
+    Verify that auto_run executes CEO planning BEFORE start_company_run,
+    and start_company_run is NEVER called while state == CREATED.
+    """
+    base_url = cc_server["base_url"]
+    service = cc_server["service"]
+
+    call_sequence = []
+    original_plan = service.plan_company_run
+    original_start = service.start_company_run
+    original_boundary = service.run_company_until_boundary
+
+    def mock_plan(run_id, timeout=None):
+        r = service.get_company_run(run_id)
+        call_sequence.append(("plan_company_run", r.state))
+        r.state = CompanyRunState.PLAN_READY.value
+        service.save_company_run(r)
+        return r
+
+    def mock_start(run_id):
+        r = service.get_company_run(run_id)
+        call_sequence.append(("start_company_run", r.state))
+        assert r.state == CompanyRunState.PLAN_READY.value, f"Expected PLAN_READY, got {r.state}"
+        r.state = CompanyRunState.RUNNING.value
+        service.save_company_run(r)
+        return r
+
+    def mock_boundary(run_id, max_steps=10):
+        r = service.get_company_run(run_id)
+        call_sequence.append(("run_company_until_boundary", r.state))
+        return r
+
+    service.plan_company_run = mock_plan
+    service.start_company_run = mock_start
+    service.run_company_until_boundary = mock_boundary
+
+    try:
+        payload = {
+            "title": "Validate non-negative versions",
+            "project_id": "prj_jester",
+            "auto_run": True,
+            "sync": True,
+        }
+        status, body = api_req(base_url, "/api/company-runs", method="POST", data=payload)
+        assert status == HTTPStatus.CREATED
+        assert len(call_sequence) == 3
+        assert call_sequence[0] == ("plan_company_run", CompanyRunState.CREATED.value)
+        assert call_sequence[1] == ("start_company_run", CompanyRunState.PLAN_READY.value)
+        assert call_sequence[2] == ("run_company_until_boundary", CompanyRunState.RUNNING.value)
+    finally:
+        service.plan_company_run = original_plan
+        service.start_company_run = original_start
+        service.run_company_until_boundary = original_boundary
+
+
+def test_duplicate_concurrent_run_rejection(cc_server):
+    """STEP 22C REGRESSION TEST:
+    Verify that submitting an objective while another run is actively running
+    is safely rejected with HTTP 409 Conflict.
+    """
+    base_url = cc_server["base_url"]
+    service = cc_server["service"]
+
+    # 1. Create and put run into RUNNING state
+    _, body = api_req(
+        base_url,
+        "/api/company-runs",
+        method="POST",
+        data={"title": "First active run", "auto_run": False},
+    )
+    first_run_id = body["run_id"]
+    first_run = service.get_company_run(first_run_id)
+    first_run.state = CompanyRunState.RUNNING.value
+    service.save_company_run(first_run)
+
+    # 2. Attempt to create concurrent run on same project
+    status, conflict_body = api_req(
+        base_url,
+        "/api/company-runs",
+        method="POST",
+        data={"title": "Concurrent conflicting run", "project_id": "prj_jester"},
+    )
+    assert status == HTTPStatus.CONFLICT
+    assert "already actively executing" in conflict_body["error"]
+
+
+def test_lifecycle_failure_handling(cc_server):
+    """STEP 22C REGRESSION TEST:
+    Verify that when planning fails during auto_run, the run transitions cleanly
+    to FAILED with error and RUN_FAILED event instead of remaining stuck in CREATED.
+    """
+    base_url = cc_server["base_url"]
+    service = cc_server["service"]
+
+    original_plan = service.plan_company_run
+
+    def failing_plan(run_id, timeout=None):
+        raise RuntimeError("Simulated CEO model timeout")
+
+    service.plan_company_run = failing_plan
+
+    try:
+        payload = {
+            "title": "Failure test run",
+            "project_id": "prj_jester",
+            "auto_run": True,
+            "sync": True,
+        }
+        status, body = api_req(base_url, "/api/company-runs", method="POST", data=payload)
+        assert status == HTTPStatus.INTERNAL_SERVER_ERROR
+        # Verify run state in service
+        runs = service.list_company_runs()
+        fail_run = next(r for r in runs if r.objective.title == "Failure test run")
+        assert fail_run.state == CompanyRunState.FAILED.value
+        assert "Simulated CEO model timeout" in fail_run.error
+    finally:
+        service.plan_company_run = original_plan
+
+
+# ==============================================================================
+# STEP 22E — RUN-SCOPED DIFF & APPROVAL SAFETY REGRESSION TESTS
+# ==============================================================================
+
+def test_step22e_run_without_proposal_has_no_diff(cc_server):
+    """STEP 22E-A: A run in CREATED, PLANNING, or RUNNING state must not expose any diff or proposal."""
+    base_url = cc_server["base_url"]
+    service = cc_server["service"]
+
+    # Create run without auto_run
+    _, body = api_req(
+        base_url,
+        "/api/company-runs",
+        method="POST",
+        data={"title": "Run in progress", "auto_run": False},
+    )
+    run_id = body["run_id"]
+    assert body.get("proposal") is None
+
+    # GET /api/company-runs/{run_id}/diff should return 404 NOT_FOUND
+    status, diff_body = api_req(base_url, f"/api/company-runs/{run_id}/diff")
+    assert status == HTTPStatus.NOT_FOUND
+    assert "has no verified proposal or patch diff" in diff_body.get("error", "")
+
+
+def test_step22e_historical_proposal_isolation_and_identity_validation(cc_server):
+    """STEP 22E-B & C:
+    Run A has a valid proposal. Run B has no proposal.
+    Selecting Run B must not expose Run A's patch.
+    When querying proposal diff with mismatched run_id, API rejects with HTTP 400.
+    """
+    base_url = cc_server["base_url"]
+    service = cc_server["service"]
+
+    # 1. Create Run A and associate a mock proposal
+    _, body_a = api_req(
+        base_url,
+        "/api/company-runs",
+        method="POST",
+        data={"title": "Run A with proposal", "auto_run": False},
+    )
+    run_a_id = body_a["run_id"]
+    run_a = service.get_company_run(run_a_id)
+
+    # Use a mock proposal in durable storage
+    import hashlib
+    from jester_ai_company.real_repo_apply import RealRepoApplyProposal, compute_proposal_sha256
+    patch_a_text = "diff --git a/src/core/feature_a.py b/src/core/feature_a.py\n+feature_a_code\n"
+    patch_a_sha = hashlib.sha256(patch_a_text.encode("utf-8")).hexdigest()
+
+    prop_data = {
+        "schema_version": "1.0",
+        "proposal_id": "prop_test_22e_a",
+        "target_repository_root": "C:/fake/repo",
+        "target_branch": "main",
+        "target_head_hash": "abcd1234abcd1234abcd1234abcd1234abcd1234",
+        "base_commit_hash": "abcd1234abcd1234abcd1234abcd1234abcd1234",
+        "code_patch_artifact_id": "art_patch_a",
+        "code_patch_sha256": patch_a_sha,
+        "patch_version": 1,
+        "qa_report_artifact_id": "art_qa_a",
+        "qa_report_sha256": "qa_sha_a",
+        "qa_execution_report_artifact_id": "art_qa_exec_a",
+        "qa_execution_report_sha256": "qa_exec_sha_a",
+        "qa_verdict": "PASS",
+        "expected_changed_files": ("src/core/feature_a.py",),
+        "expected_diff_stat": {"files_changed": 1, "insertions": 5, "deletions": 0},
+        "is_clean": True,
+        "created_at": "2026-10-08T12:00:00Z",
+        "proposal_sha256": "",
+        "project_id": "prj_jester",
+    }
+    dummy_prop = RealRepoApplyProposal.from_dict(prop_data)
+    dummy_prop_sha = compute_proposal_sha256(dummy_prop)
+    prop_data["proposal_sha256"] = dummy_prop_sha
+    prop_a = RealRepoApplyProposal.from_dict(prop_data)
+
+    # Write patch and proposal into durable storage
+    service.durable_storage.save_proposal(prop_a, patch_a_text, company_run_id=run_a_id)
+
+    run_a.real_repo_apply_proposal_id = prop_a.proposal_id
+    run_a.state = CompanyRunState.READY_FOR_HUMAN_APPLY.value
+    service.save_company_run(run_a)
+
+    # 2. Create Run B without proposal
+    _, body_b = api_req(
+        base_url,
+        "/api/company-runs",
+        method="POST",
+        data={"title": "Run B without proposal", "auto_run": False},
+    )
+    run_b_id = body_b["run_id"]
+
+    # Verify Run B has no proposal and returns 404 for diff
+    status_b, diff_b = api_req(base_url, f"/api/company-runs/{run_b_id}/diff")
+    assert status_b == HTTPStatus.NOT_FOUND
+
+    # Querying proposal A's diff with run_id=Run_B MUST be rejected with HTTP 400
+    status_cross, cross_body = api_req(
+        base_url,
+        f"/api/proposals/{prop_a.proposal_id}/diff?run_id={run_b_id}",
+    )
+    assert status_cross == HTTPStatus.BAD_REQUEST
+    assert "Proposal identity mismatch" in cross_body.get("error", "")
+
+    # Querying proposal A's diff with run_id=Run_A MUST succeed
+    status_valid, valid_body = api_req(
+        base_url,
+        f"/api/proposals/{prop_a.proposal_id}/diff?run_id={run_a_id}",
+    )
+    assert status_valid == HTTPStatus.OK
+    assert "feature_a_code" in valid_body["diff"]
+
+
+def test_step22e_server_side_approval_identity_safety(cc_server):
+    """STEP 22E-D: Server-side approve/apply must fail closed if proposal/grant identity is mismatched."""
+    base_url = cc_server["base_url"]
+    service = cc_server["service"]
+
+    # 1. Create run without proposal and attempt approve -> 400 Bad Request
+    _, body = api_req(
+        base_url,
+        "/api/company-runs",
+        method="POST",
+        data={"title": "Run for safety test", "auto_run": False},
+    )
+    run_id = body["run_id"]
+
+    status, err_body = api_req(
+        base_url,
+        f"/api/company-runs/{run_id}/approve",
+        method="POST",
+        data={"approver": "Human Founder"},
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert "No proposal has been generated or verified" in err_body.get("error", "")
+
+    # 2. Attempt apply on run without grant -> 400 Bad Request
+    status_apply, apply_err = api_req(
+        base_url,
+        f"/api/company-runs/{run_id}/apply",
+        method="POST",
+        data={},
+    )
+    assert status_apply == HTTPStatus.BAD_REQUEST
+    assert "No grant has been issued" in apply_err.get("error", "")
+
+
+def test_step22e_current_pending_run_preserved():
+    """STEP 22E-E: The real current run 'crun_10422da9' and proposal 'prop_apply_a6f7c706' remain intact."""
+    workspace_root = Path(__file__).resolve().parent.parent
+    service = CompanyService.create_production(repo_root=workspace_root)
+    service.load_history_from_disk()
+
+    run = service.get_company_run("crun_10422da9")
+    assert run is not None
+    assert run.state in (CompanyRunState.READY_FOR_HUMAN_APPLY.value, CompanyRunState.COMPLETED.value)
+    assert run.real_repo_apply_proposal_id == "prop_apply_a6f7c706"
+    if run.state == CompanyRunState.COMPLETED.value:
+        assert run.real_repo_apply_grant_id is not None
+    else:
+        assert run.real_repo_apply_grant_id is None
+    assert run.objective.title == "Add defensive non-negative version validation to canonical_pair_seed"
+
+    # Verify durable proposal exists and is untouched
+    prop = service.durable_storage.load_proposal("prop_apply_a6f7c706", verify_integrity=True)
+    assert prop.proposal_id == "prop_apply_a6f7c706"
+    assert prop.qa_verdict == "PASS"
+    assert list(prop.expected_changed_files) == [
+        "backend/app/core/canonical.py",
+        "tests/core/test_canonical.py",
+    ]
+
+
+
+

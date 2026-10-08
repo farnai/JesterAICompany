@@ -39,7 +39,7 @@ export const ObjectiveHeader: React.FC<ObjectiveHeaderProps> = ({
     objective?.constraints?.join(' · ') ||
     run?.selection_reasoning ||
     'Ensure canonical_pair_seed rejects user self-pairs with clear ValueError and maintains backward compatibility.'
-  const description = rawDesc.length > 130 ? rawDesc.slice(0, 127) + '...' : rawDesc
+  const description = rawDesc.length > 300 ? rawDesc.slice(0, 297) + '...' : rawDesc
 
   // Determine current active lifecycle phase index from REAL backend state
   const getCurrentPhaseIndex = (): number => {

@@ -71,16 +71,15 @@ export const EmployeeWorkstation: React.FC<EmployeeWorkstationProps> = ({
           <RolePortrait role={role} fill />
         </div>
         <div className="avail-details-box">
-          <span className="avail-role-label">{normRole.toUpperCase()}</span>
+          <div className="avail-top-row">
+            <span className="avail-role-label station-role-pill">{normRole.toUpperCase()}</span>
+            <span className="avail-status-pill">
+              <span className="avail-status-dot" />
+              Available
+            </span>
+          </div>
           <h4 className="avail-name-title">{personaName}</h4>
-          <span className="avail-status-pill">
-            <span className="avail-status-dot" />
-            Available
-          </span>
-        </div>
-        {/* Hidden role pill for test assertions */}
-        <div style={{ display: 'none' }} className="station-role-pill">
-          {normRole.toUpperCase()}
+          <span className="avail-role-subtitle">{displayTitle}</span>
         </div>
       </div>
     )
@@ -106,20 +105,19 @@ export const EmployeeWorkstation: React.FC<EmployeeWorkstationProps> = ({
       </div>
 
       <div className="workstation-card-body">
-        <span className="workstation-role-badge">
-          <span className="role-name-text">{normRole.toUpperCase()}</span>
-        </span>
-        <div style={{ display: 'none' }} className="station-role-pill">
-          {normRole.toUpperCase()}
-        </div>
-
-        <h3 className="workstation-persona-name">{personaName}</h3>
-
-        <div className="workstation-status-row">
+        <div className="workstation-card-top-row">
+          <span className="workstation-role-badge station-role-pill">
+            <span className="role-name-text">{normRole.toUpperCase()}</span>
+          </span>
           <span className={`ws-status ws-status-${statusKey}`}>
             <span className="ws-status-dot" />
             {status === 'Completed' ? 'Completed' : status}
           </span>
+        </div>
+
+        <div className="workstation-identity-block">
+          <h3 className="workstation-persona-name station-name">{personaName}</h3>
+          <span className="workstation-role-title station-title">{displayTitle}</span>
         </div>
 
         <p className="workstation-focus-text" title={focusText}>
@@ -136,16 +134,13 @@ export const EmployeeWorkstation: React.FC<EmployeeWorkstationProps> = ({
             type="button"
             title={latestArtifact.name}
           >
-            <span className="artifact-filename">{latestArtifact.name}</span>
+            <span className="artifact-pill-prefix">
+              <span className="artifact-icon" aria-hidden="true">📄</span>
+              <span className="artifact-filename">{latestArtifact.name}</span>
+            </span>
             <span className="artifact-arrow">→</span>
           </button>
         )}
-      </div>
-
-      {/* Hidden helper for test compatibility */}
-      <div style={{ display: 'none' }}>
-        <h4 className="station-name">{personaName}</h4>
-        <span className="station-title">{displayTitle}</span>
       </div>
     </div>
   )

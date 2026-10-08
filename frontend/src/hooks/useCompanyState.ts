@@ -111,20 +111,25 @@ export function useCompanyState(pollInterval: number = 4000) {
     return repositoryProjects[0] || null
   }, [repositoryProjects, selectedProjectId])
 
-  // Fetch diff for active run's proposal on demand
+  // Fetch diff for active run's proposal on demand (strictly run-scoped)
   useEffect(() => {
     const propId = activeCompanyRun?.real_repo_apply_proposal_id
+    const runId = activeCompanyRun?.run_id
     if (propId && !proposalDiffs[propId]) {
+      let isCurrent = true
       api
-        .getProposalDiff(propId)
+        .getProposalDiff(propId, runId)
         .then((res) => {
-          if (res?.diff) {
+          if (isCurrent && res?.diff) {
             setProposalDiffs((prev) => ({ ...prev, [propId]: res.diff }))
           }
         })
         .catch(() => {})
+      return () => {
+        isCurrent = false
+      }
     }
-  }, [activeCompanyRun?.real_repo_apply_proposal_id, proposalDiffs])
+  }, [activeCompanyRun?.real_repo_apply_proposal_id, activeCompanyRun?.run_id, proposalDiffs])
 
   // Purely Derived Domain Representations (derived from real state, no invented values)
   const companyName = useMemo(() => {
@@ -211,8 +216,12 @@ export function useCompanyState(pollInterval: number = 4000) {
     return res
   }
 
-  const approveRun = async (runId: string, approver: string = 'Human Founder') => {
-    const res = await api.approveCompanyRun(runId, approver)
+  const approveRun = async (
+    runId: string,
+    approver: string = 'Human Founder',
+    proposalId?: string
+  ) => {
+    const res = await api.approveCompanyRun(runId, approver, proposalId)
     await fetchState(false)
     return res
   }
@@ -223,8 +232,12 @@ export function useCompanyState(pollInterval: number = 4000) {
     return res
   }
 
-  const applyRun = async (runId: string) => {
-    const res = await api.applyCompanyRun(runId)
+  const applyRun = async (
+    runId: string,
+    proposalId?: string,
+    grantId?: string
+  ) => {
+    const res = await api.applyCompanyRun(runId, proposalId, grantId)
     await fetchState(false)
     return res
   }

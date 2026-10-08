@@ -64,10 +64,21 @@ export const NewObjectiveModal: React.FC<NewObjectiveModalProps> = ({
   const selectedProj = projects.find((p) => p.project_id === projectId) || activeProject
 
   return (
-    <div className="modal-backdrop" data-testid="new-objective-modal">
-      <div className="new-objective-card">
+    <div className="modal-backdrop" data-testid="new-objective-modal" onClick={onClose}>
+      <div className="new-objective-card" onClick={(e) => e.stopPropagation()}>
         <div className="objective-modal-header">
-          <span className="objective-badge">MISSION INTENT</span>
+          <div className="modal-kicker-row">
+            <span className="objective-badge">MISSION INTENT</span>
+            <button
+              type="button"
+              className="modal-close-icon-btn"
+              onClick={onClose}
+              aria-label="Close modal"
+              data-testid="modal-close-btn"
+            >
+              ✕
+            </button>
+          </div>
           <h2 className="objective-modal-title">Formulate Company Objective</h2>
           <p className="objective-modal-subtitle">
             Define mission direction for CEO executive orchestration and specialist DAG formulation.
@@ -77,41 +88,60 @@ export const NewObjectiveModal: React.FC<NewObjectiveModalProps> = ({
         <form onSubmit={handleSubmit} className="objective-form">
           {error && <div className="form-error-banner">{error}</div>}
 
-          <div className="form-group">
-            <label className="form-label">Target Project & Repository Context:</label>
-            {projects.length > 1 ? (
-              <select
-                className="form-input"
-                value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                style={{ marginBottom: '8px' }}
-                data-testid="select-objective-project"
-              >
-                {projects.map((p) => (
-                  <option key={p.project_id} value={p.project_id}>
-                    {p.name} ({p.repository.target_branch})
-                  </option>
-                ))}
-              </select>
-            ) : null}
-            <div className="target-context-display">
-              <span className="proj-name">{selectedProj?.name || 'Jester'}</span>
-              <code className="repo-path">
-                {selectedProj?.repository?.root_path || 'C:\\Users\\fiord\\OneDrive\\Desktop\\Jester'}
-              </code>
-              <span className="branch-tag">🌱 {selectedProj?.repository?.target_branch || 'main'}</span>
+          {/* TARGET PROJECT CONTEXT */}
+          <div className="target-project-section">
+            <div className="target-project-header-row">
+              <span className="target-section-title">TARGET PROJECT</span>
+              {projects.length > 1 && (
+                <div className="project-select-wrapper">
+                  <select
+                    className="project-select-input"
+                    value={projectId}
+                    onChange={(e) => setProjectId(e.target.value)}
+                    data-testid="select-objective-project"
+                  >
+                    {projects.map((p) => (
+                      <option key={p.project_id} value={p.project_id}>
+                        {p.name} ({p.repository.target_branch})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            <div className="target-context-box">
+              <div className="target-project-primary-line">
+                <span className="target-project-name">{selectedProj?.name || 'Jester — People Discovery & Relationship Intelligence Engine'}</span>
+                <span className="target-project-id-tag">{selectedProj?.project_id || 'prj_jester'}</span>
+              </div>
+              <div className="target-context-metadata-grid">
+                <div className="metadata-cell">
+                  <span className="metadata-label">Repository</span>
+                  <code className="metadata-value repo-path" title={selectedProj?.repository?.root_path || ''}>
+                    {selectedProj?.repository?.root_path || 'C:\\Users\\fiord\\OneDrive\\Desktop\\Jester'}
+                  </code>
+                </div>
+                <div className="metadata-cell branch-cell">
+                  <span className="metadata-label">Branch</span>
+                  <span className="metadata-value branch-tag">
+                    🌱 {selectedProj?.repository?.target_branch || 'main'}
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
 
+          {/* FORM FIELDS */}
           <div className="form-group">
             <label className="form-label" htmlFor="obj-title-input">
-              Objective Title:
+              Objective Title
             </label>
             <input
               id="obj-title-input"
               className="form-input"
               type="text"
-              placeholder="e.g. Add defensive validation to canonical_pair_seed"
+              placeholder="e.g. Add defensive non-negative version validation to canonical_pair_seed"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               required
@@ -121,7 +151,7 @@ export const NewObjectiveModal: React.FC<NewObjectiveModalProps> = ({
 
           <div className="form-group">
             <label className="form-label" htmlFor="obj-desc-input">
-              Goal & Acceptance Criteria Details:
+              Goal & Acceptance Criteria
             </label>
             <textarea
               id="obj-desc-input"
@@ -129,19 +159,19 @@ export const NewObjectiveModal: React.FC<NewObjectiveModalProps> = ({
               placeholder="Describe the desired outcome, error behavior, and test criteria..."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              rows={3}
+              rows={4}
               data-testid="input-objective-desc"
             />
           </div>
 
           <div className="form-group">
             <label className="form-label" htmlFor="obj-constraints-input">
-              Constraints (one per line):
+              Constraints
             </label>
             <textarea
               id="obj-constraints-input"
               className="form-textarea font-mono"
-              placeholder="Enter operational constraints..."
+              placeholder="Enter operational constraints (one per line)..."
               value={constraintsText}
               onChange={(e) => setConstraintsText(e.target.value)}
               rows={3}
@@ -149,6 +179,7 @@ export const NewObjectiveModal: React.FC<NewObjectiveModalProps> = ({
             />
           </div>
 
+          {/* ACTIONS */}
           <div className="form-action-row">
             <button className="btn-secondary" onClick={onClose} type="button">
               Cancel

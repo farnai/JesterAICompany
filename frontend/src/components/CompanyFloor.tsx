@@ -200,20 +200,22 @@ export const CompanyFloor: React.FC<CompanyFloorProps> = ({
           </div>
 
           <div className="fl-ceo-body">
-            <span className="fl-eyebrow">CEO · Executive Orchestrator</span>
+            <div className="fl-ceo-header-row">
+              <span className="fl-eyebrow">CEO · Executive Orchestrator</span>
+              <span className={`fl-ceo-status tone-${presence.tone}`}>
+                <span className={`fl-pulse-dot ${presence.active ? 'is-live' : ''}`} />
+                {presence.label}
+                {presence.active && (
+                  <span className="fl-soundwave" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                )}
+              </span>
+            </div>
             <h3 className="fl-ceo-name">{ceoName}</h3>
-            <span className={`fl-ceo-status tone-${presence.tone}`}>
-              <span className={`fl-pulse-dot ${presence.active ? 'is-live' : ''}`} />
-              {presence.label}
-              {presence.active && (
-                <span className="fl-soundwave" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                  <i />
-                </span>
-              )}
-            </span>
             <p className="fl-ceo-objective" title={objectiveTitle || undefined}>
               <span className="fl-ceo-objective-label">Current objective:</span>{' '}
               <span className="fl-ceo-objective-val">{objectiveTitle ? `“${objectiveTitle}”` : 'No active objective'}</span>

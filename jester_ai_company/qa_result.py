@@ -601,3 +601,164 @@ You must output your complete analysis as a SINGLE strict JSON code block:
 Ensure your JSON is valid, strictly adheres to schema version "1.0", and contains no trailing characters outside the JSON code block.
 """
     return prompt.strip()
+
+
+PROHIBITED_QA_RESULT_KEYS: Set[str] = {
+    "grant",
+    "grants",
+    "execution_grant",
+    "real_repo_apply_grant",
+    "approve",
+    "approval",
+    "approved",
+    "certified",
+    "certification",
+    "certify",
+    "apply",
+    "apply_patch",
+    "git_apply",
+    "shell",
+    "command",
+}
+
+
+def build_qa_planning_execution_prompt(
+    task: Any,
+    verified_artifacts: Any,
+    capability: str,
+) -> str:
+    """Construct the strict QA planning / audit prompt for CEO-delegated DAG work items (STEP 23B.1).
+
+    Enforces that CEO-delegated QA work is strictly non-mutating planning or audit,
+    and cannot issue code certification verdicts or repository apply authority.
+    """
+    upstream_sections: List[str] = []
+    if verified_artifacts:
+        if isinstance(verified_artifacts, dict):
+            for art_name, art_content in verified_artifacts.items():
+                slice_text = str(art_content).strip()[:5000]
+                upstream_sections.append(f"### {art_name}\n```markdown\n{slice_text}\n```")
+        elif isinstance(verified_artifacts, list):
+            for item in verified_artifacts:
+                if isinstance(item, tuple) and len(item) == 2:
+                    ref, content = item
+                    art_name = getattr(ref, "producer_role", "upstream") or "upstream"
+                    art_id = getattr(ref, "artifact_id", "artifact")
+                    slice_text = str(content).strip()[:5000]
+                    upstream_sections.append(f"### {art_name} ({art_id})\n```markdown\n{slice_text}\n```")
+                elif isinstance(item, str):
+                    slice_text = item.strip()[:5000]
+                    upstream_sections.append(f"### Upstream Context\n```markdown\n{slice_text}\n```")
+    upstream_block = "\n\n".join(upstream_sections) if upstream_sections else "_No upstream artifacts provided._"
+
+    prompt = f"""You are the QA Specialist of the Jester AI Company executing a CEO-delegated QA PLANNING & AUDIT task (STEP 23B.1).
+
+TASK TITLE: {getattr(task, 'title', 'QA Planning Task')}
+ASSIGNED QA CAPABILITY: {capability}
+TASK GOAL: {getattr(task, 'goal', '')}
+
+CRITICAL OPERATING BOUNDARIES:
+1. You are performing non-mutating QA planning, test matrix formulation, or read-only audit.
+2. You have NO code modification authority, NO git apply permissions, and NO execution grant generation authority.
+3. You do NOT issue code patch certification verdicts. Code patch certification is strictly owned by the engineering verification pipeline.
+4. Any recommendations for tests or actions are purely data/proposals for downstream execution.
+5. All test case specifications, matrix rows, and coverage items are planning deliverables only.
+
+---
+
+# UPSTREAM INPUT ARTIFACTS
+{upstream_block}
+
+---
+
+# REQUIRED RESPONSE FORMAT
+You must output your complete analysis as a SINGLE strict JSON code block adhering to schema version "1.0":
+```json
+{{
+  "schema_version": "1.0",
+  "status": "READY_FOR_QA_EXECUTION",
+  "summary": "Detailed summary of test strategy, test matrix, or audit findings.",
+  "requirements_coverage": [
+    {{
+      "requirement_id": "REQ-1",
+      "status": "COVERED",
+      "evidence": "Planned test or audit verification method",
+      "notes": "Coverage rationale"
+    }}
+  ],
+  "risks": [
+    "Specific quality or verification risk identified"
+  ],
+  "findings": [
+    {{
+      "id": "FINDING-001",
+      "severity": "MEDIUM",
+      "category": "TESTABILITY",
+      "description": "Clear description of testability or quality concern",
+      "requirement_reference": "REQ-1",
+      "affected_files": [],
+      "evidence": "Observed gap in requirements or testability",
+      "recommended_action": "Actionable test or verification recommendation"
+    }}
+  ],
+  "test_cases": [
+    {{
+      "id": "TC-001",
+      "objective": "Verify behavior under expected scenario",
+      "type": "INTEGRATION",
+      "target": "tests/test_feature.py",
+      "preconditions": "Initial setup preconditions",
+      "expected_result": "Expected observable outcome",
+      "priority": "HIGH"
+    }}
+  ],
+  "regression_areas": [
+    "Components or user journeys potentially impacted"
+  ],
+  "unresolved_questions": [
+    "Unresolved quality or scope questions"
+  ],
+  "recommended_verification_actions": [
+    {{
+      "action_type": "pytest",
+      "target": "tests/test_feature.py",
+      "purpose": "Verify feature behavior"
+    }}
+  ]
+}}
+```
+
+Ensure your JSON is valid, strictly adheres to schema version "1.0", and contains no trailing characters outside the JSON code block.
+"""
+    return prompt.strip()
+
+
+def parse_and_validate_qa_planning_result(raw_output: str) -> QAInspectionResult:
+    """Parse and validate raw model output for a CEO-delegated QA planning / audit task (STEP 23B.1).
+
+    Enforces fail-fast security checks:
+    - Zero privileged authority keys (grant, approve, certification, apply, shell).
+    - Status must be a valid inspection status (READY_FOR_QA_EXECUTION, NEEDS_DEVELOPER_ATTENTION, BLOCKED),
+      never a release verdict (PASS/APPROVED/CERTIFIED).
+    - Conforms to standard QAInspectionResult schema.
+    """
+    json_text = extract_qa_json_text(raw_output)
+    try:
+        data = json.loads(json_text, strict=False)
+    except json.JSONDecodeError as exc:
+        raise QAResultParseError(f"Failed to parse QA planning output as JSON: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise QAResultValidationError("QA planning JSON output must be a root JSON object.")
+
+    # Security check: forbid authority-bearing keys
+    for key in PROHIBITED_QA_RESULT_KEYS:
+        if key in data:
+            raise QAResultValidationError(
+                f"Unauthorized privileged key '{key}' detected in QA planning result. "
+                f"QA planning is read-only and cannot issue grants, approvals, or certification."
+            )
+
+    # Delegate full structural validation to parse_and_validate_qa_result
+    return parse_and_validate_qa_result(raw_output)
+

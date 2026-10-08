@@ -240,7 +240,9 @@ from .qa_result import (
     RequirementCoverage,
     RequirementCoverageStatus,
     build_qa_inspection_prompt,
+    build_qa_planning_execution_prompt,
     extract_qa_json_text,
+    parse_and_validate_qa_planning_result,
     parse_and_validate_qa_result,
 )
 from .verification import (
@@ -362,6 +364,9 @@ from .orchestrator import (
     HumanEscalation,
     OrchestrationError,
     PlanValidationError,
+    PROHIBITED_QA_CAPABILITIES,
+    QAPlanningCapability,
+    SUPPORTED_QA_CAPABILITIES,
     TransitionPolicyError,
     WorkItemState,
 )

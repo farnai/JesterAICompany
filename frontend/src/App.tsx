@@ -58,6 +58,7 @@ export default function App() {
   const [inspectingArtifactPath, setInspectingArtifactPath] = useState<string | null>(null)
   const [isApprovalModalOpen, setIsApprovalModalOpen] = useState<boolean>(false)
   const [isNewObjectiveModalOpen, setIsNewObjectiveModalOpen] = useState<boolean>(false)
+  const [isInspectorCollapsed, setIsInspectorCollapsed] = useState<boolean>(true)
 
   // Count pending approvals
   const pendingApprovals = companyRuns.filter(
@@ -105,7 +106,10 @@ export default function App() {
         {activeNavTab === 'floor' ? (
           <div className="floor-viewport-layout">
             {/* Center Column: Objective Header + Dominant Company Floor */}
-            <main className="company-center-column">
+            <main
+              className={`company-center-column ${isInspectorCollapsed ? 'inspector-collapsed' : 'inspector-expanded'}`}
+              data-testid="company-center-column"
+            >
               {/* Top Utility Ribbon (Kept invisible for backward test assertions) */}
               <div
                 className="top-utility-bar"
@@ -233,6 +237,8 @@ export default function App() {
               patchDiff={currentDiff}
               onInspectArtifact={(path) => setInspectingArtifactPath(path)}
               onOpenApproval={() => setIsApprovalModalOpen(true)}
+              isCollapsed={isInspectorCollapsed}
+              onToggleCollapse={() => setIsInspectorCollapsed(!isInspectorCollapsed)}
             />
           </div>
         ) : (
@@ -447,7 +453,11 @@ export default function App() {
           patchDiff={currentDiff}
           onClose={() => setIsApprovalModalOpen(false)}
           onApprove={async (runId) => {
-            const res = await approveRun(runId)
+            const res = await approveRun(
+              runId,
+              'Human Founder',
+              activeCompanyRun?.real_repo_apply_proposal_id || undefined
+            )
             return res
           }}
           onReject={async (runId, reason) => {
@@ -456,9 +466,14 @@ export default function App() {
             return res
           }}
           onApply={async (runId) => {
-            const res = await applyRun(runId)
+            const res = await applyRun(
+              runId,
+              activeCompanyRun?.real_repo_apply_proposal_id || undefined,
+              activeCompanyRun?.real_repo_apply_grant_id || undefined
+            )
             return res
           }}
+          onInspectArtifact={(path) => setInspectingArtifactPath(path)}
         />
       )}
 
