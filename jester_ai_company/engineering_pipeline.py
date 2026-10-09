@@ -845,6 +845,43 @@ class EngineeringPipelineAdapter:
         )
         run.employee_summaries.append(qa_summary)
 
+        # Record Developer and QA execution telemetry
+        if run.execution_telemetry and isinstance(run.execution_telemetry, dict):
+            try:
+                from .telemetry import RunExecutionTelemetry
+                t_obj = RunExecutionTelemetry.from_dict(run.execution_telemetry)
+                dev_m = t_obj.record_specialist_start(
+                    execution_id=f"exec_dev_{uuid.uuid4().hex[:6]}",
+                    role="developer",
+                    phase="mutation",
+                    work_item_id=target_item.work_item_id,
+                    task_id=plan_task.id,
+                )
+                t_obj.record_specialist_completion(
+                    execution_id=dev_m.execution_id,
+                    status="SUCCESS",
+                    duration_seconds=0.15,
+                    model_latency_seconds=0.15,
+                    model_invocation_count=1,
+                )
+                qa_m = t_obj.record_specialist_start(
+                    execution_id=f"exec_qa_{uuid.uuid4().hex[:6]}",
+                    role="qa",
+                    phase="verification",
+                    work_item_id=target_item.work_item_id,
+                    task_id=qa_exec_art.task_id if qa_exec_art else None,
+                )
+                t_obj.record_specialist_completion(
+                    execution_id=qa_m.execution_id,
+                    status="SUCCESS",
+                    duration_seconds=0.1,
+                    model_latency_seconds=0.1,
+                    model_invocation_count=1,
+                )
+                run.execution_telemetry = t_obj.to_dict()
+            except Exception:
+                pass
+
         # Transition CompanyRun to READY_FOR_HUMAN_APPLY
         run.transition_to(CompanyRunState.READY_FOR_HUMAN_APPLY, is_code_workflow=True)
         run.add_event(

@@ -105,7 +105,7 @@ export const CompanyFloor: React.FC<CompanyFloorProps> = ({
     if (wiState === 'RUNNING') return 'Working'
     if (wiState === 'READY') return 'Working'
 
-    if (run?.state === 'RUNNING') return 'Working'
+    if (run?.state === 'RUNNING') return run.is_active_execution ? 'Working' : 'Waiting'
     if (run?.state === 'READY_FOR_HUMAN_APPLY') return 'Completed'
     if (run?.state === 'COMPLETED') return 'Completed'
 
@@ -114,6 +114,7 @@ export const CompanyFloor: React.FC<CompanyFloorProps> = ({
 
   // SVG hierarchy: Founder -> CEO -> selected specialists (no React Flow)
   const connections = useMemo(() => {
+    const isLive = Boolean(run?.is_active_execution)
     const conns: {
       fromId: string
       toId: string
@@ -124,7 +125,7 @@ export const CompanyFloor: React.FC<CompanyFloorProps> = ({
     conns.push({
       fromId: 'anchor-founder',
       toId: 'anchor-ceo',
-      isActive: run?.state === 'PLANNING' || run?.state === 'CREATED',
+      isActive: isLive ? (run?.state === 'PLANNING' || run?.state === 'CREATED') : false,
       isCompleted: Boolean(run?.state && run.state !== 'CREATED'),
     })
 
@@ -133,7 +134,7 @@ export const CompanyFloor: React.FC<CompanyFloorProps> = ({
       conns.push({
         fromId: 'anchor-ceo',
         toId: `anchor-worker-${role}`,
-        isActive: state === 'Working',
+        isActive: isLive && state === 'Working',
         isCompleted: state === 'Completed',
       })
     })
@@ -322,6 +323,61 @@ export const CompanyFloor: React.FC<CompanyFloorProps> = ({
               </div>
             )}
 
+            {/* Step 23B.5-C: Compact Fault-Tolerant Recovery & Checkpoint Info */}
+            {run?.recovery_summary && (run.recovery_summary.failure_category || run.recovery_summary.current_attempt > 1 || run.recovery_summary.founder_action_required) && (
+              <div
+                style={{
+                  fontSize: '11px',
+                  color: '#c2410c',
+                  backgroundColor: '#fff7ed',
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  marginTop: '6px',
+                  border: '1px solid #ffedd5',
+                }}
+                data-testid="recovery-status-banner"
+              >
+                <div style={{ fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>
+                    🔄 Attempt {run.recovery_summary.current_attempt}/{run.recovery_summary.max_retries + 1}
+                    {run.recovery_summary.failure_category && ` · ${run.recovery_summary.failure_category}`}
+                    {run.recovery_summary.recovery_decision && ` → ${run.recovery_summary.recovery_decision}`}
+                  </span>
+                  {run.recovery_summary.founder_action_required && (
+                    <span
+                      style={{
+                        backgroundColor: '#ea580c',
+                        color: '#ffffff',
+                        fontSize: '9px',
+                        padding: '1px 5px',
+                        borderRadius: '4px',
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.04em',
+                      }}
+                      data-testid="recovery-founder-action-badge"
+                    >
+                      Founder Action Required
+                    </span>
+                  )}
+                </div>
+                {run.recovery_summary.explanation && (
+                  <div style={{ marginTop: '2px', color: '#9a3412', fontStyle: 'italic' }}>
+                    {run.recovery_summary.explanation}
+                  </div>
+                )}
+                <div style={{ marginTop: '3px', display: 'flex', gap: '8px', color: '#7c2d12', fontSize: '10px' }}>
+                  <span>
+                    📦 Preserved Artifacts: <strong>{run.recovery_summary.preserved_artifacts.length}</strong>
+                  </span>
+                  <span>·</span>
+                  <span>
+                    ⏳ Remaining Work: <strong>{run.recovery_summary.remaining_work.length}</strong>
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* Screen-reader roster of the CEO's real selection */}
             <ul className="sr-only">
               {selectedRoles.map((role) => (
@@ -348,6 +404,184 @@ export const CompanyFloor: React.FC<CompanyFloorProps> = ({
           run={run}
           onSubmitClarification={onSubmitClarification}
         />
+      )}
+
+      {/* =================================================================== */}
+      {/* EXECUTION OBSERVABILITY & METRICS (STEP 23B.4)                      */}
+      {/* =================================================================== */}
+      {run && (
+        <section
+          className="fl-execution-metrics"
+          aria-label="Execution Observability & Telemetry"
+          data-testid="execution-metrics-section"
+          style={{
+            background: '#ffffff',
+            border: '1px solid #e2e8f0',
+            borderRadius: '10px',
+            padding: '12px 16px',
+            marginBottom: '12px',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '10px',
+              borderBottom: '1px solid #f1f5f9',
+              paddingBottom: '8px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '14px' }}>⏱️</span>
+              <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: '#1e293b' }}>
+                Execution Observability & Performance
+              </h4>
+              <span
+                style={{
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  padding: '2px 8px',
+                  borderRadius: '12px',
+                  backgroundColor: run.state === 'COMPLETED' ? '#dcfce7' : run.state === 'FAILED' ? '#fee2e2' : '#ffedd5',
+                  color: run.state === 'COMPLETED' ? '#166534' : run.state === 'FAILED' ? '#991b1b' : '#9a3412',
+                }}
+              >
+                {run.state}
+              </span>
+              <span
+                style={{
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  padding: '2px 8px',
+                  borderRadius: '12px',
+                  backgroundColor: run.is_active_execution ? '#ffedd5' : '#f1f5f9',
+                  color: run.is_active_execution ? '#9a3412' : '#475569',
+                }}
+                data-testid="execution-mode-badge"
+              >
+                {run.is_active_execution ? '● LIVE' : '○ PERSISTED SNAPSHOT'}
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '11px', color: '#64748b' }}>Total Elapsed:</span>
+              <strong style={{ fontSize: '13px', color: '#0f172a', fontFamily: 'monospace' }} data-testid="metric-total-duration">
+                {run.execution_telemetry?.duration_seconds !== null && run.execution_telemetry?.duration_seconds !== undefined
+                  ? `${run.execution_telemetry.duration_seconds.toFixed(2)}s`
+                  : run.completed_at && run.created_at
+                  ? `${Math.max(0, (new Date(run.completed_at).getTime() - new Date(run.created_at).getTime()) / 1000).toFixed(2)}s`
+                  : run.state === 'CREATED' && !run.is_active_execution
+                  ? 'Not started'
+                  : run.is_active_execution
+                  ? 'In progress...'
+                  : 'Idle'}
+              </strong>
+            </div>
+          </div>
+
+          {/* Metric KPIs Row */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+              gap: '10px',
+              marginBottom: '10px',
+            }}
+          >
+            <div style={{ background: '#f8fafc', padding: '8px 10px', borderRadius: '6px', border: '1px solid #f1f5f9' }}>
+              <div style={{ fontSize: '10.5px', color: '#64748b', textTransform: 'uppercase' }}>Model Calls</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', marginTop: '2px' }} data-testid="metric-model-calls">
+                {run.execution_telemetry?.total_model_invocations ?? ((run.ceo_invocation_count ?? 0) + (run.specialist_invocation_count ?? 0))}
+              </div>
+              <div style={{ fontSize: '10px', color: '#94a3b8' }}>
+                Latency: {run.execution_telemetry?.total_model_latency_seconds ? `${run.execution_telemetry.total_model_latency_seconds.toFixed(2)}s` : '0.00s'}
+              </div>
+            </div>
+
+            <div style={{ background: '#f8fafc', padding: '8px 10px', borderRadius: '6px', border: '1px solid #f1f5f9' }}>
+              <div style={{ fontSize: '10.5px', color: '#64748b', textTransform: 'uppercase' }}>Token Usage</div>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: '#64748b', marginTop: '2px' }} data-testid="metric-token-usage">
+                {run.execution_telemetry?.total_tokens !== null && run.execution_telemetry?.total_tokens !== undefined
+                  ? run.execution_telemetry.total_tokens.toLocaleString()
+                  : 'Unavailable'}
+              </div>
+              <div style={{ fontSize: '10px', color: '#94a3b8' }}>
+                Cost: {run.execution_telemetry?.estimated_cost_usd !== null && run.execution_telemetry?.estimated_cost_usd !== undefined ? `$${run.execution_telemetry.estimated_cost_usd}` : 'Unavailable'}
+              </div>
+            </div>
+
+            <div style={{ background: '#f8fafc', padding: '8px 10px', borderRadius: '6px', border: '1px solid #f1f5f9' }}>
+              <div style={{ fontSize: '10.5px', color: '#64748b', textTransform: 'uppercase' }}>Workforce</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', marginTop: '2px' }} data-testid="metric-workforce-count">
+                {run.execution_telemetry?.specialist_count_executed ?? (run.state === 'CREATED' ? 0 : (selectedRoles.length || 0))} / {run.execution_telemetry?.specialist_count_planned ?? (selectedRoles.length || 0)}
+              </div>
+              <div style={{ fontSize: '10px', color: '#94a3b8' }}>executed / planned</div>
+            </div>
+
+            <div style={{ background: '#f8fafc', padding: '8px 10px', borderRadius: '6px', border: '1px solid #f1f5f9' }}>
+              <div style={{ fontSize: '10.5px', color: '#64748b', textTransform: 'uppercase' }}>Reliability</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: run.execution_telemetry?.total_errors ? '#dc2626' : '#16a34a', marginTop: '2px' }} data-testid="metric-reliability">
+                {run.execution_telemetry?.total_errors ?? 0} errors
+              </div>
+              <div style={{ fontSize: '10px', color: '#94a3b8' }}>
+                {run.execution_telemetry?.total_retries ?? 0} retries · {run.execution_telemetry?.team_escalation_count ?? run.escalation_count ?? 0} escalations
+              </div>
+            </div>
+          </div>
+
+          {/* Bottleneck Banner */}
+          {run.execution_telemetry?.bottleneck_stage && (
+            <div
+              style={{
+                fontSize: '11.5px',
+                color: '#c2410c',
+                backgroundColor: '#fff7ed',
+                border: '1px solid #ffedd5',
+                borderRadius: '6px',
+                padding: '6px 10px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                marginBottom: '8px',
+              }}
+              data-testid="metric-bottleneck-banner"
+            >
+              <span>⚡</span>
+              <span>
+                <strong>Bottleneck Stage:</strong> {run.execution_telemetry.bottleneck_stage.role} ({run.execution_telemetry.bottleneck_stage.duration_seconds.toFixed(2)}s) — {run.execution_telemetry.bottleneck_stage.reason}
+              </span>
+            </div>
+          )}
+
+          {/* Specialist Duration Breakdown Chips */}
+          {run.execution_telemetry?.specialist_metrics && run.execution_telemetry.specialist_metrics.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' }} data-testid="metric-specialist-chips">
+              {run.execution_telemetry.specialist_metrics.map((m, idx) => (
+                <div
+                  key={`${m.execution_id || idx}`}
+                  style={{
+                    fontSize: '11px',
+                    padding: '3px 8px',
+                    borderRadius: '6px',
+                    background: '#f1f5f9',
+                    color: '#334155',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                  }}
+                >
+                  <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{m.role}</span>
+                  <span style={{ color: '#64748b' }}>({m.phase}):</span>
+                  <span style={{ fontFamily: 'monospace', fontWeight: 600, color: '#0f172a' }}>
+                    {m.duration_seconds !== null && m.duration_seconds !== undefined ? `${m.duration_seconds.toFixed(2)}s` : '—'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       )}
 
       {/* =================================================================== */}

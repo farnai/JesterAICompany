@@ -28,17 +28,19 @@ export const ObjectiveHeader: React.FC<ObjectiveHeaderProps> = ({
 }) => {
   const objective = run?.objective
   const title =
-    objective?.title || (run ? 'Add defensive self-pair validation to canonical_pair_seed' : (activeTask ? `Active Task: ${activeTask.title}` : 'Add defensive self-pair validation to canonical_pair_seed'))
+    objective?.title || (run ? (run.objective?.title || 'Untitled Objective') : (activeTask ? `Active Task: ${activeTask.title}` : 'No Active Objective'))
   const objectiveId =
     objective?.id?.toUpperCase() ||
     activeTask?.id?.toUpperCase() ||
-    (run?.run_id ? run.run_id.replace('crun_', 'TASK-').toUpperCase() : 'TASK-0002')
+    (run?.run_id ? run.run_id.replace('crun_', 'TASK-').toUpperCase() : '--')
 
   // Description / summary from constraints or objective
   const rawDesc =
-    objective?.constraints?.join(' · ') ||
-    run?.selection_reasoning ||
-    'Ensure canonical_pair_seed rejects user self-pairs with clear ValueError and maintains backward compatibility.'
+    (objective?.constraints && objective.constraints.length > 0)
+      ? objective.constraints.join(' · ')
+      : objective?.description ||
+        run?.selection_reasoning ||
+        (run ? 'No description provided.' : 'Submit an objective or select a project to begin execution.')
   const description = rawDesc.length > 300 ? rawDesc.slice(0, 297) + '...' : rawDesc
 
   // Determine current active lifecycle phase index from REAL backend state
@@ -68,10 +70,12 @@ export const ObjectiveHeader: React.FC<ObjectiveHeaderProps> = ({
   }
 
   const currentPhaseIndex = getCurrentPhaseIndex()
+  const isLive = Boolean(run?.is_active_execution)
 
   // Format real duration if available
   const getElapsedDuration = (): string => {
-    if (!run?.created_at) return '13m 28s'
+    if (!run?.created_at) return '--'
+    if (run.state === 'CREATED' && !isLive) return '0s (Not started)'
     try {
       const start = new Date(run.created_at).getTime()
       const end = run.completed_at ? new Date(run.completed_at).getTime() : Date.now()
@@ -82,11 +86,30 @@ export const ObjectiveHeader: React.FC<ObjectiveHeaderProps> = ({
       if (mins === 0) return `${secs}s`
       return `${mins}m ${secs}s`
     } catch {
-      return '13m 28s'
+      return '--'
     }
   }
 
   const durationStr = getElapsedDuration()
+
+  const getPhaseSubstatus = (
+    phaseId: string,
+    isDone: boolean,
+    isCurrent: boolean
+  ): string => {
+    if (isDone) return 'Completed'
+    if (!isCurrent) return ''
+    if (phaseId === 'approval') return 'Waiting'
+    if (run?.state === 'CREATED') return 'Ready'
+    if (run?.state === 'PLAN_READY') return 'Plan Ready'
+    if (run?.state === 'FAILED') return 'Failed'
+    if (run?.state === 'BLOCKED') return 'Blocked'
+    if (run?.state === 'RUNNING') {
+      return isLive ? 'Working' : 'Restored'
+    }
+    return isLive ? 'Working' : 'Saved'
+  }
+
   const startedDateStr = run?.created_at
     ? new Date(run.created_at).toLocaleDateString('en-US', {
         month: 'short',
@@ -95,7 +118,7 @@ export const ObjectiveHeader: React.FC<ObjectiveHeaderProps> = ({
         hour: '2-digit',
         minute: '2-digit',
       })
-    : 'Dec 17, 2024 12:24'
+    : '--'
 
   const projectName = activeProject?.name?.split('—')[0]?.split('-')[0]?.trim() || 'Jester'
   const repoName = activeProject?.repository?.repository_id || 'repo_jester'
@@ -175,7 +198,9 @@ export const ObjectiveHeader: React.FC<ObjectiveHeaderProps> = ({
                     : isCurrent
                     ? isApprovalStep
                       ? 'node-waiting-approval'
-                      : 'node-active'
+                      : isLive
+                      ? 'node-active'
+                      : 'node-standby'
                     : 'node-upcoming'
                 }`}
               >
@@ -191,7 +216,7 @@ export const ObjectiveHeader: React.FC<ObjectiveHeaderProps> = ({
                 <div className="stepper-label-group">
                   <span className="phase-name">{phase.label}</span>
                   <span className="phase-substatus">
-                    {isDone ? 'Completed' : isCurrent ? (isApprovalStep ? 'Waiting' : 'Working') : ''}
+                    {getPhaseSubstatus(phase.id, isDone, isCurrent)}
                   </span>
                 </div>
               </div>

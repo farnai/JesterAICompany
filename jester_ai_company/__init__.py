@@ -419,6 +419,12 @@ from .context import (
     assemble_ceo_context,
     assemble_specialist_context,
 )
+from .telemetry import (
+    SpecialistExecutionMetrics,
+    RunExecutionTelemetry,
+    compare_company_runs,
+    sanitize_telemetry_message,
+)
 
 
 __version__ = "0.1.0"
@@ -740,6 +746,10 @@ __all__ = [
     "ContextEnvelope",
     "assemble_ceo_context",
     "assemble_specialist_context",
+    "SpecialistExecutionMetrics",
+    "RunExecutionTelemetry",
+    "compare_company_runs",
+    "sanitize_telemetry_message",
     "__version__",
 ]
 

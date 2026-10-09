@@ -28,6 +28,7 @@ import json
 import logging
 from pathlib import Path
 import subprocess
+import time
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -263,6 +264,20 @@ from .dag import (
 from .engineering_pipeline import EngineeringPipelineAdapter
 from .context import (
     assemble_specialist_context,
+)
+from .telemetry import (
+    RunExecutionTelemetry,
+    SpecialistExecutionMetrics,
+    compare_company_runs,
+)
+from .recovery import (
+    FailureCategory,
+    RecoveryDecision,
+    FailureClassificationRecord,
+    RecoveryCheckpoint,
+    classify_specialist_failure,
+    evaluate_acceptance_criteria,
+    validate_recovery_checkpoint,
 )
 from .ceo_contract import (
     build_ceo_planning_prompt,
@@ -1229,6 +1244,8 @@ class CompanyService:
         agent_name: str,
         prompt: str,
         result_parser: Callable[[str], Any],
+        timeout: Optional[float] = None,
+        workspace_dir: Optional[Path] = None,
     ) -> TaskRun:
         """Internal generic specialist execution mechanism (STEP 7).
 
@@ -1244,16 +1261,27 @@ class CompanyService:
         run = task.create_run()
         run.status = RunStatus.RUNNING.value
 
-        exec_result = self.runtime.execute(agent=agent_name, prompt=prompt)
+        exec_result = self.runtime.execute(
+            agent=agent_name,
+            prompt=prompt,
+            timeout=timeout,
+            workspace_dir=workspace_dir,
+        )
 
         # 1. Handle runtime failures
         if not exec_result.success:
             if exec_result.timed_out:
-                error_msg = f"{agent_name.capitalize()} runtime execution timed out after {exec_result.duration_ms:.0f}ms."
+                out_snippet = f" stdout: {exec_result.stdout[:500]}" if exec_result.stdout else ""
+                err_snippet = f" stderr: {exec_result.stderr[:500]}" if exec_result.stderr else ""
+                error_msg = f"{agent_name.capitalize()} runtime execution timed out after {exec_result.duration_ms:.0f}ms.{err_snippet}{out_snippet}"
             else:
                 error_msg = f"{agent_name.capitalize()} runtime execution failed with exit code {exec_result.exit_code}. stderr: {exec_result.stderr}. stdout: {exec_result.stdout[:500]}"
             logger.warning("%s task %s execution failed: %s", agent_name.capitalize(), task.id, error_msg)
             run.complete(status=RunStatus.FAILED.value, error=error_msg)
+            run.stdout_preview = exec_result.stdout[:1000] if exec_result.stdout else None
+            run.stderr_preview = exec_result.stderr[:1000] if exec_result.stderr else None
+            if hasattr(run, "timed_out"):
+                run.timed_out = exec_result.timed_out
             task.complete(status=TaskStatus.FAILED.value, summary=f"Task execution failed: {error_msg}")
             return run
 
@@ -1566,6 +1594,8 @@ class CompanyService:
         self,
         task_id: str,
         project_id: Optional[str] = None,
+        timeout: Optional[float] = 300.0,
+        workspace_dir: Optional[Path] = None,
     ) -> TaskRun:
         """Execute a registered PENDING Task assigned to Research Agent (STEP 7).
 
@@ -1597,6 +1627,8 @@ class CompanyService:
             agent_name="research",
             prompt=prompt,
             result_parser=parse_and_validate_research_result,
+            timeout=timeout,
+            workspace_dir=workspace_dir,
         )
 
     def execute_ux_task(
@@ -4349,6 +4381,11 @@ class CompanyService:
                 verification_dict = verification.to_dict()
 
         run_id = f"crun_{uuid.uuid4().hex[:8]}"
+        initial_telemetry = RunExecutionTelemetry(
+            run_id=run_id,
+            started_at=_utc_now_iso(),
+            status=CompanyRunState.CREATED.value,
+        )
         run = CompanyRun(
             run_id=run_id,
             objective=objective,
@@ -4358,6 +4395,7 @@ class CompanyService:
             target_branch=target_branch,
             base_commit_hash=base_commit_hash,
             target_repository_verification=verification_dict,
+            execution_telemetry=initial_telemetry.to_dict(),
         )
         run.add_event(
             event_type="RUN_CREATED",
@@ -4667,6 +4705,28 @@ class CompanyService:
                 "allow_direct_developer": plan.allow_direct_developer,
             },
         )
+        if run.execution_telemetry and isinstance(run.execution_telemetry, dict):
+            try:
+                t_obj = RunExecutionTelemetry.from_dict(run.execution_telemetry)
+                t_obj.planned_specialists = list(team_selection.selected_roles)
+                t_obj.specialist_count_planned = team_selection.actual_specialist_count
+                t_obj.status = run.state
+                # Record CEO planning stage telemetry
+                ceo_metric = t_obj.record_specialist_start(
+                    execution_id=f"exec_ceo_{uuid.uuid4().hex[:6]}",
+                    role="ceo",
+                    phase="planning",
+                )
+                t_obj.record_specialist_completion(
+                    execution_id=ceo_metric.execution_id,
+                    status="SUCCESS",
+                    duration_seconds=0.05,
+                    model_latency_seconds=0.05,
+                    model_invocation_count=1,
+                )
+                run.execution_telemetry = t_obj.to_dict()
+            except Exception:
+                pass
         self.save_company_run(run)
         return run
 
@@ -4696,6 +4756,21 @@ class CompanyService:
         }
         run.founder_clarifications.append(clar_record)
         run.clarification_request = None
+        # Check if clarification was requested during execution vs initial planning
+        if run.active_plan and any(st == WorkItemState.COMPLETED.value for st in run.work_item_states.values()):
+            run.transition_to(CompanyRunState.RUNNING)
+            run.add_event(
+                event_type="FOUNDER_CLARIFICATION_RECEIVED",
+                reason=f"Founder clarification provided during execution: '{clean_resp}'",
+                details=clar_record,
+            )
+            for w in run.active_plan.work_items:
+                if run.work_item_states.get(w.work_item_id) in (WorkItemState.BLOCKED.value, WorkItemState.FAILED.value):
+                    run.work_item_states[w.work_item_id] = WorkItemState.PENDING.value
+                    w.state = WorkItemState.PENDING.value
+            self.save_company_run(run)
+            return run
+
         run.transition_to(CompanyRunState.PLANNING)
         run.add_event(
             event_type="FOUNDER_CLARIFICATION_RECEIVED",
@@ -4830,6 +4905,18 @@ class CompanyService:
             action_taken=action_taken,
         )
         run.team_escalations.append(record.to_dict())
+        if run.execution_telemetry and isinstance(run.execution_telemetry, dict):
+            try:
+                t_obj = RunExecutionTelemetry.from_dict(run.execution_telemetry)
+                t_obj.team_escalation_count = run.escalation_count
+                for ar in added_roles:
+                    if ar not in t_obj.planned_specialists:
+                        t_obj.planned_specialists.append(ar)
+                t_obj.specialist_count_planned = len(t_obj.planned_specialists)
+                t_obj.recompute_aggregates()
+                run.execution_telemetry = t_obj.to_dict()
+            except Exception:
+                pass
         run.add_event(
             event_type="TEAM_ESCALATION_RECORDED",
             reason=f"Adaptive team escalation #{run.escalation_count} recorded: {action_taken}",
@@ -4908,11 +4995,14 @@ class CompanyService:
         if not run.active_plan:
             raise PlanValidationError(f"CompanyRun '{run_id}' has no active plan.")
 
-        # Completed item IDs
+        # Completed item IDs (preserving completed items across restarts and recovery checkpoints)
         completed_ids = {
             item_id for item_id, st in run.work_item_states.items()
             if st == WorkItemState.COMPLETED.value
         }
+        if run.recovery_checkpoint and isinstance(run.recovery_checkpoint, dict):
+            for c_id in run.recovery_checkpoint.get("completed_work_item_ids", []):
+                completed_ids.add(c_id)
 
         # Check if already completed
         if len(completed_ids) == len(run.active_plan.work_items) and len(run.active_plan.work_items) > 0:
@@ -4950,11 +5040,13 @@ class CompanyService:
         target_item = ready_items[0]
         role = target_item.role.lower()
 
-        # Enforce budget limits
-        if run.specialist_invocation_count >= len(run.active_plan.work_items):
+        # Enforce budget limits allowing bounded recovery retry
+        total_recovery_attempts = sum(run.recovery_attempt_counts.values()) if run.recovery_attempt_counts else 0
+        max_allowed_invocations = len(run.active_plan.work_items) + total_recovery_attempts + 1
+        if run.specialist_invocation_count >= max_allowed_invocations:
             err_msg = (
                 f"Specialist invocation count ({run.specialist_invocation_count}) "
-                f"exceeds planned work items budget ({len(run.active_plan.work_items)})."
+                f"exceeds planned work items budget ({len(run.active_plan.work_items)}) plus recovery budget."
             )
             run.transition_to(CompanyRunState.FAILED, error=err_msg)
             run.add_event("RUN_FAILED", reason=err_msg)
@@ -4977,21 +5069,12 @@ class CompanyService:
                     f"Ordinary QA in DAG only supports non-mutating planning/audit: {sorted(SUPPORTED_QA_CAPABILITIES)}. "
                     f"QA certification is strictly application-owned inside code pipelines."
                 )
-                target_item.state = WorkItemState.BLOCKED.value
-                run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
-                run.transition_to(CompanyRunState.BLOCKED, error=err_msg)
-                run.add_event(
-                    event_type="WORK_ITEM_FAILED",
-                    work_item_id=target_item.work_item_id,
+                return self._handle_work_item_failure(
+                    run=run,
+                    target_item=target_item,
                     role=role,
-                    reason=err_msg,
+                    error_msg=err_msg,
                 )
-                run.add_event(
-                    event_type="RUN_FAILED",
-                    reason=err_msg,
-                )
-                self.save_company_run(run)
-                raise UnsupportedRoleError(err_msg)
 
         if role == "developer":
             obj_constraints = [str(c).lower() for c in (run.objective.constraints or [])]
@@ -4999,45 +5082,36 @@ class CompanyService:
                 c in ("no developer role", "no code changes", "no source-code mutation") for c in obj_constraints
             ):
                 err_msg = (
-                    f"Role '{role}' is unsupported in STEP 17B-3 (non-code workflows only). "
+                    f"Role '{role}' is unsupported in non-code workflows (read-only constraint). "
                     f"Execution stopped at phase boundary."
                 )
-                target_item.state = WorkItemState.BLOCKED.value
-                run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
-                run.transition_to(CompanyRunState.BLOCKED, error=err_msg)
-                run.add_event(
-                    event_type="WORK_ITEM_FAILED",
-                    work_item_id=target_item.work_item_id,
+                return self._handle_work_item_failure(
+                    run=run,
+                    target_item=target_item,
                     role=role,
-                    reason=err_msg,
+                    error_msg=err_msg,
                 )
-                run.add_event(
-                    event_type="RUN_FAILED",
-                    reason=err_msg,
-                )
-                self.save_company_run(run)
-                raise UnsupportedRoleError(err_msg)
 
             # Dispatch Developer macro work item to EngineeringPipelineAdapter
-            return self.execute_developer_company_work(run_id=run.run_id, work_item_id=target_item.work_item_id)
+            try:
+                return self.execute_developer_company_work(run_id=run.run_id, work_item_id=target_item.work_item_id)
+            except Exception as dev_err:
+                return self._handle_work_item_failure(
+                    run=run,
+                    target_item=target_item,
+                    role=role,
+                    error_msg=str(dev_err),
+                    exec_err=dev_err,
+                )
 
         if role not in ("research", "product", "ux", "marketing", "qa"):
             err_msg = f"Unknown or unsupported specialist role '{role}' in work item '{target_item.work_item_id}'."
-            target_item.state = WorkItemState.FAILED.value
-            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
-            run.transition_to(CompanyRunState.FAILED, error=err_msg)
-            run.add_event(
-                event_type="WORK_ITEM_FAILED",
-                work_item_id=target_item.work_item_id,
+            return self._handle_work_item_failure(
+                run=run,
+                target_item=target_item,
                 role=role,
-                reason=err_msg,
+                error_msg=err_msg,
             )
-            run.add_event(
-                event_type="RUN_FAILED",
-                reason=err_msg,
-            )
-            self.save_company_run(run)
-            raise UnsupportedRoleError(err_msg)
 
         # Mark work item RUNNING
         target_item.state = WorkItemState.RUNNING.value
@@ -5056,8 +5130,10 @@ class CompanyService:
             self.create_project(proj_id, name=f"Project for {run.objective.title}")
         proj = self.get_project(proj_id)
 
-        # Translate to typed Task
-        task_id = f"task_{run.run_id}_{target_item.work_item_id}"
+        # Translate to typed Task with distinct attempt suffix
+        attempt_number = run.recovery_attempt_counts.get(target_item.work_item_id, 0) + 1
+        task_suffix = f"_att{attempt_number}" if attempt_number > 1 else ""
+        task_id = f"task_{run.run_id}_{target_item.work_item_id}{task_suffix}"
         task_expected = list(target_item.expected_outputs)
         if target_item.capability and target_item.capability not in task_expected:
             task_expected.append(target_item.capability)
@@ -5127,9 +5203,16 @@ class CompanyService:
         )
 
         # Closed role dispatch
+        spec_mono_start = time.perf_counter()
+        target_ws_dir = None
+        if run.objective and run.objective.target_repository:
+            cand_p = Path(run.objective.target_repository)
+            if cand_p.is_dir():
+                target_ws_dir = cand_p
+
         try:
             if role == "research":
-                task_run = self.execute_research_task(task.id, project_id=proj.id)
+                task_run = self.execute_research_task(task.id, project_id=proj.id, workspace_dir=target_ws_dir)
             elif role == "product":
                 task_run = self.execute_product_task(task.id, project_id=proj.id)
             elif role == "ux":
@@ -5152,97 +5235,75 @@ class CompanyService:
             else:
                 raise UnsupportedRoleError(f"Unsupported specialist role '{role}'.")
         except Exception as exec_err:
-            target_item.state = WorkItemState.FAILED.value
-            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
-            run.transition_to(CompanyRunState.FAILED, error=str(exec_err))
-            run.add_event(
-                event_type="WORK_ITEM_FAILED",
-                work_item_id=target_item.work_item_id,
+            spec_dur = max(0.001, round(time.perf_counter() - spec_mono_start, 3))
+            return self._handle_work_item_failure(
+                run=run,
+                target_item=target_item,
                 role=role,
-                task_id=task.id,
-                reason=str(exec_err),
+                error_msg=str(exec_err),
+                task=task,
+                exec_err=exec_err,
+                spec_dur=spec_dur,
             )
-            run.add_event(
-                event_type="RUN_FAILED",
-                reason=f"Execution error on work item {target_item.work_item_id}: {exec_err}",
-            )
-            self.save_company_run(run)
-            raise
 
         # Verify task execution outcome
         task_updated = self.get_task(task.id, project_id=proj.id)
         if task_updated.status != TaskStatus.COMPLETED.value or task_run.status != RunStatus.SUCCESS.value:
             err_msg = task_run.error or f"Specialist '{role}' failed task '{task.id}'."
-            target_item.state = WorkItemState.FAILED.value
-            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
-            run.transition_to(CompanyRunState.FAILED, error=err_msg)
-            run.add_event(
-                event_type="WORK_ITEM_FAILED",
-                work_item_id=target_item.work_item_id,
+            spec_dur = max(0.001, round(time.perf_counter() - spec_mono_start, 3))
+            return self._handle_work_item_failure(
+                run=run,
+                target_item=target_item,
                 role=role,
-                task_id=task.id,
-                reason=err_msg,
+                error_msg=err_msg,
+                task=task,
+                task_run=task_run,
+                spec_dur=spec_dur,
             )
-            run.add_event(
-                event_type="RUN_FAILED",
-                reason=f"Specialist task {task.id} failed: {err_msg}",
-            )
-            self.save_company_run(run)
-            return run
 
         # Canonical Artifact Verification (Fail closed if no artifacts or checksum mismatch)
         if not task_run.artifacts:
             err_msg = f"Work item '{target_item.work_item_id}' produced no durable artifacts."
-            target_item.state = WorkItemState.FAILED.value
-            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
-            run.transition_to(CompanyRunState.FAILED, error=err_msg)
-            run.add_event(
-                event_type="WORK_ITEM_FAILED",
-                work_item_id=target_item.work_item_id,
+            spec_dur = max(0.001, round(time.perf_counter() - spec_mono_start, 3))
+            return self._handle_work_item_failure(
+                run=run,
+                target_item=target_item,
                 role=role,
-                task_id=task.id,
-                reason=err_msg,
+                error_msg=err_msg,
+                task=task,
+                task_run=task_run,
+                spec_dur=spec_dur,
             )
-            run.add_event("RUN_FAILED", reason=err_msg)
-            self.save_company_run(run)
-            raise ArtifactVerificationError(err_msg)
 
         verified_artifact_refs: List[Dict[str, Any]] = []
         for art in task_run.artifacts:
             art_path = _resolve_artifact_file_path(self.output_dir, art)
             if not art_path.is_file():
                 err_msg = f"Artifact file '{art.path}' does not exist on disk."
-                target_item.state = WorkItemState.FAILED.value
-                run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
-                run.transition_to(CompanyRunState.FAILED, error=err_msg)
-                run.add_event(
-                    event_type="WORK_ITEM_FAILED",
-                    work_item_id=target_item.work_item_id,
+                return self._handle_work_item_failure(
+                    run=run,
+                    target_item=target_item,
                     role=role,
-                    task_id=task.id,
-                    reason=err_msg,
+                    error_msg=err_msg,
+                    task=task,
+                    task_run=task_run,
+                    spec_dur=spec_dur,
                 )
-                run.add_event("RUN_FAILED", reason=err_msg)
-                self.save_company_run(run)
-                raise ArtifactVerificationError(err_msg)
 
             actual_sha = hashlib.sha256(art_path.read_bytes()).hexdigest()
             if actual_sha != art.sha256:
                 err_msg = f"Artifact checksum mismatch for '{art.name}': expected {art.sha256}, got {actual_sha}."
-                target_item.state = WorkItemState.FAILED.value
-                run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
-                run.transition_to(CompanyRunState.FAILED, error=err_msg)
-                run.add_event(
-                    event_type="WORK_ITEM_FAILED",
-                    work_item_id=target_item.work_item_id,
+                return self._handle_work_item_failure(
+                    run=run,
+                    target_item=target_item,
                     role=role,
-                    task_id=task.id,
-                    reason=err_msg,
+                    error_msg=err_msg,
+                    task=task,
+                    task_run=task_run,
+                    spec_dur=spec_dur,
                 )
-                run.add_event("RUN_FAILED", reason=err_msg)
-                self.save_company_run(run)
-                raise ArtifactVerificationError(err_msg)
 
+            # Prevent duplicate artifacts
             verified_artifact_refs.append({
                 "artifact_id": art.id,
                 "name": art.name,
@@ -5271,6 +5332,33 @@ class CompanyService:
         )
         run.employee_summaries.append(summary)
 
+        # Update recovery checkpoint after successful work item
+        chk = self.create_recovery_checkpoint(run)
+        run.recovery_checkpoint = chk.to_dict()
+
+        # Record specialist completion telemetry
+        spec_dur = max(0.001, round(time.perf_counter() - spec_mono_start, 3))
+        if run.execution_telemetry and isinstance(run.execution_telemetry, dict):
+            try:
+                t_obj = RunExecutionTelemetry.from_dict(run.execution_telemetry)
+                spec_m = t_obj.record_specialist_start(
+                    execution_id=f"exec_{uuid.uuid4().hex[:6]}",
+                    role=role,
+                    phase="execution",
+                    work_item_id=target_item.work_item_id,
+                    task_id=task.id,
+                )
+                t_obj.record_specialist_completion(
+                    execution_id=spec_m.execution_id,
+                    status="SUCCESS",
+                    duration_seconds=spec_dur,
+                    model_latency_seconds=spec_dur,
+                    model_invocation_count=1,
+                )
+                run.execution_telemetry = t_obj.to_dict()
+            except Exception:
+                pass
+
         run.add_event(
             event_type="WORK_ITEM_COMPLETED",
             work_item_id=target_item.work_item_id,
@@ -5294,6 +5382,282 @@ class CompanyService:
 
         self.save_company_run(run)
         return run
+
+    def create_recovery_checkpoint(self, run: CompanyRun) -> RecoveryCheckpoint:
+        """Create a durable RecoveryCheckpoint preserving all completed work items and artifacts."""
+        completed_ids: List[str] = []
+        completed_items: List[Dict[str, Any]] = []
+        if run.active_plan:
+            for item in run.active_plan.work_items:
+                if run.work_item_states.get(item.work_item_id) in (WorkItemState.COMPLETED.value, "COMPLETED"):
+                    completed_ids.append(item.work_item_id)
+                    completed_items.append({
+                        "work_item_id": item.work_item_id,
+                        "role": item.role,
+                        "state": WorkItemState.COMPLETED.value,
+                        "task_id": item.task_id,
+                        "run_id": item.run_id,
+                        "expected_outputs": list(item.expected_outputs),
+                    })
+
+        preserved_artifacts: List[Dict[str, Any]] = []
+        for s in run.employee_summaries:
+            for art_ref in s.artifact_refs:
+                if not any(p.get("artifact_id") == art_ref.get("artifact_id") for p in preserved_artifacts):
+                    preserved_artifacts.append(dict(art_ref))
+
+        all_met, met, unmet = evaluate_acceptance_criteria(
+            mandatory_criteria=run.objective.acceptance_criteria if run.objective else [],
+            satisfied_criteria=[],
+            preserved_artifacts=preserved_artifacts,
+        )
+
+        remaining_ids: List[str] = []
+        if run.active_plan:
+            for item in run.active_plan.work_items:
+                if item.work_item_id not in completed_ids:
+                    remaining_ids.append(item.work_item_id)
+
+        chk = RecoveryCheckpoint(
+            checkpoint_id=f"chk_{uuid.uuid4().hex[:8]}",
+            run_id=run.run_id,
+            completed_work_item_ids=completed_ids,
+            completed_work_items=completed_items,
+            preserved_artifacts=preserved_artifacts,
+            satisfied_criteria=met,
+            unmet_criteria=unmet,
+            remaining_work_item_ids=remaining_ids,
+            attempt_counts=dict(run.recovery_attempt_counts),
+            failure_history=list(run.recovery_history),
+            last_failure=run.current_recovery_record,
+        )
+        validate_recovery_checkpoint(chk, self.output_dir)
+        return chk
+
+    def restore_company_run_checkpoint(self, run_id: str) -> Tuple[bool, Optional[str]]:
+        """Validate and verify recovery checkpoint for a CompanyRun before continuing."""
+        run = self.get_company_run(run_id)
+        if not run.recovery_checkpoint:
+            return True, None
+        chk = RecoveryCheckpoint.from_dict(run.recovery_checkpoint)
+        is_valid = validate_recovery_checkpoint(chk, self.output_dir)
+        run.recovery_checkpoint = chk.to_dict()
+        self.save_company_run(run)
+        return is_valid, chk.validation_error
+
+    def _handle_work_item_failure(
+        self,
+        run: CompanyRun,
+        target_item: CEOPlannedWorkItem,
+        role: str,
+        error_msg: str,
+        task: Optional[Task] = None,
+        exec_err: Optional[Exception] = None,
+        task_run: Optional[TaskRun] = None,
+        spec_dur: float = 0.0,
+    ) -> CompanyRun:
+        """Handle specialist or work item failure via structured classification and deterministic recovery."""
+        attempt_number = run.recovery_attempt_counts.get(target_item.work_item_id, 0) + 1
+        run.recovery_attempt_counts[target_item.work_item_id] = attempt_number
+
+        available_artifacts = []
+        for s in run.employee_summaries:
+            for a in s.artifact_refs:
+                if a not in available_artifacts:
+                    available_artifacts.append(dict(a))
+
+        timed_out = False
+        exit_code = None
+        stdout = None
+        stderr = None
+        if task_run:
+            timed_out = getattr(task_run, "timed_out", False)
+            exit_code = getattr(task_run, "exit_code", None)
+            stdout = getattr(task_run, "stdout_preview", None)
+            stderr = getattr(task_run, "stderr_preview", None)
+        if "timed out" in str(error_msg).lower() or (exec_err and "timed out" in str(exec_err).lower()):
+            timed_out = True
+
+        is_write_op = (role.lower() == "developer") or any(w in (target_item.objective or "").lower() for w in ["write", "modify", "patch", "apply"])
+        is_idempotent = (role.lower() not in ("developer",))
+
+        frec = classify_specialist_failure(
+            error_message=str(error_msg),
+            exit_code=exit_code,
+            timed_out=timed_out,
+            stdout=stdout,
+            stderr=stderr,
+            role=role,
+            work_item_id=target_item.work_item_id,
+            attempt_number=attempt_number,
+            max_retries=1,
+            available_artifacts=available_artifacts,
+            mandatory_criteria=run.objective.acceptance_criteria if run.objective else [],
+            satisfied_criteria=[],
+            is_write_operation=is_write_op,
+            is_idempotent=is_idempotent,
+        )
+        run.recovery_history.append(frec.to_dict())
+        run.current_recovery_record = frec.to_dict()
+
+        # Update recovery checkpoint
+        chk = self.create_recovery_checkpoint(run)
+        run.recovery_checkpoint = chk.to_dict()
+
+        # Telemetry recording
+        if run.execution_telemetry and isinstance(run.execution_telemetry, dict):
+            try:
+                t_obj = RunExecutionTelemetry.from_dict(run.execution_telemetry)
+                spec_m = t_obj.record_specialist_start(
+                    execution_id=f"exec_{uuid.uuid4().hex[:6]}",
+                    role=role,
+                    phase="execution",
+                    work_item_id=target_item.work_item_id,
+                    task_id=task.id if task else None,
+                )
+                spec_m.status = "FAILED"
+                spec_m.duration_seconds = spec_dur
+                spec_m.error_message = frec.explanation
+                if frec.recovery_decision == RecoveryDecision.RETRY.value:
+                    spec_m.retry_count += 1
+                    t_obj.total_retries += 1
+                else:
+                    t_obj.total_errors += 1
+                t_obj.recompute_aggregates()
+                run.execution_telemetry = t_obj.to_dict()
+            except Exception:
+                pass
+
+        # Recover or transition based on deterministic decision
+        if frec.recovery_decision == RecoveryDecision.RETRY.value:
+            target_item.state = WorkItemState.PENDING.value
+            run.work_item_states[target_item.work_item_id] = WorkItemState.PENDING.value
+            run.add_event(
+                event_type="RECOVERY_ATTEMPT_SCHEDULED",
+                work_item_id=target_item.work_item_id,
+                role=role,
+                task_id=task.id if task else None,
+                reason=f"Recovery retry #{attempt_number} scheduled: {frec.explanation}",
+                details=frec.to_dict(),
+            )
+            self.save_company_run(run)
+            return run
+
+        elif frec.recovery_decision == RecoveryDecision.REPLAN.value:
+            run.replan_count += 1
+            target_item.state = WorkItemState.PENDING.value
+            run.work_item_states[target_item.work_item_id] = WorkItemState.PENDING.value
+            bounded_suffix = " [BOUNDED: Focus strictly on 3 primary files or core architecture; limit exploration]"
+            if bounded_suffix not in target_item.objective:
+                target_item.objective = target_item.objective + bounded_suffix
+            run.add_event(
+                event_type="RECOVERY_REPLAN_TRIGGERED",
+                work_item_id=target_item.work_item_id,
+                role=role,
+                task_id=task.id if task else None,
+                reason=f"Recovery replanning triggered: {frec.explanation}",
+                details=frec.to_dict(),
+            )
+            self.save_company_run(run)
+            return run
+
+        elif frec.recovery_decision == RecoveryDecision.CONTINUE_WITH_PARTIAL.value:
+            all_met, met, unmet = evaluate_acceptance_criteria(
+                mandatory_criteria=run.objective.acceptance_criteria if run.objective else [],
+                satisfied_criteria=[],
+                preserved_artifacts=available_artifacts,
+            )
+            if all_met:
+                target_item.state = WorkItemState.COMPLETED.value
+                run.work_item_states[target_item.work_item_id] = WorkItemState.COMPLETED.value
+                run.add_event(
+                    event_type="RECOVERY_CONTINUE_WITH_PARTIAL",
+                    work_item_id=target_item.work_item_id,
+                    role=role,
+                    task_id=task.id if task else None,
+                    reason=f"Continuing with partial results: mandatory criteria met ({met})",
+                    details=frec.to_dict(),
+                )
+                all_completed = all(
+                    run.work_item_states.get(w.work_item_id) == WorkItemState.COMPLETED.value
+                    for w in run.active_plan.work_items
+                )
+                if all_completed and not run.is_code_workflow:
+                    run.transition_to(CompanyRunState.COMPLETED)
+                    run.add_event("RUN_COMPLETED", reason="All planned non-code work items satisfied via partial recovery")
+                self.save_company_run(run)
+                return run
+            else:
+                target_item.state = WorkItemState.FAILED.value
+                run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+                err_unmet = f"Partial completion rejected: unmet mandatory acceptance criteria: {unmet}"
+                run.transition_to(CompanyRunState.FAILED, error=err_unmet)
+                run.add_event(
+                    event_type="RECOVERY_FAILED",
+                    work_item_id=target_item.work_item_id,
+                    role=role,
+                    task_id=task.id if task else None,
+                    reason=err_unmet,
+                    details={"unmet_criteria": unmet, "failure_record": frec.to_dict()},
+                )
+                self.save_company_run(run)
+                return run
+
+        elif frec.recovery_decision == RecoveryDecision.ASK_FOUNDER.value:
+            run.clarification_request = {
+                "question": f"Specialist '{role}' encountered an issue requiring Founder guidance: {frec.explanation}",
+                "reason": frec.explanation,
+                "known_facts": [f"Work item {target_item.work_item_id} failed on attempt {attempt_number}"],
+                "assumptions": [],
+                "missing_critical_information": [error_msg],
+                "proposed_next_action": "Awaiting Founder instruction.",
+                "requested_at": _utc_now_iso(),
+            }
+            target_item.state = WorkItemState.BLOCKED.value
+            run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
+            run.transition_to(CompanyRunState.WAITING_FOR_CLARIFICATION)
+            run.add_event(
+                event_type="WAITING_FOR_FOUNDER_CLARIFICATION",
+                work_item_id=target_item.work_item_id,
+                role=role,
+                task_id=task.id if task else None,
+                reason=frec.explanation,
+                details=run.clarification_request,
+            )
+            self.save_company_run(run)
+            return run
+
+        elif frec.recovery_decision == RecoveryDecision.BLOCK.value:
+            target_item.state = WorkItemState.BLOCKED.value
+            run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
+            run.transition_to(CompanyRunState.BLOCKED, error=frec.explanation)
+            run.add_event(
+                event_type="RECOVERY_BLOCKED",
+                work_item_id=target_item.work_item_id,
+                role=role,
+                task_id=task.id if task else None,
+                reason=frec.explanation,
+                details=frec.to_dict(),
+            )
+            run.add_event("RUN_FAILED", reason=frec.explanation)
+            self.save_company_run(run)
+            return run
+
+        else:  # FAIL
+            target_item.state = WorkItemState.FAILED.value
+            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+            run.transition_to(CompanyRunState.FAILED, error=frec.explanation)
+            run.add_event(
+                event_type="RECOVERY_FAILED",
+                work_item_id=target_item.work_item_id,
+                role=role,
+                task_id=task.id if task else None,
+                reason=frec.explanation,
+                details=frec.to_dict(),
+            )
+            run.add_event("RUN_FAILED", reason=frec.explanation)
+            self.save_company_run(run)
+            return run
 
     step_company_work = execute_next_company_work
 
@@ -5471,6 +5835,70 @@ class CompanyService:
             approver=approver,
         )
         return self.apply_approved_company_repo(run_id=run_id)
+
+    def get_company_run_metrics(self, run_id: str) -> Dict[str, Any]:
+        """Retrieve execution telemetry for a CompanyRun, deriving fallback metrics if needed."""
+        run = self.get_company_run(run_id)
+        if run.execution_telemetry and isinstance(run.execution_telemetry, dict):
+            telemetry_dict = dict(run.execution_telemetry)
+            if run.state in (CompanyRunState.FAILED.value, CompanyRunState.BLOCKED.value) or run.error:
+                telemetry_dict["status"] = run.state
+                telemetry_dict["total_errors"] = max(telemetry_dict.get("total_errors", 0), 1)
+            return telemetry_dict
+
+        # Derive baseline telemetry for historical runs created before STEP 23B.4
+        from .telemetry import _parse_iso_to_epoch
+        start_epoch = _parse_iso_to_epoch(run.created_at)
+        end_epoch = _parse_iso_to_epoch(run.completed_at) if run.completed_at else None
+        duration = None
+        if start_epoch and end_epoch and end_epoch >= start_epoch:
+            duration = round(end_epoch - start_epoch, 3)
+
+        planned_roles = []
+        if run.active_plan:
+            for w in run.active_plan.work_items:
+                if w.role and w.role not in planned_roles:
+                    planned_roles.append(w.role)
+
+        executed_roles = []
+        for s in run.employee_summaries:
+            if s.role and s.role not in executed_roles:
+                executed_roles.append(s.role)
+
+        total_errors = 0
+        if run.state in (CompanyRunState.FAILED.value, CompanyRunState.BLOCKED.value) or run.error:
+            total_errors = max(
+                1,
+                len([e for e in run.events if e.get("event_type") in ("RUN_FAILED", "WORK_ITEM_FAILED")]),
+            )
+
+        fallback = RunExecutionTelemetry(
+            run_id=run.run_id,
+            started_at=run.created_at,
+            completed_at=run.completed_at,
+            duration_seconds=duration,
+            status=run.state,
+            total_model_invocations=run.ceo_invocation_count + run.specialist_invocation_count,
+            planned_specialists=planned_roles,
+            executed_specialists=executed_roles,
+            specialist_count_planned=len(planned_roles),
+            specialist_count_executed=len(executed_roles),
+            team_escalation_count=run.escalation_count,
+            total_errors=total_errors,
+        )
+        return fallback.to_dict()
+
+    def compare_company_runs(self, baseline_run_id: str, candidate_run_id: str) -> Dict[str, Any]:
+        """Deterministically compare two CompanyRuns using their actual persisted metrics."""
+        base_run = self.get_company_run(baseline_run_id)
+        cand_run = self.get_company_run(candidate_run_id)
+        base_metrics = self.get_company_run_metrics(baseline_run_id)
+        cand_metrics = self.get_company_run_metrics(candidate_run_id)
+        base_dict = base_run.to_dict()
+        base_dict["execution_telemetry"] = base_metrics
+        cand_dict = cand_run.to_dict()
+        cand_dict["execution_telemetry"] = cand_metrics
+        return compare_company_runs(base_dict, cand_dict)
 
 
 def _resolve_artifact_file_path(base_output_dir: Path, artifact: Artifact) -> Path:

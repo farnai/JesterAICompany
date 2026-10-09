@@ -470,6 +470,151 @@ export interface CompanyRun {
   team_escalations?: TeamEscalationRecord[]
   escalation_count?: number
   max_escalations?: number
+
+  // Step 23B.4 Execution Observability & Telemetry
+  execution_telemetry?: RunExecutionTelemetry | null
+
+  // Step 23B.5-A Active Execution vs Persisted Snapshot distinction
+  is_active_execution?: boolean
+  is_persisted_snapshot?: boolean
+
+  // Step 23B.5-C Fault-Tolerant Recovery & Checkpointing
+  recovery_summary?: RecoverySummary | null
+  recovery_checkpoint?: RecoveryCheckpoint | null
+  recovery_history?: any[]
+}
+
+export interface RecoverySummary {
+  current_attempt: number
+  max_retries: number
+  failure_category?: string | null
+  recovery_decision?: string | null
+  preserved_artifacts: string[]
+  remaining_work: string[]
+  founder_action_required: boolean
+  explanation?: string | null
+  is_exploration_timeout?: boolean
+}
+
+export interface RecoveryCheckpoint {
+  checkpoint_id: string
+  run_id: string
+  completed_work_item_ids: string[]
+  completed_work_items: any[]
+  preserved_artifacts: any[]
+  satisfied_criteria: string[]
+  unmet_criteria: string[]
+  remaining_work_item_ids: string[]
+  attempt_counts: Record<string, number>
+  failure_history: any[]
+  last_failure?: any | null
+  created_at: string
+  is_validated: boolean
+  validation_error?: string | null
+}
+
+export interface SpecialistExecutionMetrics {
+  execution_id: string
+  role: string
+  phase: string
+  started_at: string
+  work_item_id?: string | null
+  task_id?: string | null
+  completed_at?: string | null
+  duration_seconds?: number | null
+  status: string
+  model_identifier?: string | null
+  model_invocation_count: number
+  model_latency_seconds?: number | null
+  tool_invocation_count?: number | null
+  tool_execution_duration_seconds?: number | null
+  input_tokens?: number | null
+  output_tokens?: number | null
+  total_tokens?: number | null
+  error_count: number
+  retry_count: number
+  error_message?: string | null
+  is_measured: boolean
+}
+
+export interface RunExecutionTelemetry {
+  run_id: string
+  started_at: string
+  completed_at?: string | null
+  duration_seconds?: number | null
+  status: string
+  specialist_metrics: SpecialistExecutionMetrics[]
+  total_model_invocations: number
+  total_model_latency_seconds: number
+  total_tool_invocations?: number | null
+  total_tool_duration_seconds?: number | null
+  input_tokens?: number | null
+  output_tokens?: number | null
+  total_tokens?: number | null
+  estimated_cost_usd?: number | null
+  cost_status: string
+  total_errors: number
+  total_retries: number
+  planned_specialists: string[]
+  executed_specialists: string[]
+  specialist_count_planned: number
+  specialist_count_executed: number
+  team_escalation_count: number
+  bottleneck_stage?: {
+    role: string
+    phase: string
+    work_item_id?: string | null
+    duration_seconds: number
+    reason: string
+  } | null
+  measured_fields: string[]
+  unavailable_fields: string[]
+}
+
+export interface PerformanceComparisonReport {
+  baseline_run_id: string
+  candidate_run_id: string
+  compared_at: string
+  wall_clock: {
+    baseline_seconds?: number | null
+    candidate_seconds?: number | null
+    delta_seconds?: number | null
+    percentage_change?: number | null
+  }
+  model_invocations: {
+    baseline_count: number
+    candidate_count: number
+    delta_count: number
+  }
+  model_latency: {
+    baseline_seconds: number
+    candidate_seconds: number
+    delta_seconds: number
+  }
+  workforce: {
+    baseline_planned: number
+    candidate_planned: number
+    baseline_executed: number
+    candidate_executed: number
+    baseline_roles: string[]
+    candidate_roles: string[]
+  }
+  reliability: {
+    baseline_errors: number
+    candidate_errors: number
+    baseline_retries: number
+    candidate_retries: number
+  }
+  tokens_and_cost: {
+    status: string
+    reason: string
+    baseline_tokens?: number | null
+    candidate_tokens?: number | null
+    token_delta?: number | null
+    cost_savings_claimed: boolean
+    estimated_cost_usd?: number | null
+  }
+  summary: string
 }
 
 export interface RoleRequirement {

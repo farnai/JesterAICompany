@@ -111,23 +111,40 @@ export interface CeoPresence {
   tone: 'idle' | 'active' | 'attention' | 'done' | 'danger'
 }
 
-/** CEO status derived strictly from the real run state. */
+/** CEO status derived strictly from the real run state and active execution flag. */
 export function ceoPresence(run: CompanyRun | null): CeoPresence {
   if (!run) return { label: 'Standing by', active: false, tone: 'idle' }
+  const isLive = run.is_active_execution === true
   switch (run.state) {
     case 'CREATED':
-      return { label: 'Receiving objective', active: true, tone: 'active' }
+      return {
+        label: isLive ? 'Receiving objective' : 'Objective ready · Standby',
+        active: isLive,
+        tone: isLive ? 'active' : 'idle',
+      }
     case 'PLANNING':
-      return { label: 'Planning objective', active: true, tone: 'active' }
+      return {
+        label: isLive ? 'Planning objective' : 'Planning paused',
+        active: isLive,
+        tone: isLive ? 'active' : 'idle',
+      }
     case 'PLAN_READY':
-      return { label: 'Selecting specialists', active: true, tone: 'active' }
+      return { label: 'Plan ready · Standby', active: false, tone: 'idle' }
     case 'RUNNING':
-      return { label: 'Orchestrating', active: true, tone: 'active' }
+      return {
+        label: isLive ? 'Orchestrating' : 'Restored · Paused',
+        active: isLive,
+        tone: isLive ? 'active' : 'idle',
+      }
     case 'WAITING_FOR_HUMAN':
     case 'READY_FOR_HUMAN_APPLY':
       return { label: 'Proposal awaiting Founder', active: false, tone: 'attention' }
     case 'APPLYING':
-      return { label: 'Applying approved patch', active: true, tone: 'active' }
+      return {
+        label: isLive ? 'Applying approved patch' : 'Apply paused',
+        active: isLive,
+        tone: isLive ? 'active' : 'idle',
+      }
     case 'COMPLETED':
       return { label: 'Completed', active: false, tone: 'done' }
     case 'BLOCKED':

@@ -19,16 +19,38 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import logging
 from pathlib import Path
+import socket
 import sys
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 import urllib.parse
 
 logger = logging.getLogger(__name__)
 
+ACTIVE_RUN_WORKERS: Set[str] = set()
+_ACTIVE_WORKERS_LOCK = threading.Lock()
+
+
+def register_active_worker(run_id: str) -> None:
+    """Register an in-memory worker thread actively executing a CompanyRun."""
+    with _ACTIVE_WORKERS_LOCK:
+        ACTIVE_RUN_WORKERS.add(run_id)
+
+
+def unregister_active_worker(run_id: str) -> None:
+    """Unregister an in-memory worker thread upon lifecycle termination."""
+    with _ACTIVE_WORKERS_LOCK:
+        ACTIVE_RUN_WORKERS.discard(run_id)
+
+
+def is_run_actively_executing(run_id: str) -> bool:
+    """Check if a CompanyRun currently has an attached in-memory background worker."""
+    with _ACTIVE_WORKERS_LOCK:
+        return run_id in ACTIVE_RUN_WORKERS
+
 from .context import CompanyObjective
 from .core import TaskStatus
-from .orchestrator import CompanyRun, CompanyRunState
+from .orchestrator import CompanyRun, CompanyRunState, WorkItemState
 from .project import (
     Project as RepositoryProject,
     RepositoryPolicy,
@@ -198,6 +220,56 @@ def enrich_company_run_data(run: CompanyRun, service: CompanyService) -> Dict[st
     run_dict["team_escalations"] = getattr(run, "team_escalations", [])
     run_dict["escalation_count"] = getattr(run, "escalation_count", 0)
     run_dict["max_escalations"] = getattr(run, "max_escalations", 2)
+    run_dict["execution_telemetry"] = service.get_company_run_metrics(run.run_id)
+    is_live = is_run_actively_executing(run.run_id)
+    run_dict["is_active_execution"] = is_live
+    run_dict["is_persisted_snapshot"] = not is_live
+
+    # 7. Fault-Tolerant Recovery context (STEP 23B.5-C)
+    current_attempt = 1
+    if getattr(run, "recovery_attempt_counts", None):
+        current_attempt = max(run.recovery_attempt_counts.values(), default=1)
+
+    last_failure = getattr(run, "current_recovery_record", None)
+    preserved_artifacts_names: List[str] = []
+    if getattr(run, "recovery_checkpoint", None) and isinstance(run.recovery_checkpoint, dict):
+        for a in run.recovery_checkpoint.get("preserved_artifacts", []):
+            name_val = a.get("name") or a.get("artifact_id")
+            if name_val and name_val not in preserved_artifacts_names:
+                preserved_artifacts_names.append(name_val)
+    elif getattr(run, "employee_summaries", None):
+        for s in run.employee_summaries:
+            for a in s.artifact_refs:
+                name_val = a.get("name") or a.get("artifact_id")
+                if name_val and name_val not in preserved_artifacts_names:
+                    preserved_artifacts_names.append(name_val)
+
+    remaining_work_ids: List[str] = []
+    if getattr(run, "active_plan", None):
+        for w in run.active_plan.work_items:
+            if run.work_item_states.get(w.work_item_id) != WorkItemState.COMPLETED.value:
+                remaining_work_ids.append(w.work_item_id)
+
+    founder_action_needed = (
+        run.state in ("WAITING_FOR_CLARIFICATION", "WAITING_FOR_HUMAN")
+        or bool(getattr(run, "clarification_request", None))
+        or bool(getattr(run, "escalation", None))
+    )
+
+    recovery_summary = {
+        "current_attempt": current_attempt,
+        "max_retries": 1,
+        "failure_category": last_failure.get("failure_category") if last_failure else None,
+        "recovery_decision": last_failure.get("recovery_decision") if last_failure else None,
+        "preserved_artifacts": preserved_artifacts_names,
+        "remaining_work": remaining_work_ids,
+        "founder_action_required": founder_action_needed,
+        "explanation": last_failure.get("explanation") if last_failure else None,
+        "is_exploration_timeout": last_failure.get("is_exploration_timeout", False) if last_failure else False,
+    }
+    run_dict["recovery_summary"] = recovery_summary
+    run_dict["recovery_checkpoint"] = getattr(run, "recovery_checkpoint", None)
+    run_dict["recovery_history"] = getattr(run, "recovery_history", [])
     return run_dict
 
 
@@ -502,6 +574,36 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                 self._send_error_json(HTTPStatus.NOT_FOUND, f"Diff for company run '{run_id}' not found: {exc}")
             return
 
+        # 14c. Run Execution Metrics & Comparison (STEP 23B.4)
+        if path == "/api/company-runs/compare":
+            base_id = query.get("baseline", [None])[0]
+            target_id = query.get("target", [None])[0]
+            if not base_id or not target_id:
+                runs = [r for r in self.service.list_company_runs() if r.state in ("COMPLETED", "READY_FOR_HUMAN_APPLY", "RUNNING")]
+                runs.sort(key=lambda r: r.created_at or "")
+                if len(runs) >= 2:
+                    base_id = runs[-2].run_id
+                    target_id = runs[-1].run_id
+                else:
+                    self._send_error_json(HTTPStatus.BAD_REQUEST, "Requires 'baseline' and 'target' query parameters, or at least two completed runs.")
+                    return
+            try:
+                comparison = self.service.compare_company_runs(base_id, target_id)
+                self._send_json(HTTPStatus.OK, comparison)
+            except Exception as exc:
+                self._send_error_json(HTTPStatus.NOT_FOUND, f"Failed to compare runs '{base_id}' and '{target_id}': {exc}")
+            return
+
+        if path.startswith("/api/company-runs/") and path.endswith("/metrics"):
+            parts = path.split("/")
+            run_id = parts[3]
+            try:
+                metrics = self.service.get_company_run_metrics(run_id)
+                self._send_json(HTTPStatus.OK, metrics)
+            except Exception as exc:
+                self._send_error_json(HTTPStatus.NOT_FOUND, f"Metrics for company run '{run_id}' not found: {exc}")
+            return
+
         if path.startswith("/api/company-runs/"):
             run_id = path[len("/api/company-runs/"):]
             try:
@@ -747,6 +849,8 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                 )
 
                 if auto_run:
+                    register_active_worker(run.run_id)
+
                     def _run_lifecycle(r_id: str) -> None:
                         try:
                             # Step 1: CEO planning (CREATED -> PLANNING -> PLAN_READY or WAITING_FOR_CLARIFICATION)
@@ -779,6 +883,8 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                                     self.service.save_company_run(failed_run)
                             except Exception:
                                 pass
+                        finally:
+                            unregister_active_worker(r_id)
 
                     if sync_exec:
                         _run_lifecycle(run.run_id)
@@ -961,11 +1067,20 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                             author=author,
                         )
                         if auto_run and run.state == CompanyRunState.PLAN_READY.value:
+                            register_active_worker(run_id)
+
+                            def _resume_worker(r_id: str) -> None:
+                                try:
+                                    self.service.start_company_run(r_id)
+                                    self.service.run_company_until_boundary(r_id, max_steps=10)
+                                except Exception as exc:
+                                    logger.error("Resume lifecycle failed for run %s: %s", r_id, exc, exc_info=True)
+                                finally:
+                                    unregister_active_worker(r_id)
+
                             worker = threading.Thread(
-                                target=lambda: (
-                                    self.service.start_company_run(run_id),
-                                    self.service.run_company_until_boundary(run_id, max_steps=10)
-                                ),
+                                target=_resume_worker,
+                                args=(run_id,),
                                 daemon=True,
                                 name=f"Worker-Resume-{run_id}",
                             )
@@ -1008,13 +1123,26 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
         self._send_error_json(HTTPStatus.NOT_FOUND, f"POST endpoint not found: {self.path}")
 
 
+class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with strict address exclusivity to prevent duplicate listeners on Windows."""
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        if sys.platform == "win32":
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            except (AttributeError, OSError) as exc:
+                logger.debug("Could not set SO_EXCLUSIVEADDRUSE on socket: %s", exc)
+        super().server_bind()
+
+
 def create_server(
     host: str = "127.0.0.1",
     port: int = 8500,
     service: Optional[CompanyService] = None,
     load_history: bool = True,
-) -> ThreadingHTTPServer:
-    """Factory to create and configure a ThreadingHTTPServer with CompanyService bound."""
+) -> ExclusiveThreadingHTTPServer:
+    """Factory to create and configure an ExclusiveThreadingHTTPServer with CompanyService bound."""
     svc = service or CompanyService()
     svc.ensure_default_project()
     ensure_default_repository_project(svc)
@@ -1025,7 +1153,7 @@ def create_server(
     class BoundControlCenterHandler(ControlCenterHandler):
         service = svc
 
-    server = ThreadingHTTPServer((host, port), BoundControlCenterHandler)
+    server = ExclusiveThreadingHTTPServer((host, port), BoundControlCenterHandler)
     return server
 
 

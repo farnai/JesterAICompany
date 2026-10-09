@@ -16,11 +16,16 @@ Architecture:
 """
 
 from dataclasses import asdict, dataclass, field
+import logging
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import time
 from typing import Any, Dict, List, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 from .registry import RECOGNIZED_AGENTS
 
@@ -33,6 +38,31 @@ class AntigravityRuntimeError(Exception):
 class InvalidAgentError(AntigravityRuntimeError, ValueError):
     """Raised when an unapproved or unrecognized agent role is requested."""
     pass
+
+
+def kill_process_tree(pid: int) -> None:
+    """Safely terminate a process and all of its child processes across platforms."""
+    if not pid or pid <= 0:
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            import signal
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except Exception:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
+    except Exception as exc:
+        logger.warning("Failed to terminate process tree for PID %s: %s", pid, exc)
 
 
 @dataclass
@@ -183,23 +213,58 @@ class AntigravityRuntime:
         max_transient_retries = 2
         for attempt in range(max_transient_retries + 1):
             start_time = time.perf_counter()
+            proc = None
             try:
                 # Strictly NO shell=True; invoked as argument array
-                proc = subprocess.run(
+                proc = subprocess.Popen(
                     cmd,
                     cwd=target_cwd,
                     env=env,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    timeout=exec_timeout,
                     shell=False,
                 )
+                try:
+                    stdout_str, stderr_str = proc.communicate(timeout=exec_timeout)
+                    exit_code = proc.returncode
+                except subprocess.TimeoutExpired as exc:
+                    kill_process_tree(proc.pid)
+                    try:
+                        out_b, err_b = proc.communicate(timeout=3.0)
+                        stdout_str = (exc.output or "") + (out_b or "")
+                        stderr_str = (exc.stderr or "") + (err_b or "")
+                    except Exception:
+                        stdout_str = exc.output or ""
+                        stderr_str = exc.stderr or ""
+
+                    # Bounded diagnostic output
+                    if len(stdout_str) > 4000:
+                        stdout_str = "...[truncated]...\n" + stdout_str[-4000:]
+                    if len(stderr_str) > 4000:
+                        stderr_str = "...[truncated]...\n" + stderr_str[-4000:]
+
+                    duration_ms = (time.perf_counter() - start_time) * 1000.0
+                    timeout_msg = f"Agent execution timed out after {exec_timeout:.1f} seconds."
+                    full_stderr = f"{stderr_str}\n{timeout_msg}".strip() if stderr_str else timeout_msg
+
+                    return AgentExecutionResult(
+                        agent=validated_agent,
+                        success=False,
+                        stdout=stdout_str,
+                        stderr=full_stderr,
+                        exit_code=-1,
+                        duration_ms=round(duration_ms, 2),
+                        timed_out=True,
+                        command=cmd,
+                    )
+
                 duration_ms = (time.perf_counter() - start_time) * 1000.0
 
-                if proc.returncode != 0 and attempt < max_transient_retries:
-                    combined_err = f"{proc.stdout or ''} {proc.stderr or ''}".lower()
+                if exit_code != 0 and attempt < max_transient_retries:
+                    combined_err = f"{stdout_str or ''} {stderr_str or ''}".lower()
                     if (
                         "503" in combined_err
                         or "unavailable" in combined_err
@@ -211,37 +276,12 @@ class AntigravityRuntime:
 
                 return AgentExecutionResult(
                     agent=validated_agent,
-                    success=(proc.returncode == 0),
-                    stdout=proc.stdout,
-                    stderr=proc.stderr,
-                    exit_code=proc.returncode,
+                    success=(exit_code == 0),
+                    stdout=stdout_str,
+                    stderr=stderr_str,
+                    exit_code=exit_code,
                     duration_ms=round(duration_ms, 2),
                     timed_out=False,
-                    command=cmd,
-                )
-            except subprocess.TimeoutExpired as exc:
-                duration_ms = (time.perf_counter() - start_time) * 1000.0
-                stdout_str = (
-                    exc.stdout.decode("utf-8", errors="replace")
-                    if isinstance(exc.stdout, bytes)
-                    else (exc.stdout or "")
-                )
-                stderr_str = (
-                    exc.stderr.decode("utf-8", errors="replace")
-                    if isinstance(exc.stderr, bytes)
-                    else (exc.stderr or "")
-                )
-                timeout_msg = f"Agent execution timed out after {exec_timeout:.1f} seconds."
-                full_stderr = f"{stderr_str}\n{timeout_msg}".strip() if stderr_str else timeout_msg
-
-                return AgentExecutionResult(
-                    agent=validated_agent,
-                    success=False,
-                    stdout=stdout_str,
-                    stderr=full_stderr,
-                    exit_code=-1,
-                    duration_ms=round(duration_ms, 2),
-                    timed_out=True,
                     command=cmd,
                 )
             except FileNotFoundError as exc:
@@ -257,6 +297,8 @@ class AntigravityRuntime:
                     command=cmd,
                 )
             except Exception as exc:
+                if proc is not None and proc.poll() is None:
+                    kill_process_tree(proc.pid)
                 duration_ms = (time.perf_counter() - start_time) * 1000.0
                 return AgentExecutionResult(
                     agent=validated_agent,

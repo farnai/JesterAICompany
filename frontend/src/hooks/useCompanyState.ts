@@ -97,7 +97,9 @@ export function useCompanyState(pollInterval: number = 4000) {
       const found = companyRuns.find((r) => r.run_id === selectedRunId)
       if (found) return found
     }
-    // Prefer non-completed runs first, then newest
+    // Prefer actively executing runs, then non-terminal runs, then newest
+    const executing = companyRuns.find((r) => r.is_active_execution)
+    if (executing) return executing
     const active = companyRuns.find(
       (r) => r.state !== 'COMPLETED' && r.state !== 'FAILED' && r.state !== 'BLOCKED'
     )
@@ -141,8 +143,11 @@ export function useCompanyState(pollInterval: number = 4000) {
   }, [overview])
 
   const activeWorkersCount = useMemo(() => {
-    if (activeCompanyRun?.selected_agents) {
-      return activeCompanyRun.selected_agents.length
+    if (activeCompanyRun) {
+      if (!activeCompanyRun.is_active_execution) return 0
+      if (activeCompanyRun.selected_agents) {
+        return activeCompanyRun.selected_agents.length
+      }
     }
     if (overview?.counts?.active_employees !== undefined) {
       return overview.counts.active_employees

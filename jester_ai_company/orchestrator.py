@@ -611,6 +611,11 @@ class CompanyRun:
     team_escalations: List[Dict[str, Any]] = field(default_factory=list)
     escalation_count: int = 0
     max_escalations: int = 2
+    execution_telemetry: Optional[Dict[str, Any]] = None
+    recovery_history: List[Dict[str, Any]] = field(default_factory=list)
+    recovery_checkpoint: Optional[Dict[str, Any]] = None
+    recovery_attempt_counts: Dict[str, int] = field(default_factory=dict)
+    current_recovery_record: Optional[Dict[str, Any]] = None
     created_at: str = field(default_factory=_utc_now_iso)
     updated_at: str = field(default_factory=_utc_now_iso)
     completed_at: Optional[str] = None
@@ -678,6 +683,17 @@ class CompanyRun:
             CompanyRunState.BLOCKED.value,
         ):
             self.completed_at = _utc_now_iso()
+            if self.execution_telemetry and isinstance(self.execution_telemetry, dict):
+                self.execution_telemetry["status"] = target
+                self.execution_telemetry["completed_at"] = self.completed_at
+                start_iso = self.execution_telemetry.get("started_at") or self.created_at
+                try:
+                    s_epoch = datetime.fromisoformat(start_iso.replace("Z", "+00:00")).timestamp()
+                    e_epoch = datetime.fromisoformat(self.completed_at.replace("Z", "+00:00")).timestamp()
+                    if e_epoch >= s_epoch:
+                        self.execution_telemetry["duration_seconds"] = round(e_epoch - s_epoch, 3)
+                except Exception:
+                    pass
 
     def add_event(
         self,
@@ -751,6 +767,11 @@ class CompanyRun:
             "team_escalations": [dict(e) for e in self.team_escalations],
             "escalation_count": self.escalation_count,
             "max_escalations": self.max_escalations,
+            "execution_telemetry": self.execution_telemetry,
+            "recovery_history": [dict(r) for r in self.recovery_history],
+            "recovery_checkpoint": self.recovery_checkpoint,
+            "recovery_attempt_counts": dict(self.recovery_attempt_counts),
+            "current_recovery_record": self.current_recovery_record,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
@@ -829,6 +850,11 @@ class CompanyRun:
             team_escalations=list(data.get("team_escalations", [])),
             escalation_count=int(data.get("escalation_count", 0)),
             max_escalations=int(data.get("max_escalations", 2)),
+            execution_telemetry=data.get("execution_telemetry"),
+            recovery_history=list(data.get("recovery_history", [])),
+            recovery_checkpoint=data.get("recovery_checkpoint"),
+            recovery_attempt_counts=dict(data.get("recovery_attempt_counts", {})),
+            current_recovery_record=data.get("current_recovery_record"),
             created_at=data.get("created_at") or _utc_now_iso(),
             updated_at=data.get("updated_at") or _utc_now_iso(),
             completed_at=data.get("completed_at"),

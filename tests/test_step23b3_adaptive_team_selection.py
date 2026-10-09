@@ -57,7 +57,13 @@ from jester_ai_company.service import CompanyService
 @pytest.fixture
 def temp_service() -> CompanyService:
     tmp = tempfile.mkdtemp()
-    return CompanyService(repo_root=Path(tmp))
+    tmp_path = Path(tmp)
+    runs_dir = tmp_path / ".runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    return CompanyService(
+        repo_root=tmp_path,
+        output_dir=str(runs_dir),
+    )
 
 
 # -----------------------------------------------------------------------------

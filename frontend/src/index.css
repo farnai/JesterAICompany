@@ -3431,6 +3431,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   font-weight: 700;
 }
 
+.stepper-node.node-standby .stepper-circle {
+  background: #FFFFFF;
+  color: var(--text-secondary);
+  border: 2px solid var(--border-medium);
+}
+
+.stepper-node.node-standby .phase-substatus {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
 .stepper-node.node-upcoming .stepper-circle {
   background: #F5F3EF;
   color: var(--text-muted);
