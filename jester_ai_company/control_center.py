@@ -99,7 +99,7 @@ def ensure_default_repository_project(service: CompanyService) -> None:
             "*.ini",
             "*.txt",
         ),
-        mutation_allowed=("backend/**", "tests/**"),
+        mutation_allowed=("backend/**", "frontend/**", "tests/**"),
         denied=(".git", ".git/**", ".env*", "*.key", "*.secret"),
     )
     project = RepositoryProject(

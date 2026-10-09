@@ -15,6 +15,7 @@ Defines the typed foundation for multi-specialist company workflows:
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+import re
 from typing import Any, Dict, List, Optional, Set
 import uuid
 
@@ -22,6 +23,58 @@ import uuid
 def _utc_now_iso() -> str:
     """Return current UTC timestamp in ISO 8601 format."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def extract_acceptance_criteria_from_text(text: str) -> List[str]:
+    """Extract explicit acceptance criteria from free-form objective text or description.
+
+    Supports:
+    - Explicit section headers: 'Acceptance Criteria:', 'Criteria:', 'მიღების კრიტერიუმები:', etc.
+    - Bullet points (- , * , •) and numbered lists (1. , 2. ) under criteria sections.
+    - Top-level numbered lists if structured as deliverable requirements.
+    """
+    if not text or not isinstance(text, str):
+        return []
+
+    criteria: List[str] = []
+    lines = text.splitlines()
+    in_criteria_block = False
+
+    header_re = re.compile(
+        r"^\s*(?:acceptance\s+criteria|acceptance-criteria|criteria|success\s+criteria|მიღების\s+კრიტერიუმები|საბოლოო\s+კრიტერიუმები)\s*:?\s*$",
+        re.IGNORECASE,
+    )
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if header_re.match(stripped):
+            in_criteria_block = True
+            continue
+
+        if in_criteria_block:
+            # Check for subsequent section headers (e.g. "Constraints:", "Notes:")
+            if re.match(r"^[A-Z][a-zA-Z\s]{2,25}:\s*$", stripped) and not re.match(r"^\d+\.", stripped):
+                in_criteria_block = False
+                continue
+
+            item_match = re.match(r"^(?:\d+[\.\)]|\-|\*|•)\s*(.+)$", stripped)
+            if item_match:
+                criteria.append(item_match.group(1).strip())
+            else:
+                criteria.append(stripped)
+
+    if not criteria:
+        # Check for top-level numbered list of criteria if clearly numbered
+        for line in lines:
+            stripped = line.strip()
+            item_match = re.match(r"^\d+[\.\)]\s*(.+)$", stripped)
+            if item_match and len(stripped) > 5:
+                criteria.append(item_match.group(1).strip())
+
+    return criteria
 
 
 # -----------------------------------------------------------------------------
@@ -180,6 +233,12 @@ class CompanyObjective:
     created_at: str = field(default_factory=_utc_now_iso)
     created_by: str = "HUMAN"
 
+    def __post_init__(self) -> None:
+        if not self.acceptance_criteria and self.description:
+            extracted = extract_acceptance_criteria_from_text(self.description)
+            if extracted:
+                self.acceptance_criteria = extracted
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize objective to dictionary."""
         return {
@@ -204,12 +263,16 @@ class CompanyObjective:
             if not val or not isinstance(val, str) or not val.strip():
                 raise OrchestrationError(f"CompanyObjective missing or invalid '{req}'.")
 
+        crit = [str(a) for a in data.get("acceptance_criteria", [])]
+        if not crit and data.get("description"):
+            crit = extract_acceptance_criteria_from_text(data["description"])
+
         return cls(
             id=data["id"].strip(),
             title=data["title"].strip(),
             description=data["description"].strip(),
             constraints=[str(c) for c in data.get("constraints", [])],
-            acceptance_criteria=[str(a) for a in data.get("acceptance_criteria", [])],
+            acceptance_criteria=crit,
             target_repository=data.get("target_repository"),
             project_id=data.get("project_id"),
             created_at=data.get("created_at") or _utc_now_iso(),

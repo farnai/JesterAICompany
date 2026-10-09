@@ -409,14 +409,30 @@ class EngineeringPipelineAdapter:
         raw_mod = [f["path"] for f in plan_details.get("files_to_modify", []) if isinstance(f, dict) and "path" in f]
         raw_create = [f["path"] for f in plan_details.get("files_to_create", []) if isinstance(f, dict) and "path" in f]
 
-        files_to_modify = list(raw_mod)
+        def _normalize_repo_rel_path(p: str) -> str:
+            norm = p.replace("\\", "/").strip().lstrip("/")
+            if (target_repo / norm).exists():
+                return norm
+            if (target_repo / "frontend" / norm).exists():
+                return f"frontend/{norm}"
+            if (target_repo / "backend" / norm).exists():
+                return f"backend/{norm}"
+            if norm.startswith("src/"):
+                if (target_repo / "frontend" / "src").is_dir():
+                    return f"frontend/{norm}"
+                if (target_repo / "backend" / "src").is_dir():
+                    return f"backend/{norm}"
+            return norm
+
+        files_to_modify = [_normalize_repo_rel_path(p) for p in raw_mod]
         files_to_create = []
         for f in raw_create:
-            if (target_repo / f).is_file():
-                if f not in files_to_modify:
-                    files_to_modify.append(f)
+            norm_f = _normalize_repo_rel_path(f)
+            if (target_repo / norm_f).is_file():
+                if norm_f not in files_to_modify:
+                    files_to_modify.append(norm_f)
             else:
-                files_to_create.append(f)
+                files_to_create.append(norm_f)
         raw_vas = plan_details.get("verification_actions", [])
         verification_actions: List[VerificationAction] = []
         for va in raw_vas:

@@ -296,6 +296,7 @@ from .ceo_contract import (
     build_ceo_team_selection_prompt,
     parse_and_validate_team_selection,
     evaluate_team_selection_heuristically,
+    is_read_only_research_objective,
 )
 from .execution_grant import (
     ExecutionGrant,
@@ -4411,6 +4412,20 @@ class CompanyService:
         project_knowledge: Optional[Any] = None,
     ) -> CEODecisionResult:
         """Evaluate a CompanyObjective to determine whether to EXECUTE, INVESTIGATE, or ASK_FOUNDER (STEP 23B.2)."""
+        target_root = None
+        if run.project_id:
+            proj = self.project_registry.get_project(run.project_id)
+            if proj and proj.repository and proj.repository.canonical_root.exists():
+                target_root = proj.repository.canonical_root
+
+        if not target_root and run.objective.target_repository:
+            cand = Path(run.objective.target_repository).resolve()
+            if cand.exists():
+                target_root = cand
+
+        if not target_root:
+            target_root = self.repo_root
+
         heuristic = evaluate_objective_heuristically(
             objective=run.objective,
             project_knowledge=project_knowledge,
@@ -4418,7 +4433,7 @@ class CompanyService:
             founder_clarifications=run.founder_clarifications,
             investigation_count=run.investigation_count,
             max_investigations=run.max_investigations,
-            repo_root=self.repo_root,
+            repo_root=target_root,
         )
 
         # In production mode for investigable objectives, consult LLM if configured
@@ -4616,6 +4631,19 @@ class CompanyService:
 
             elif decision.decision == CEODecisionType.INVESTIGATE.value:
                 if run.investigation_count >= run.max_investigations:
+                    if is_read_only_research_objective(run.objective) or run.objective.acceptance_criteria:
+                        decision = CEODecisionResult(
+                            decision=CEODecisionType.EXECUTE.value,
+                            reasoning_summary=f"Autonomous investigation budget reached ({run.investigation_count}/{run.max_investigations}). Proceeding with specialist execution using accumulated findings.",
+                            known_facts=list(run.investigation_findings),
+                            assumptions=[],
+                            missing_critical_information=[],
+                            proposed_next_action="Formulate DAG orchestration plan.",
+                        )
+                        run.last_ceo_decision = decision.to_dict()
+                        self.save_company_run(run)
+                        break
+
                     # Budget exhausted! Forced ASK_FOUNDER
                     decision = CEODecisionResult(
                         decision=CEODecisionType.ASK_FOUNDER.value,
@@ -5862,7 +5890,7 @@ class CompanyService:
 
         executed_roles = []
         for s in run.employee_summaries:
-            if s.role and s.role not in executed_roles:
+            if s.role and s.role.lower() != "ceo" and s.role not in executed_roles:
                 executed_roles.append(s.role)
 
         total_errors = 0

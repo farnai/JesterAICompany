@@ -164,12 +164,24 @@ def validate_dag_structure(plan: CEOOrchestrationPlan) -> None:
 
             is_direct_allowed = (
                 getattr(plan, "allow_direct_developer", False)
-                or getattr(plan, "task_category", None) in ("BUG_FIX", "bug_fix", "SECURITY_SENSITIVE", "security_sensitive")
+                or getattr(plan, "task_category", None) in (
+                    "BUG_FIX", "bug_fix", "SECURITY_SENSITIVE", "security_sensitive",
+                    "SMALL_FEATURE", "small_feature", "UI_UX_CHANGE", "ui_ux_change",
+                )
             )
 
-            if is_direct_allowed and not has_product_in_plan and not has_ux_in_plan:
-                # Direct developer allowed for bug fix without product/ux in plan
-                pass
+            if is_direct_allowed:
+                # In direct/small-feature engineering, Developer only requires upstream dependencies
+                # for Product or UX if those roles are actually part of the planned workforce.
+                missing_deps = []
+                if has_product_in_plan and not has_product:
+                    missing_deps.append("product")
+                if has_ux_in_plan and not has_ux:
+                    missing_deps.append("ux")
+                if missing_deps:
+                    raise DAGValidationError(
+                        f"Developer work item '{item_id}' missing planned upstream prerequisites: {missing_deps}."
+                    )
             else:
                 if not (has_product and has_ux):
                     raise DAGValidationError(

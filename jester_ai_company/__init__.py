@@ -369,6 +369,7 @@ from .orchestrator import (
     SUPPORTED_QA_CAPABILITIES,
     TransitionPolicyError,
     WorkItemState,
+    extract_acceptance_criteria_from_text,
 )
 from .dag import (
     MAX_GRAPH_DEPTH,
@@ -750,6 +751,7 @@ __all__ = [
     "RunExecutionTelemetry",
     "compare_company_runs",
     "sanitize_telemetry_message",
+    "extract_acceptance_criteria_from_text",
     "__version__",
 ]
 

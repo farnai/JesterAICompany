@@ -302,6 +302,9 @@ def classify_specialist_failure(
         "transition policy error", "transitionpolicyerror", "unsupported role",
         "unsupportedroleerror", "privilege escalation", "access denied",
         "cannot modify repository", "read-only constraints",
+        "repositorypolicy", "repository policy", "mutation_allowed",
+        "policyviolationerror", "policy violation", "not within authorized",
+        "denied under repositorypolicy", "scope under repositorypolicy",
     ]
     if any(p in combined for p in policy_patterns):
         return FailureClassificationRecord(

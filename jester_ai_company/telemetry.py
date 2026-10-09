@@ -308,7 +308,7 @@ class RunExecutionTelemetry:
             total_errs += m.error_count
             total_rets += m.retry_count
 
-            if m.role not in executed_roles and m.status in ("SUCCESS", "RUNNING", "FAILED"):
+            if m.role.lower() != "ceo" and m.role not in executed_roles and m.status in ("SUCCESS", "RUNNING", "FAILED"):
                 executed_roles.append(m.role)
 
             if m.duration_seconds is not None and m.duration_seconds > max_duration:

@@ -36,6 +36,7 @@ from .orchestrator import (
     PROHIBITED_QA_CAPABILITIES,
     SUPPORTED_QA_CAPABILITIES,
     WorkItemState,
+    extract_acceptance_criteria_from_text,
 )
 
 CEO_PLAN_SCHEMA_VERSION: str = "1.0"
@@ -654,6 +655,38 @@ def parse_and_validate_ceo_decision(raw_output: str) -> CEODecisionResult:
     return CEODecisionResult.from_dict(data)
 
 
+def is_read_only_research_objective(objective: CompanyObjective) -> bool:
+    """Check if an objective is strictly read-only research or investigation."""
+    all_text = f"{objective.title} {objective.description} " + " ".join(objective.constraints)
+    all_text_lower = all_text.lower()
+
+    has_read_only = any(term in all_text_lower for term in [
+        "read-only", "read only", "strictly read-only", "strictly read only",
+        "no developer role", "no mutating", "no file modifications", "research only", "pure research",
+        "without mutating",
+    ])
+
+    has_pure_research = any(term in all_text_lower for term in [
+        "market research", "competitor analysis", "literature review", "feasibility study",
+        "ბაზრის ანალიზი",
+    ])
+
+    # Check for active mutation requests, ignoring negations like 'no ... implementation'
+    sanitized_text = re.sub(r"\bno\s+[a-zA-Z\s]{0,25}implementation\b", "", all_text_lower)
+    sanitized_text = re.sub(r"\bwithout\s+[a-zA-Z\s]{0,25}mutat\w*\b", "", sanitized_text)
+    sanitized_text = re.sub(r"\bno\s+file\s+modifications\b", "", sanitized_text)
+
+    has_mutation_goal = bool(re.search(
+        r"\b(fix|bug|patch|refactor|create\s+endpoint|write\s+code|modify\s+code|apply\s+changes|შეასწორე|გაასწორე|დაწერე\s+კოდი)\b",
+        sanitized_text,
+    ))
+
+    if has_mutation_goal:
+        return False
+
+    return bool(has_read_only or has_pure_research)
+
+
 def evaluate_objective_heuristically(
     objective: CompanyObjective,
     project_knowledge: Optional[Any] = None,
@@ -698,12 +731,16 @@ def evaluate_objective_heuristically(
             investigation_targets=[],
         )
 
-    # 3. Check for clear acceptance criteria
-    if objective.acceptance_criteria and any(str(a).strip() for a in objective.acceptance_criteria):
+    # 3. Check for clear acceptance criteria (explicit or embedded in description)
+    criteria = list(objective.acceptance_criteria or [])
+    if not criteria and objective.description:
+        criteria = extract_acceptance_criteria_from_text(objective.description)
+
+    if criteria and any(str(a).strip() for a in criteria):
         return CEODecisionResult(
             decision=CEODecisionType.EXECUTE.value,
             reasoning_summary="Objective is clear with explicit acceptance criteria and unambiguous execution scope.",
-            known_facts=[f"Criteria: {c}" for c in objective.acceptance_criteria],
+            known_facts=[f"Criteria: {c}" for c in criteria],
             assumptions=[],
             missing_critical_information=[],
             proposed_next_action="Proceed to DAG plan formulation.",
@@ -711,8 +748,33 @@ def evaluate_objective_heuristically(
             investigation_targets=[],
         )
 
-    # 4. If investigation budget is exhausted -> MUST ASK_FOUNDER
+    # 4. Check for read-only research / investigation objectives
+    # Missing repository evidence routes to bounded Research specialist, not Founder clarification.
+    if is_read_only_research_objective(objective):
+        return CEODecisionResult(
+            decision=CEODecisionType.EXECUTE.value,
+            reasoning_summary="Read-only research and investigation objective with bounded scope. Routing to Research specialist for evidence gathering.",
+            known_facts=list(investigation_findings or [f"Objective: {objective.title}"]),
+            assumptions=[],
+            missing_critical_information=[],
+            proposed_next_action="Formulate DAG orchestration plan with Research specialist.",
+            clarification_question=None,
+            investigation_targets=[],
+        )
+
+    # 5. If investigation budget is exhausted -> evaluate if execution or clarification is needed
     if investigation_count >= max_investigations:
+        if criteria or is_read_only_research_objective(objective):
+            return CEODecisionResult(
+                decision=CEODecisionType.EXECUTE.value,
+                reasoning_summary=f"Investigation budget reached ({investigation_count}/{max_investigations}). Proceeding with specialist execution using accumulated findings.",
+                known_facts=list(investigation_findings or []),
+                assumptions=[],
+                missing_critical_information=[],
+                proposed_next_action="Formulate DAG orchestration plan.",
+                clarification_question=None,
+                investigation_targets=[],
+            )
         return CEODecisionResult(
             decision=CEODecisionType.ASK_FOUNDER.value,
             reasoning_summary=f"Autonomous investigation budget exhausted ({investigation_count}/{max_investigations}). Code inspection could not establish specific expected behavior without Founder clarification.",
@@ -724,23 +786,36 @@ def evaluate_objective_heuristically(
             investigation_targets=[],
         )
 
-    # 5. Handle underspecified objectives (investigation budget remains)
+    # 6. Handle underspecified objectives (investigation budget remains)
     is_georgian = bool(re.search(r"[\u10A0-\u10FF]", f"{objective.title} {objective.description}"))
     targets: List[str] = []
     if "auth" in full_text:
         auth_file = "backend/app/routers/auth.py"
         if repo_root and (repo_root / auth_file).exists():
             targets.append(auth_file)
-        else:
-            targets.append("auth")
-    if "რეგისტრაცია" in full_text or "registration" in full_text or "register" in full_text:
-        targets.append("registration")
+        elif not repo_root:
+            targets.append(auth_file)
+
+    common_natural_language_slashes = {
+        "form/component", "and/or", "either/or", "client/server", "frontend/backend",
+        "input/output", "read/write", "true/false", "yes/no", "req/res", "success/failure",
+        "user/password", "username/password", "sign/up", "log/in", "login/register",
+    }
+    known_extensions = (".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".html", ".css", ".yml", ".yaml")
+    known_dir_prefixes = ("backend/", "frontend/", "src/", "app/", "docs/", "tests/", "api/", "components/", "routers/", "models/", "services/")
 
     for token in full_text.split():
-        cleaned_token = token.strip("(),;:'\"")
-        if "/" in cleaned_token or cleaned_token.endswith(".py") or cleaned_token.endswith(".ts") or cleaned_token.endswith(".tsx"):
+        cleaned_token = token.strip("(),;:'\"[]{}")
+        if not cleaned_token or cleaned_token.lower() in common_natural_language_slashes:
+            continue
+
+        is_file_with_ext = any(cleaned_token.endswith(ext) for ext in known_extensions)
+        is_path_with_prefix = any(cleaned_token.startswith(prefix) for prefix in known_dir_prefixes)
+        exists_in_repo = repo_root and (repo_root / cleaned_token).exists()
+
+        if is_file_with_ext or is_path_with_prefix or exists_in_repo:
             if cleaned_token not in targets:
-                targets.insert(0, cleaned_token)
+                targets.append(cleaned_token)
 
     for fallback in ["backend/app", "docs", "tests"]:
         if fallback not in targets:
@@ -765,7 +840,7 @@ def evaluate_objective_heuristically(
         missing_critical_information=["Acceptance criteria", "Target files", "Expected behavior"],
         proposed_next_action="Conduct read-only inspection of repository structure and docs.",
         clarification_question=None,
-        investigation_targets=targets,
+        investigation_targets=targets[:5],
     )
 
 
@@ -1130,10 +1205,11 @@ def evaluate_team_selection_heuristically(
         )
 
     # 2. Research-only objective
-    elif any(rt in text_lower for rt in [
-        "research", "analyze market", "investigate alternatives", "feasibility study",
-        "literature review", "competitor analysis", "survey", "იკვლიე", "კვლევა", "ბაზრის ანალიზი"
-    ]) and not any(bt in text_lower for bt in ["fix", "bug", "implement", "patch", "შეასწორე", "კოდი"]):
+    elif is_read_only_research_objective(objective) or (any(rt in text_lower for rt in [
+        "research", "investigate", "investigation", "analyze market", "investigate alternatives", "feasibility study",
+        "literature review", "competitor analysis", "survey", "architecture review", "codebase investigation",
+        "იკვლიე", "კვლევა", "გამოიკვლიე", "ბაზრის ანალიზი"
+    ]) and not any(bt in text_lower for bt in ["fix", "bug", "patch", "შეასწორე"])):
         selected_roles = ["research"]
         task_category = TaskCategory.RESEARCH.value
         complexity = ComplexityLevel.LOW.value
