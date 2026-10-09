@@ -194,6 +194,10 @@ def enrich_company_run_data(run: CompanyRun, service: CompanyService) -> Dict[st
     run_dict["max_investigations"] = getattr(run, "max_investigations", 2)
     run_dict["last_ceo_decision"] = getattr(run, "last_ceo_decision", None)
     run_dict["founder_clarifications"] = getattr(run, "founder_clarifications", [])
+    run_dict["team_selection"] = getattr(run, "team_selection", None)
+    run_dict["team_escalations"] = getattr(run, "team_escalations", [])
+    run_dict["escalation_count"] = getattr(run, "escalation_count", 0)
+    run_dict["max_escalations"] = getattr(run, "max_escalations", 2)
     return run_dict
 
 
@@ -969,6 +973,32 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
 
                     self._send_json(HTTPStatus.OK, {
                         "status": "CLARIFIED",
+                        "run": enrich_company_run_data(run, self.service),
+                    })
+                except Exception as exc:
+                    self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                return
+
+        # 11. Team Escalation: POST /api/company-runs/{run_id}/escalate (STEP 23B.3)
+        if path.startswith("/api/company-runs/") and path.endswith("/escalate"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                run_id = parts[3]
+                triggered_by_role = payload.get("triggered_by_role", "developer")
+                reason = payload.get("reason", "Missing capability discovered during execution")
+                requested_capability = payload.get("requested_capability", "")
+                requested_role = payload.get("requested_role")
+
+                try:
+                    run = self.service.escalate_company_team(
+                        run_id=run_id,
+                        triggered_by_role=triggered_by_role,
+                        reason=reason,
+                        requested_capability=requested_capability,
+                        requested_role=requested_role,
+                    )
+                    self._send_json(HTTPStatus.OK, {
+                        "status": "ESCALATED",
                         "run": enrich_company_run_data(run, self.service),
                     })
                 except Exception as exc:

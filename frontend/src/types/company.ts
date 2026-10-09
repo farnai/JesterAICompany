@@ -464,6 +464,49 @@ export interface CompanyRun {
     submitted_at: string
     in_response_to?: string
   }>
+
+  // Step 23B.3 Adaptive Team Selection & Escalation fields
+  team_selection?: TeamSelection | null
+  team_escalations?: TeamEscalationRecord[]
+  escalation_count?: number
+  max_escalations?: number
+}
+
+export interface RoleRequirement {
+  role: string
+  why_necessary: string
+  expected_deliverable: string
+  required_upstream_inputs: string[]
+  is_essential: boolean
+}
+
+export interface TeamSelection {
+  task_category: string
+  complexity: 'LOW' | 'MEDIUM' | 'HIGH' | string
+  uncertainty: 'LOW' | 'MEDIUM' | 'HIGH' | string
+  risk: 'LOW' | 'MEDIUM' | 'HIGH' | string
+  required_capabilities: string[]
+  selected_roles: string[]
+  role_requirements: RoleRequirement[]
+  omitted_roles_rationale: Record<string, string>
+  selection_reasoning: string
+  escalation_conditions: string[]
+  estimated_specialist_count: number
+  actual_specialist_count: number
+  avoidable_delegation_warnings: string[]
+  allow_direct_developer: boolean
+  evaluated_at: string
+}
+
+export interface TeamEscalationRecord {
+  escalation_id: string
+  run_id: string
+  triggered_by_role: string
+  reason: string
+  requested_capability: string
+  added_roles: string[]
+  action_taken: string
+  created_at: string
 }
 
 // =============================================================================

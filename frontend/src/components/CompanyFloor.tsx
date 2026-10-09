@@ -225,19 +225,103 @@ export const CompanyFloor: React.FC<CompanyFloorProps> = ({
             </p>
           </div>
 
-          {/* CEO selection reasoning — replaces the large Selected/Skipped cards */}
+          {/* CEO selection reasoning & Adaptive Team Selection (STEP 23B.3) */}
           <div className="fl-ceo-note" data-testid="agent-selection-bar">
-            <span className="fl-eyebrow">Team for this objective</span>
+            <span className="fl-eyebrow">Adaptive Team Selection</span>
             <strong className="fl-ceo-note-count">
               {selectedRoles.length > 0
                 ? `${selectedRoles.length} selected · ${availableRoles.length} available`
                 : 'No specialists selected yet'}
             </strong>
+
+            {run?.team_selection && (
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '6px',
+                  marginTop: '4px',
+                  marginBottom: '6px',
+                  fontSize: '11px',
+                }}
+              >
+                <span
+                  style={{
+                    backgroundColor: '#ffedd5',
+                    color: '#c2410c',
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    fontWeight: 600,
+                  }}
+                  data-testid="team-category-badge"
+                >
+                  {run.team_selection.task_category}
+                </span>
+                <span
+                  style={{
+                    backgroundColor: '#f1f5f9',
+                    color: '#475569',
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    fontWeight: 500,
+                  }}
+                >
+                  Complexity: {run.team_selection.complexity}
+                </span>
+                <span
+                  style={{
+                    backgroundColor: '#f1f5f9',
+                    color: '#475569',
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    fontWeight: 500,
+                  }}
+                >
+                  Uncertainty: {run.team_selection.uncertainty}
+                </span>
+              </div>
+            )}
+
             {reasoningText && (
               <p className="fl-ceo-reasoning" data-testid="selection-reasoning" title={reasoningText}>
                 “{reasoningText}”
               </p>
             )}
+
+            {run?.team_selection?.avoidable_delegation_warnings && run.team_selection.avoidable_delegation_warnings.length > 0 && (
+              <div
+                style={{
+                  fontSize: '11px',
+                  color: '#15803d',
+                  backgroundColor: '#f0fdf4',
+                  padding: '3px 8px',
+                  borderRadius: '6px',
+                  marginTop: '4px',
+                  border: '1px solid #bbf7d0',
+                }}
+                data-testid="efficiency-savings-note"
+              >
+                ✓ {run.team_selection.avoidable_delegation_warnings[0]}
+              </div>
+            )}
+
+            {run?.team_escalations && run.team_escalations.length > 0 && (
+              <div
+                style={{
+                  fontSize: '11px',
+                  color: '#b45309',
+                  backgroundColor: '#fef3c7',
+                  padding: '3px 8px',
+                  borderRadius: '6px',
+                  marginTop: '4px',
+                  border: '1px solid #fde68a',
+                }}
+                data-testid="team-escalation-banner"
+              >
+                ⚠ Escalation #{run.team_escalations.length}: {run.team_escalations[run.team_escalations.length - 1].reason}
+              </div>
+            )}
+
             {/* Screen-reader roster of the CEO's real selection */}
             <ul className="sr-only">
               {selectedRoles.map((role) => (

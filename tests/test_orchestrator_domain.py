@@ -106,6 +106,7 @@ def test_requirement_c_canonical_company_run_states():
         "PLAN_READY",
         "RUNNING",
         "WAITING_FOR_HUMAN",
+        "WAITING_FOR_CLARIFICATION",
         "READY_FOR_HUMAN_APPLY",
         "APPLYING",
         "COMPLETED",

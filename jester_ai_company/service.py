@@ -249,12 +249,14 @@ from .orchestrator import (
     PlanValidationError,
     PROHIBITED_QA_CAPABILITIES,
     SUPPORTED_QA_CAPABILITIES,
+    TeamEscalationRecord,
     TransitionPolicyError,
     UnsupportedRoleError,
     WorkItemState,
 )
 from .dag import (
     MAX_PLANNED_WORK_ITEMS,
+    RECOGNIZED_MACRO_ROLES,
     select_ready_work_items,
     validate_dag_structure,
 )
@@ -270,6 +272,15 @@ from .ceo_contract import (
     build_ceo_evaluation_prompt,
     parse_and_validate_ceo_decision,
     evaluate_objective_heuristically,
+    TaskCategory,
+    ComplexityLevel,
+    UncertaintyLevel,
+    RiskLevel,
+    RoleRequirement,
+    TeamSelectionResult,
+    build_ceo_team_selection_prompt,
+    parse_and_validate_team_selection,
+    evaluate_team_selection_heuristically,
 )
 from .execution_grant import (
     ExecutionGrant,
@@ -4257,6 +4268,7 @@ class CompanyService:
         objective: CompanyObjective,
         timeout: Optional[float] = None,
         project_knowledge: Optional[Any] = None,
+        team_selection: Optional[TeamSelectionResult] = None,
     ) -> CEOOrchestrationPlan:
         """Invoke the real CEO Agent to formulate an initial macro orchestration plan.
 
@@ -4287,7 +4299,7 @@ class CompanyService:
             )
             raise ExecutionError(err_msg)
 
-        plan = parse_and_validate_ceo_plan(exec_result.stdout, objective)
+        plan = parse_and_validate_ceo_plan(exec_result.stdout, objective, team_selection=team_selection)
         return plan
 
     # --------------------------------------------------------------------------
@@ -4390,6 +4402,42 @@ class CompanyService:
                 if exec_result.success and exec_result.stdout:
                     try:
                         return parse_and_validate_ceo_decision(exec_result.stdout)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        return heuristic
+
+    def select_company_team(
+        self,
+        run: CompanyRun,
+        project_knowledge: Optional[Any] = None,
+    ) -> TeamSelectionResult:
+        """Evaluate task requirements to determine minimum sufficient workforce (STEP 23B.3)."""
+        heuristic = evaluate_team_selection_heuristically(
+            objective=run.objective,
+            investigation_findings=run.investigation_findings,
+            founder_clarifications=run.founder_clarifications,
+            repo_root=self.repo_root,
+        )
+
+        if self.is_production:
+            prompt = build_ceo_team_selection_prompt(
+                objective=run.objective,
+                project_knowledge=project_knowledge,
+                investigation_findings=run.investigation_findings,
+                founder_clarifications=run.founder_clarifications,
+            )
+            try:
+                exec_result = self.runtime.execute(
+                    agent="ceo",
+                    prompt=prompt,
+                    timeout=60.0,
+                )
+                if exec_result.success and exec_result.stdout:
+                    try:
+                        return parse_and_validate_team_selection(exec_result.stdout)
                     except Exception:
                         pass
             except Exception:
@@ -4572,12 +4620,31 @@ class CompanyService:
             self.save_company_run(run)
             return run
 
-        # If EXECUTE: Formulate DAG plan
+        # If EXECUTE: Adaptive Team Selection (STEP 23B.3)
+        team_selection = self.select_company_team(run=run, project_knowledge=ceo_knowledge)
+        run.team_selection = team_selection.to_dict()
+        run.add_event(
+            event_type="CEO_TEAM_SELECTED",
+            reason=f"CEO selected minimum sufficient workforce for {team_selection.task_category}",
+            details={
+                "task_category": team_selection.task_category,
+                "complexity": team_selection.complexity,
+                "uncertainty": team_selection.uncertainty,
+                "risk": team_selection.risk,
+                "selected_roles": team_selection.selected_roles,
+                "actual_specialist_count": team_selection.actual_specialist_count,
+                "avoidable_delegation_warnings": team_selection.avoidable_delegation_warnings,
+            },
+        )
+        self.save_company_run(run)
+
+        # Formulate DAG plan with team_selection
         try:
             plan = self.propose_initial_company_plan(
                 run.objective,
                 timeout=timeout,
                 project_knowledge=ceo_knowledge,
+                team_selection=team_selection,
             )
         except Exception as exc:
             run.transition_to(CompanyRunState.FAILED, error=str(exc))
@@ -4596,6 +4663,8 @@ class CompanyService:
             details={
                 "plan_id": plan.plan_id,
                 "work_items_count": len(plan.work_items),
+                "task_category": plan.task_category,
+                "allow_direct_developer": plan.allow_direct_developer,
             },
         )
         self.save_company_run(run)
@@ -4637,6 +4706,137 @@ class CompanyService:
 
         # Resume planning using the accumulated context
         return self.plan_company_run(run_id)
+
+    def escalate_company_team(
+        self,
+        run_id: str,
+        triggered_by_role: str,
+        reason: str,
+        requested_capability: str,
+        requested_role: Optional[str] = None,
+    ) -> CompanyRun:
+        """Perform controlled adaptive escalation when execution reveals a missing capability (STEP 23B.3).
+
+        Enforces:
+        - Bounded escalation budget (max_escalations=2).
+        - Preserves completed work and artifacts without rerunning successful specialists.
+        - Prevents duplicate work items if role is already scheduled or completed.
+        - No silent privilege or repository permission escalations.
+        - Persists structured TeamEscalationRecord and audit events.
+        """
+        run = self.get_company_run(run_id)
+        if run.state in (
+            CompanyRunState.COMPLETED.value,
+            CompanyRunState.FAILED.value,
+            CompanyRunState.BLOCKED.value,
+        ):
+            raise TransitionPolicyError(f"Cannot escalate team for terminal run '{run_id}' in state '{run.state}'.")
+
+        # 1. Bound escalation attempts
+        if run.escalation_count >= run.max_escalations:
+            record = TeamEscalationRecord(
+                escalation_id=f"tesc_{uuid.uuid4().hex[:8]}",
+                run_id=run.run_id,
+                triggered_by_role=triggered_by_role,
+                reason=reason,
+                requested_capability=requested_capability,
+                added_roles=[],
+                action_taken="REJECTED_BUDGET_EXCEEDED",
+            )
+            run.team_escalations.append(record.to_dict())
+            run.add_event(
+                event_type="TEAM_ESCALATION_REJECTED",
+                reason=f"Maximum team escalation budget ({run.max_escalations}) exceeded",
+                details=record.to_dict(),
+            )
+            self.save_company_run(run)
+            return run
+
+        # 2. Increment escalation counter
+        run.escalation_count += 1
+
+        # 3. Determine role to add
+        role_to_add = (requested_role or "").strip().lower()
+        if not role_to_add:
+            cap_lower = requested_capability.lower()
+            if "ux" in cap_lower or "design" in cap_lower or "visual" in cap_lower:
+                role_to_add = "ux"
+            elif "product" in cap_lower or "spec" in cap_lower or "requirement" in cap_lower:
+                role_to_add = "product"
+            elif "research" in cap_lower or "market" in cap_lower:
+                role_to_add = "research"
+            elif "developer" in cap_lower or "backend" in cap_lower:
+                role_to_add = "developer"
+            elif "marketing" in cap_lower:
+                role_to_add = "marketing"
+
+        if role_to_add and role_to_add not in RECOGNIZED_MACRO_ROLES:
+            raise UnsupportedRoleError(f"Cannot escalate to unsupported role '{role_to_add}'.")
+
+        added_roles: List[str] = []
+        action_taken = "NO_ACTION"
+
+        # If business requirements missing that cannot be resolved autonomously -> transition to WAITING_FOR_CLARIFICATION
+        if "founder" in requested_capability.lower() or "policy" in reason.lower():
+            action_taken = "ASK_FOUNDER"
+            run.clarification_request = {
+                "question": f"Specialist '{triggered_by_role}' encountered ambiguity requiring Founder policy guidance: {reason}",
+                "reason": reason,
+                "known_facts": list(run.investigation_findings),
+                "assumptions": [],
+                "missing_critical_information": [reason],
+                "proposed_next_action": "Awaiting Founder policy guidance.",
+                "investigation_count": run.investigation_count,
+                "requested_at": _utc_now_iso(),
+            }
+            run.transition_to(CompanyRunState.WAITING_FOR_CLARIFICATION)
+        elif role_to_add and run.active_plan:
+            # Check if role is already completed or present to prevent duplicate work items
+            existing_roles = [w.role.lower() for w in run.active_plan.work_items]
+            if role_to_add in existing_roles:
+                action_taken = "ALREADY_PRESENT_NO_DUPLICATE"
+            else:
+                # Add new work item safely
+                new_item_id = f"wi_{role_to_add}_esc_{uuid.uuid4().hex[:6]}"
+                new_item = CEOPlannedWorkItem(
+                    work_item_id=new_item_id,
+                    role=role_to_add,
+                    objective=f"Adaptive escalation: {reason}",
+                    depends_on=[],
+                    expected_outputs=[f"{role_to_add}_escalation_deliverable.md"],
+                    priority=2,
+                    state=WorkItemState.PENDING.value,
+                )
+                run.active_plan.work_items.append(new_item)
+                run.work_item_states[new_item_id] = WorkItemState.PENDING.value
+                added_roles.append(role_to_add)
+                action_taken = "ADDED_SPECIALIST"
+
+                # Update team_selection record if present
+                if run.team_selection:
+                    sel = list(run.team_selection.get("selected_roles", []))
+                    if role_to_add not in sel:
+                        sel.append(role_to_add)
+                        run.team_selection["selected_roles"] = sel
+                        run.team_selection["actual_specialist_count"] = len(sel)
+
+        record = TeamEscalationRecord(
+            escalation_id=f"tesc_{uuid.uuid4().hex[:8]}",
+            run_id=run.run_id,
+            triggered_by_role=triggered_by_role,
+            reason=reason,
+            requested_capability=requested_capability,
+            added_roles=added_roles,
+            action_taken=action_taken,
+        )
+        run.team_escalations.append(record.to_dict())
+        run.add_event(
+            event_type="TEAM_ESCALATION_RECORDED",
+            reason=f"Adaptive team escalation #{run.escalation_count} recorded: {action_taken}",
+            details=record.to_dict(),
+        )
+        self.save_company_run(run)
+        return run
 
     def start_company_run(self, run_id: str) -> CompanyRun:
         """Start execution of a planned CompanyRun.

@@ -150,16 +150,32 @@ def validate_dag_structure(plan: CEOOrchestrationPlan) -> None:
                 )
 
         # 6. Critical Developer Fan-In invariant:
-        # Developer must directly depend on both a Product item and a UX item
+        # Developer must directly depend on both a Product item and a UX item.
+        # Exception: Direct engineering / bug-fix plans where allow_direct_developer is True
+        # or task_category is BUG_FIX / SECURITY_SENSITIVE and neither Product nor UX is planned.
         if item.role.lower() == "developer":
             dep_roles = {items_by_id[dep].role.lower() for dep in dep_set}
+            all_plan_roles = {it.role.lower() for it in items_by_id.values()}
+            has_product_in_plan = "product" in all_plan_roles
+            has_ux_in_plan = "ux" in all_plan_roles
+
             has_product = "product" in dep_roles
             has_ux = "ux" in dep_roles
-            if not (has_product and has_ux):
-                raise DAGValidationError(
-                    f"Developer work item '{item_id}' requires both Product and UX "
-                    f"prerequisites in depends_on. Found dependent roles: {sorted(dep_roles)}."
-                )
+
+            is_direct_allowed = (
+                getattr(plan, "allow_direct_developer", False)
+                or getattr(plan, "task_category", None) in ("BUG_FIX", "bug_fix", "SECURITY_SENSITIVE", "security_sensitive")
+            )
+
+            if is_direct_allowed and not has_product_in_plan and not has_ux_in_plan:
+                # Direct developer allowed for bug fix without product/ux in plan
+                pass
+            else:
+                if not (has_product and has_ux):
+                    raise DAGValidationError(
+                        f"Developer work item '{item_id}' requires both Product and UX "
+                        f"prerequisites in depends_on. Found dependent roles: {sorted(dep_roles)}."
+                    )
 
     # 7. Cycle detection via Kahn's algorithm & topological sort
     in_degree: Dict[str, int] = {item_id: 0 for item_id in all_ids}

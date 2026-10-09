@@ -325,11 +325,13 @@ class CEOOrchestrationPlan:
     constraints: List[str] = field(default_factory=list)
     schema_version: str = "1.0"
     version: int = 1
+    task_category: Optional[str] = None
+    allow_direct_developer: bool = False
     created_at: str = field(default_factory=_utc_now_iso)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize plan to dictionary."""
-        return {
+        d = {
             "schema_version": self.schema_version,
             "plan_id": self.plan_id,
             "objective_id": self.objective_id,
@@ -339,6 +341,11 @@ class CEOOrchestrationPlan:
             "constraints": list(self.constraints),
             "created_at": self.created_at,
         }
+        if self.task_category is not None:
+            d["task_category"] = self.task_category
+        if self.allow_direct_developer:
+            d["allow_direct_developer"] = self.allow_direct_developer
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CEOOrchestrationPlan":
@@ -369,6 +376,8 @@ class CEOOrchestrationPlan:
             work_items=items,
             completion_criteria=[str(c).strip() for c in data.get("completion_criteria", [])],
             constraints=[str(con).strip() for con in data.get("constraints", [])],
+            task_category=data.get("task_category"),
+            allow_direct_developer=bool(data.get("allow_direct_developer", False)),
             created_at=data.get("created_at") or _utc_now_iso(),
         )
 
@@ -524,6 +533,50 @@ class CEOAction:
 
 
 @dataclass
+class TeamEscalationRecord:
+    """Audit record for adaptive team escalation during execution (STEP 23B.3)."""
+    escalation_id: str
+    run_id: str
+    triggered_by_role: str
+    reason: str
+    requested_capability: str
+    added_roles: List[str] = field(default_factory=list)
+    action_taken: str = ""
+    created_at: str = field(default_factory=_utc_now_iso)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "escalation_id": self.escalation_id,
+            "run_id": self.run_id,
+            "triggered_by_role": self.triggered_by_role,
+            "reason": self.reason,
+            "requested_capability": self.requested_capability,
+            "added_roles": list(self.added_roles),
+            "action_taken": self.action_taken,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TeamEscalationRecord":
+        if not isinstance(data, dict):
+            raise OrchestrationError("Expected dictionary for TeamEscalationRecord.")
+        for req in ("escalation_id", "run_id", "triggered_by_role", "reason", "requested_capability"):
+            val = data.get(req)
+            if not val or not isinstance(val, str) or not val.strip():
+                raise OrchestrationError(f"TeamEscalationRecord missing or invalid '{req}'.")
+        return cls(
+            escalation_id=data["escalation_id"].strip(),
+            run_id=data["run_id"].strip(),
+            triggered_by_role=data["triggered_by_role"].strip().lower(),
+            reason=data["reason"].strip(),
+            requested_capability=data["requested_capability"].strip(),
+            added_roles=[str(r).strip().lower() for r in data.get("added_roles", [])],
+            action_taken=str(data.get("action_taken", "")).strip(),
+            created_at=data.get("created_at") or _utc_now_iso(),
+        )
+
+
+@dataclass
 class CompanyRun:
     """Top-level company execution coordinating a multi-specialist plan."""
     run_id: str
@@ -554,6 +607,10 @@ class CompanyRun:
     founder_clarifications: List[Dict[str, Any]] = field(default_factory=list)
     last_ceo_decision: Optional[Dict[str, Any]] = None
     clarification_request: Optional[Dict[str, Any]] = None
+    team_selection: Optional[Dict[str, Any]] = None
+    team_escalations: List[Dict[str, Any]] = field(default_factory=list)
+    escalation_count: int = 0
+    max_escalations: int = 2
     created_at: str = field(default_factory=_utc_now_iso)
     updated_at: str = field(default_factory=_utc_now_iso)
     completed_at: Optional[str] = None
@@ -690,6 +747,10 @@ class CompanyRun:
             "founder_clarifications": list(self.founder_clarifications),
             "last_ceo_decision": self.last_ceo_decision,
             "clarification_request": self.clarification_request,
+            "team_selection": self.team_selection,
+            "team_escalations": [dict(e) for e in self.team_escalations],
+            "escalation_count": self.escalation_count,
+            "max_escalations": self.max_escalations,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
@@ -764,6 +825,10 @@ class CompanyRun:
             founder_clarifications=list(data.get("founder_clarifications", [])),
             last_ceo_decision=data.get("last_ceo_decision"),
             clarification_request=data.get("clarification_request"),
+            team_selection=data.get("team_selection"),
+            team_escalations=list(data.get("team_escalations", [])),
+            escalation_count=int(data.get("escalation_count", 0)),
+            max_escalations=int(data.get("max_escalations", 2)),
             created_at=data.get("created_at") or _utc_now_iso(),
             updated_at=data.get("updated_at") or _utc_now_iso(),
             completed_at=data.get("completed_at"),

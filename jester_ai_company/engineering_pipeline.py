@@ -143,7 +143,7 @@ class EngineeringPipelineAdapter:
             raise UnsupportedRoleError(f"EngineeringPipelineAdapter only executes 'developer' work items, got '{role}'.")
 
         # ----------------------------------------------------------------------
-        # 1. Product + UX Fan-In Prerequisite Verification
+        # 1. Product + UX Fan-In Prerequisite Verification (STEP 17B-4 & STEP 23B.3)
         # ----------------------------------------------------------------------
         prod_item = None
         ux_item = None
@@ -157,115 +157,129 @@ class EngineeringPipelineAdapter:
                 elif dep_role == "ux":
                     ux_item = dep_w
 
-        if not prod_item or not ux_item:
-            err_msg = (
-                f"Developer macro work item '{target_item.work_item_id}' violates Product + UX Fan-In invariant: "
-                f"requires direct dependencies on BOTH Product and UX work items. "
-                f"Found depends_on: {target_item.depends_on}."
-            )
-            target_item.state = WorkItemState.FAILED.value
-            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
-            run.transition_to(CompanyRunState.FAILED, error=err_msg)
-            run.add_event(
-                event_type="WORK_ITEM_FAILED",
-                work_item_id=target_item.work_item_id,
-                role=role,
-                reason=err_msg,
-            )
-            run.add_event("RUN_FAILED", reason=err_msg)
-            self.service.save_company_run(run)
-            raise EngineeringPreconditionError(err_msg)
+        all_plan_roles = {(w.role or "").strip().lower() for w in run.active_plan.work_items}
+        has_prod_in_plan = "product" in all_plan_roles
+        has_ux_in_plan = "ux" in all_plan_roles
+        is_direct_allowed = (
+            getattr(run.active_plan, "allow_direct_developer", False)
+            or getattr(run.active_plan, "task_category", None) in ("BUG_FIX", "bug_fix", "SECURITY_SENSITIVE", "security_sensitive")
+            or (run.team_selection and run.team_selection.get("task_category") in ("BUG_FIX", "SECURITY_SENSITIVE"))
+        )
 
-        # Verify completed states
-        prod_state = run.work_item_states.get(prod_item.work_item_id)
-        ux_state = run.work_item_states.get(ux_item.work_item_id)
-        if prod_state != WorkItemState.COMPLETED.value or ux_state != WorkItemState.COMPLETED.value:
-            err_msg = (
-                f"Developer work item '{target_item.work_item_id}' prerequisites incomplete: "
-                f"Product '{prod_item.work_item_id}' state is '{prod_state}', UX '{ux_item.work_item_id}' state is '{ux_state}'."
-            )
-            target_item.state = WorkItemState.FAILED.value
-            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
-            run.transition_to(CompanyRunState.FAILED, error=err_msg)
-            run.add_event(
-                event_type="WORK_ITEM_FAILED",
-                work_item_id=target_item.work_item_id,
-                role=role,
-                reason=err_msg,
-            )
-            run.add_event("RUN_FAILED", reason=err_msg)
-            self.service.save_company_run(run)
-            raise EngineeringPreconditionError(err_msg)
+        requires_fan_in = (has_prod_in_plan or has_ux_in_plan) or not is_direct_allowed
 
-        # Locate and verify Product and UX artifacts
+        if requires_fan_in:
+            if not prod_item or not ux_item:
+                err_msg = (
+                    f"Developer macro work item '{target_item.work_item_id}' violates Product + UX Fan-In invariant: "
+                    f"requires direct dependencies on BOTH Product and UX work items. "
+                    f"Found depends_on: {target_item.depends_on}."
+                )
+                target_item.state = WorkItemState.FAILED.value
+                run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+                run.transition_to(CompanyRunState.FAILED, error=err_msg)
+                run.add_event(
+                    event_type="WORK_ITEM_FAILED",
+                    work_item_id=target_item.work_item_id,
+                    role=role,
+                    reason=err_msg,
+                )
+                run.add_event("RUN_FAILED", reason=err_msg)
+                self.service.save_company_run(run)
+                raise EngineeringPreconditionError(err_msg)
+
+            # Verify completed states
+            prod_state = run.work_item_states.get(prod_item.work_item_id)
+            ux_state = run.work_item_states.get(ux_item.work_item_id)
+            if prod_state != WorkItemState.COMPLETED.value or ux_state != WorkItemState.COMPLETED.value:
+                err_msg = (
+                    f"Developer work item '{target_item.work_item_id}' prerequisites incomplete: "
+                    f"Product '{prod_item.work_item_id}' state is '{prod_state}', UX '{ux_item.work_item_id}' state is '{ux_state}'."
+                )
+                target_item.state = WorkItemState.FAILED.value
+                run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+                run.transition_to(CompanyRunState.FAILED, error=err_msg)
+                run.add_event(
+                    event_type="WORK_ITEM_FAILED",
+                    work_item_id=target_item.work_item_id,
+                    role=role,
+                    reason=err_msg,
+                )
+                run.add_event("RUN_FAILED", reason=err_msg)
+                self.service.save_company_run(run)
+                raise EngineeringPreconditionError(err_msg)
+
+        # Locate and verify Product and UX artifacts if required
         proj_id = run.project_id or run.objective.project_id or f"proj_{run.run_id}"
         if proj_id not in self.service.company.projects:
             self.service.create_project(proj_id, name=f"Project for {run.objective.title}")
         proj = self.service.get_project(proj_id)
 
-        prod_task = None
-        if prod_item.task_id:
-            try:
-                prod_task = self.service.get_task(prod_item.task_id)
-            except Exception:
-                prod_task = None
-
-        ux_task = None
-        if ux_item.task_id:
-            try:
-                ux_task = self.service.get_task(ux_item.task_id)
-            except Exception:
-                ux_task = None
-
         prod_art = None
-        if prod_task:
-            for r in reversed(prod_task.runs):
-                for a in r.artifacts:
-                    if a.artifact_type in (ArtifactType.SPECIFICATION.value, ArtifactType.RESEARCH_REPORT.value):
-                        prod_art = a
-                        break
-                if prod_art:
-                    break
-
         ux_art = None
-        if ux_task:
-            for r in reversed(ux_task.runs):
-                for a in r.artifacts:
-                    if a.artifact_type in (ArtifactType.UX_SPECIFICATION.value, ArtifactType.SPECIFICATION.value):
-                        ux_art = a
+
+        if requires_fan_in:
+            prod_task = None
+            if prod_item and prod_item.task_id:
+                try:
+                    prod_task = self.service.get_task(prod_item.task_id)
+                except Exception:
+                    prod_task = None
+
+            ux_task = None
+            if ux_item and ux_item.task_id:
+                try:
+                    ux_task = self.service.get_task(ux_item.task_id)
+                except Exception:
+                    ux_task = None
+
+            if prod_task:
+                for r in reversed(prod_task.runs):
+                    for a in r.artifacts:
+                        if a.artifact_type in (ArtifactType.SPECIFICATION.value, ArtifactType.RESEARCH_REPORT.value):
+                            prod_art = a
+                            break
+                    if prod_art:
                         break
-                if ux_art:
-                    break
 
-        if not prod_art or not ux_art:
-            err_msg = "Could not locate verified Product and UX artifacts for Developer execution."
-            target_item.state = WorkItemState.FAILED.value
-            run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
-            run.transition_to(CompanyRunState.FAILED, error=err_msg)
-            run.add_event("WORK_ITEM_FAILED", work_item_id=target_item.work_item_id, role=role, reason=err_msg)
-            run.add_event("RUN_FAILED", reason=err_msg)
-            self.service.save_company_run(run)
-            raise ArtifactVerificationError(err_msg)
+            if ux_task:
+                for r in reversed(ux_task.runs):
+                    for a in r.artifacts:
+                        if a.artifact_type in (ArtifactType.UX_SPECIFICATION.value, ArtifactType.SPECIFICATION.value):
+                            ux_art = a
+                            break
+                    if ux_art:
+                        break
 
-        # Verify physical files and SHA-256 on disk
-        for art_name, art in (("Product", prod_art), ("UX", ux_art)):
-            art_path = _resolve_artifact_file_path(self.service.output_dir, art)
-            if not art_path.is_file():
-                err_msg = f"{art_name} artifact file '{art.path}' does not exist on disk."
+            if not prod_art or not ux_art:
+                err_msg = "Could not locate verified Product and UX artifacts for Developer execution."
                 target_item.state = WorkItemState.FAILED.value
                 run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
                 run.transition_to(CompanyRunState.FAILED, error=err_msg)
+                run.add_event("WORK_ITEM_FAILED", work_item_id=target_item.work_item_id, role=role, reason=err_msg)
+                run.add_event("RUN_FAILED", reason=err_msg)
                 self.service.save_company_run(run)
                 raise ArtifactVerificationError(err_msg)
 
-            actual_sha = hashlib.sha256(art_path.read_bytes()).hexdigest()
-            if actual_sha != art.sha256:
-                err_msg = f"{art_name} artifact checksum mismatch: expected {art.sha256}, got {actual_sha}."
-                target_item.state = WorkItemState.FAILED.value
-                run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
-                run.transition_to(CompanyRunState.FAILED, error=err_msg)
-                self.service.save_company_run(run)
-                raise ArtifactVerificationError(err_msg)
+            # Verify physical files and SHA-256 on disk
+            for art_name, art in (("Product", prod_art), ("UX", ux_art)):
+                art_path = _resolve_artifact_file_path(self.service.output_dir, art)
+                if not art_path.is_file():
+                    err_msg = f"{art_name} artifact file '{art.path}' does not exist on disk."
+                    target_item.state = WorkItemState.FAILED.value
+                    run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+                    run.transition_to(CompanyRunState.FAILED, error=err_msg)
+                    self.service.save_company_run(run)
+                    raise ArtifactVerificationError(err_msg)
+
+                actual_sha = hashlib.sha256(art_path.read_bytes()).hexdigest()
+                if actual_sha != art.sha256:
+                    err_msg = f"{art_name} artifact checksum mismatch: expected {art.sha256}, got {actual_sha}."
+                    target_item.state = WorkItemState.FAILED.value
+                    run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+                    run.transition_to(CompanyRunState.FAILED, error=err_msg)
+                    self.service.save_company_run(run)
+                    raise ArtifactVerificationError(err_msg)
 
         # Resolve target repository root
         target_repo = Path(run.objective.target_repository).resolve() if run.objective.target_repository else self.service.repo_root
