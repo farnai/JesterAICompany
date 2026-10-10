@@ -261,7 +261,11 @@ from .dag import (
     select_ready_work_items,
     validate_dag_structure,
 )
-from .engineering_pipeline import EngineeringPipelineAdapter
+from .engineering_pipeline import (
+    EngineeringPipelineAdapter,
+    EngineeringPipelineError,
+    EngineeringPreconditionError,
+)
 from .context import (
     assemble_specialist_context,
 )
@@ -325,8 +329,10 @@ from .verification import (
 )
 from .policy_hook import (
     WriteAuthorizationDecision,
+    authorize_planning_tool,
     authorize_tool_mutation,
     install_execution_policy_hook,
+    install_planning_policy_hook,
 )
 from .worktree import (
     WorktreeAuditRecord,
@@ -1247,6 +1253,7 @@ class CompanyService:
         result_parser: Callable[[str], Any],
         timeout: Optional[float] = None,
         workspace_dir: Optional[Path] = None,
+        env: Optional[Dict[str, str]] = None,
     ) -> TaskRun:
         """Internal generic specialist execution mechanism (STEP 7).
 
@@ -1262,12 +1269,29 @@ class CompanyService:
         run = task.create_run()
         run.status = RunStatus.RUNNING.value
 
-        exec_result = self.runtime.execute(
-            agent=agent_name,
-            prompt=prompt,
-            timeout=timeout,
-            workspace_dir=workspace_dir,
-        )
+        try:
+            exec_result = self.runtime.execute(
+                agent=agent_name,
+                prompt=prompt,
+                timeout=timeout,
+                workspace_dir=workspace_dir,
+                env=env,
+            )
+        except TypeError as exc:
+            # Fail closed: never silently drop required isolation parameters (workspace_dir, env).
+            if workspace_dir is not None or env is not None:
+                raise ExecutionError(
+                    f"Runtime '{type(self.runtime).__name__}' does not support required isolation parameters (workspace_dir, env): {exc}"
+                ) from exc
+            # If neither workspace_dir nor env was specified, support test doubles with legacy (agent, prompt, timeout) signature
+            try:
+                exec_result = self.runtime.execute(
+                    agent=agent_name,
+                    prompt=prompt,
+                    timeout=timeout,
+                )
+            except TypeError:
+                raise exc
 
         # 1. Handle runtime failures
         if not exec_result.success:
@@ -1841,16 +1865,24 @@ class CompanyService:
         self,
         task_id: str,
         project_id: Optional[str] = None,
+        target_repo: Optional[Path] = None,
+        base_commit_hash: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> TaskRun:
-        """Execute a registered PENDING Task assigned to Developer Agent in PLANNING MODE (STEP 13A).
+        """Execute a registered PENDING Task assigned to Developer Agent in PLANNING MODE (STEP 13A & STEP 23B.7-B).
 
         Enforces:
         1. Eligibility: Task status == PENDING, required_roles == ['developer'].
-        2. Exact Fan-In Shape: Exactly TWO input artifacts, exactly 1 Product and 1 UX, no duplicates.
+        2. Exact Fan-In Shape: Exactly TWO input artifacts, exactly 1 Product and 1 UX, no duplicates (unless allow_direct_developer).
         3. Preflight Verification: Upstream tasks COMPLETED, runs SUCCESS, hashes matching, <=100KB per artifact.
         4. Combined Size Limit: Sum of inputs <= MAX_COMBINED_INPUT_ARTIFACT_SIZE_BYTES (150KB).
         5. Canonical Ordering: Product requirements presented before UX specification.
-        6. Read-Only Safety: Repository working tree verified before and after execution.
+        6. Isolated Planning Worktree: Creates detached disposable Git worktree at authorized base commit.
+        7. Read-Only Planning Policy Hook: Installs PreToolUse hook blocking writes, replacements, and shell commands.
+        8. Sanitized Environment: Strips secret tokens/credentials before execution.
+        9. Immutability Verification: Verifies zero file mutations in planning worktree (capture_diff().is_empty).
+        10. Canonical Repository Protection: Verifies canonical working tree state unchanged before and after execution.
+        11. Guaranteed Cleanup: Removes worktree session on all exit paths.
         """
         task = self.get_task(task_id, project_id=project_id)
 
@@ -1938,20 +1970,112 @@ class CompanyService:
             project_knowledge=dev_knowledge,
         )
 
-        repo_state_before = self._get_repo_working_tree_state()
+        # 5. Target repository and base commit resolution (STEP 23B.7-B)
+        repo_to_use = target_repo
+        if repo_to_use is None and project_id:
+            try:
+                repo_proj = self.project_registry.get_project(project_id)
+                if repo_proj and repo_proj.repository and repo_proj.repository.canonical_root:
+                    repo_to_use = repo_proj.repository.canonical_root
+            except Exception:
+                pass
 
-        run = self._execute_specialist_task(
-            task=task,
-            agent_name="developer",
-            prompt=prompt,
-            result_parser=parse_and_validate_developer_result,
+        if repo_to_use is None and hasattr(self, "_company_runs"):
+            for crun in self._company_runs.values():
+                if (
+                    crun.project_id == project_id
+                    or f"proj_{crun.run_id}" == project_id
+                    or crun.run_id == project_id
+                    or (hasattr(crun, "objective") and crun.objective and crun.objective.id == project_id)
+                ):
+                    if crun.objective and crun.objective.target_repository:
+                        repo_to_use = Path(crun.objective.target_repository)
+                    if not base_commit_hash and crun.base_commit_hash:
+                        base_commit_hash = crun.base_commit_hash
+                    break
+
+        if repo_to_use is None:
+            repo_to_use = self.repo_root
+        repo_to_use = Path(repo_to_use).resolve()
+
+        is_main_repo = (repo_to_use == self.repo_root.resolve())
+
+        try:
+            current_head = resolve_repo_head_commit(repo_to_use)
+        except Exception as exc:
+            raise ExecutionError(f"Target repository '{repo_to_use}' is not a valid git repository: {exc}")
+
+        if base_commit_hash:
+            if not current_head.startswith(base_commit_hash) and not base_commit_hash.startswith(current_head):
+                raise StaleCommitError(
+                    f"Repository HEAD commit '{current_head}' does not match authorized base commit '{base_commit_hash}'."
+                )
+            planning_commit = base_commit_hash
+        else:
+            planning_commit = current_head
+
+        # 6. Create isolated read-only planning worktree (STEP 23B.7-B)
+        session_id = f"plan_{task.id}_{uuid.uuid4().hex[:8]}"
+        manager = WorktreeManager(
+            repo_root=repo_to_use,
+            worktrees_dir=Path(self.output_dir) / "worktrees",
+            protect_company_control=is_main_repo,
         )
 
-        repo_state_after = self._get_repo_working_tree_state()
-        if repo_state_before != repo_state_after:
-            raise ExecutionError(f"Repository mutation detected during Developer planning task '{task.id}'!")
+        try:
+            session = manager.create_planning_worktree(
+                base_commit_hash=planning_commit,
+                session_id=session_id,
+            )
+        except Exception as wt_err:
+            raise ExecutionError(f"Failed to create isolated planning worktree: {wt_err}")
 
-        return run
+        repo_state_before = self._get_repo_working_tree_state(repo_path=repo_to_use)
+
+        try:
+            # Ensure Developer agent definition exists in planning worktree
+            worktree_agent_md = session.worktree_path / ".agents" / "agents" / "developer" / "agent.md"
+            if not worktree_agent_md.exists():
+                source_agent_md = self.repo_root / ".agents" / "agents" / "developer" / "agent.md"
+                if source_agent_md.exists():
+                    worktree_agent_md.parent.mkdir(parents=True, exist_ok=True)
+                    worktree_agent_md.write_text(source_agent_md.read_text(encoding="utf-8"), encoding="utf-8")
+
+            # Install read-only planning policy hook
+            install_planning_policy_hook(
+                session.worktree_path,
+                protect_company_control=is_main_repo,
+            )
+
+            # Sanitize environment
+            sanitized_env = sanitize_execution_environment()
+
+            run = self._execute_specialist_task(
+                task=task,
+                agent_name="developer",
+                prompt=prompt,
+                result_parser=parse_and_validate_developer_result,
+                timeout=timeout,
+                workspace_dir=session.worktree_path,
+                env=sanitized_env,
+            )
+
+            # Fail closed if any mutation occurred in planning worktree
+            diff_res = session.capture_diff()
+            if not diff_res.is_empty:
+                raise ExecutionError(
+                    f"Unauthorized mutation detected in planning worktree during task '{task.id}': "
+                    f"changed_files={diff_res.changed_files}"
+                )
+
+            # Fail closed if canonical repository was mutated
+            repo_state_after = self._get_repo_working_tree_state(repo_path=repo_to_use)
+            if repo_state_before != repo_state_after:
+                raise ExecutionError(f"Repository mutation detected during Developer planning task '{task.id}'!")
+
+            return run
+        finally:
+            session.remove()
 
     # --------------------------------------------------------------------------
     # Execution Grant & Isolated Worktree Infrastructure (STEP 13B-1)
@@ -5173,6 +5297,8 @@ class CompanyService:
             # Dispatch Developer macro work item to EngineeringPipelineAdapter
             try:
                 return self.execute_developer_company_work(run_id=run.run_id, work_item_id=target_item.work_item_id)
+            except (EngineeringPipelineError, EngineeringPreconditionError, ArtifactVerificationError):
+                raise
             except Exception as dev_err:
                 return self._handle_work_item_failure(
                     run=run,
@@ -5669,7 +5795,8 @@ class CompanyService:
                 target_item.state = WorkItemState.FAILED.value
                 run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
                 err_unmet = f"Partial completion rejected: unmet mandatory acceptance criteria: {unmet}"
-                run.transition_to(CompanyRunState.FAILED, error=err_unmet)
+                if run.state != CompanyRunState.FAILED.value:
+                    run.transition_to(CompanyRunState.FAILED, error=err_unmet)
                 run.add_event(
                     event_type="RECOVERY_FAILED",
                     work_item_id=target_item.work_item_id,
@@ -5693,7 +5820,8 @@ class CompanyService:
             }
             target_item.state = WorkItemState.BLOCKED.value
             run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
-            run.transition_to(CompanyRunState.WAITING_FOR_CLARIFICATION)
+            if run.state != CompanyRunState.WAITING_FOR_CLARIFICATION.value:
+                run.transition_to(CompanyRunState.WAITING_FOR_CLARIFICATION)
             run.add_event(
                 event_type="WAITING_FOR_FOUNDER_CLARIFICATION",
                 work_item_id=target_item.work_item_id,
@@ -5708,7 +5836,8 @@ class CompanyService:
         elif frec.recovery_decision == RecoveryDecision.BLOCK.value:
             target_item.state = WorkItemState.BLOCKED.value
             run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
-            run.transition_to(CompanyRunState.BLOCKED, error=frec.explanation)
+            if run.state != CompanyRunState.BLOCKED.value:
+                run.transition_to(CompanyRunState.BLOCKED, error=frec.explanation)
             run.add_event(
                 event_type="RECOVERY_BLOCKED",
                 work_item_id=target_item.work_item_id,
@@ -5724,7 +5853,8 @@ class CompanyService:
         else:  # FAIL
             target_item.state = WorkItemState.FAILED.value
             run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
-            run.transition_to(CompanyRunState.FAILED, error=frec.explanation)
+            if run.state != CompanyRunState.FAILED.value:
+                run.transition_to(CompanyRunState.FAILED, error=frec.explanation)
             run.add_event(
                 event_type="RECOVERY_FAILED",
                 work_item_id=target_item.work_item_id,

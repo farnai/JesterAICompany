@@ -522,3 +522,35 @@ class WorktreeManager:
             base_commit_hash=base_commit_hash,
             session_id=session_id,
         )
+
+    def create_planning_worktree(
+        self,
+        base_commit_hash: str,
+        session_id: str,
+    ) -> WorktreeSession:
+        """Create a detached isolated Git worktree for Developer planning directly from base_commit_hash."""
+        if not base_commit_hash or len(base_commit_hash) < 7:
+            raise WorktreeError(f"Invalid base_commit_hash for Planning worktree: '{base_commit_hash}'.")
+
+        self.worktrees_dir.mkdir(parents=True, exist_ok=True)
+        worktree_name = session_id if len(session_id) <= 40 else f"{session_id[:24]}_{hashlib.sha256(session_id.encode()).hexdigest()[:8]}"
+        worktree_path = (self.worktrees_dir / worktree_name).resolve()
+
+        if worktree_path.exists():
+            run_git(["worktree", "remove", "--force", str(worktree_path)], cwd=self.repo_root)
+            shutil.rmtree(worktree_path, ignore_errors=True)
+
+        code, stdout, stderr = run_git(
+            ["worktree", "add", "--detach", str(worktree_path), base_commit_hash],
+            cwd=self.repo_root,
+        )
+        if code != 0:
+            raise WorktreeGitError(f"Failed to create isolated planning worktree: {stderr.strip() or stdout.strip()}")
+
+        return WorktreeSession(
+            manager=self,
+            worktree_path=worktree_path,
+            base_commit_hash=base_commit_hash,
+            session_id=session_id,
+        )
+

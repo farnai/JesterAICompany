@@ -24,7 +24,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
-from typing import Generator
+from typing import Dict, Generator, Optional
 import unittest.mock
 import uuid
 import pytest
@@ -118,8 +118,10 @@ class MockRecoveryRuntime(AntigravityRuntime):
         self,
         agent: str,
         prompt: str,
-        timeout: float = None,
+        timeout: Optional[float] = None,
         cwd=None,
+        workspace_dir: Optional[Path] = None,
+        env: Optional[Dict[str, str]] = None,
     ) -> AgentExecutionResult:
         agent_norm = agent.lower().strip()
         if agent_norm == "ceo":

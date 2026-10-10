@@ -18,6 +18,7 @@ Verifies:
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from typing import Dict, Optional
 import pytest
 import time
 import uuid
@@ -56,8 +57,10 @@ class MockObservabilityRuntime(AntigravityRuntime):
         self,
         agent: str,
         prompt: str,
-        timeout: float = None,
+        timeout: Optional[float] = None,
         cwd=None,
+        workspace_dir: Optional[Path] = None,
+        env: Optional[Dict[str, str]] = None,
     ) -> AgentExecutionResult:
         agent_norm = agent.lower()
         if agent_norm == "ceo":

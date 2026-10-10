@@ -219,6 +219,8 @@ class MockRuntime(AntigravityRuntime):
         agent: str,
         prompt: str,
         timeout: Optional[float] = None,
+        workspace_dir: Optional[Path] = None,
+        env: Optional[Dict[str, str]] = None,
     ) -> AgentExecutionResult:
         self.calls.append({"agent": agent, "prompt": prompt})
         output = self.responses.get(agent, "{}")

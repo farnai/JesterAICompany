@@ -447,3 +447,219 @@ if __name__ == "__main__":
     hooks_json.write_text(json.dumps(hooks_spec, indent=2), encoding="utf-8")
 
     return audit_log
+
+
+def authorize_planning_tool(
+    tool_name: str,
+    args: Dict[str, Any],
+    workspace_root: Path,
+    protect_company_control: bool = True,
+) -> WriteAuthorizationDecision:
+    """Deterministically authorize or deny a tool call during Developer read-only planning.
+
+    Enforces strict read-only boundary:
+    1. Rejects run_command unconditionally.
+    2. Rejects write_to_file and replace_file_content unconditionally.
+    3. Rejects file deletions or any other mutation tool.
+    4. Permits view_file for reading, verifying target does not escape workspace.
+    5. Permits send_message for communication.
+    6. Rejects any unrecognized or unapproved tool calls.
+    """
+    if tool_name == "run_command":
+        return WriteAuthorizationDecision(
+            allowed=False,
+            reason="ExecutionPolicy: PreToolUse DENIED - run_command execution is strictly forbidden during Developer planning.",
+        )
+
+    if tool_name in ("write_to_file", "replace_file_content"):
+        return WriteAuthorizationDecision(
+            allowed=False,
+            reason=f"ExecutionPolicy: PreToolUse DENIED - '{tool_name}' is forbidden during Developer read-only planning.",
+        )
+
+    if tool_name == "view_file":
+        target_raw = args.get("AbsolutePath") or args.get("TargetFile") or ""
+        if target_raw:
+            cleaned = str(target_raw).strip().strip('"').strip("'")
+            p = Path(cleaned)
+            root_resolved = workspace_root.resolve()
+            if p.is_absolute() or (len(p.parts) > 0 and ":" in p.parts[0]):
+                try:
+                    resolved = p.resolve()
+                    if not resolved.is_relative_to(root_resolved):
+                        return WriteAuthorizationDecision(
+                            allowed=False,
+                            reason=f"ExecutionPolicy: PreToolUse DENIED - path '{cleaned}' escapes planning workspace.",
+                        )
+                except Exception:
+                    return WriteAuthorizationDecision(
+                        allowed=False,
+                        reason=f"ExecutionPolicy: PreToolUse DENIED - invalid path '{cleaned}'.",
+                    )
+            elif ".." in p.parts:
+                return WriteAuthorizationDecision(
+                    allowed=False,
+                    reason=f"ExecutionPolicy: PreToolUse DENIED - directory traversal in '{cleaned}'.",
+                )
+        return WriteAuthorizationDecision(
+            allowed=True,
+            reason="ExecutionPolicy: PreToolUse ALLOWED - read-only tool 'view_file' permitted.",
+        )
+
+    if tool_name == "send_message":
+        return WriteAuthorizationDecision(
+            allowed=True,
+            reason="ExecutionPolicy: PreToolUse ALLOWED - messaging tool permitted.",
+        )
+
+    return WriteAuthorizationDecision(
+        allowed=False,
+        reason=f"ExecutionPolicy: PreToolUse DENIED - tool '{tool_name}' is not authorized during Developer read-only planning.",
+    )
+
+
+def install_planning_policy_hook(
+    workspace_root: Path,
+    protect_company_control: bool = True,
+) -> Path:
+    """Install an execution-scoped PreToolUse hook into the isolated planning workspace.
+
+    Generates:
+    - <workspace_root>/.agents/hooks.json
+    - <workspace_root>/.agents/policy_config.json
+    - <workspace_root>/.agents/hook_policy.py
+    - <workspace_root>/.agents/hook.bat (on Windows) or hook.sh (on Unix)
+
+    Returns the path to the audit log that will record all hook decisions.
+    """
+    agents_dir = workspace_root / ".agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+
+    audit_log = workspace_root / ".runs" / "planning_hook_audit.jsonl"
+    audit_log.parent.mkdir(parents=True, exist_ok=True)
+
+    policy_config = {
+        "mode": "read_only_planning",
+        "workspace_root": str(workspace_root.resolve()),
+        "protect_company_control": protect_company_control,
+        "audit_log_path": str(audit_log.resolve()),
+    }
+    policy_config_file = agents_dir / "policy_config.json"
+    policy_config_file.write_text(json.dumps(policy_config, indent=2), encoding="utf-8")
+
+    hook_py = agents_dir / "hook_policy.py"
+    hook_py_code = """import json
+import os
+from pathlib import Path
+import sys
+
+def run():
+    config_file = Path(__file__).resolve().parent / "policy_config.json"
+    if not config_file.exists():
+        resp = {"decision": "deny", "reason": "ExecutionPolicy: missing policy_config.json"}
+        sys.stdout.write(json.dumps(resp))
+        sys.stdout.flush()
+        return
+
+    try:
+        config = json.loads(config_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        resp = {"decision": "deny", "reason": f"ExecutionPolicy: failed to parse policy_config: {e}"}
+        sys.stdout.write(json.dumps(resp))
+        sys.stdout.flush()
+        return
+
+    raw_input = sys.stdin.read()
+    try:
+        data = json.loads(raw_input)
+    except Exception as e:
+        resp = {"decision": "deny", "reason": f"ExecutionPolicy: invalid hook payload JSON: {e}"}
+        sys.stdout.write(json.dumps(resp))
+        sys.stdout.flush()
+        return
+
+    tool_call = data.get("toolCall", {})
+    tool_name = tool_call.get("name", "")
+    args = tool_call.get("args", {})
+    workspace_root = Path(config["workspace_root"]).resolve()
+    audit_log = Path(config["audit_log_path"])
+
+    if tool_name == "run_command":
+        decision = {"decision": "deny", "reason": "ExecutionPolicy: PreToolUse DENIED - run_command execution is strictly forbidden during Developer planning."}
+    elif tool_name in ("write_to_file", "replace_file_content"):
+        decision = {"decision": "deny", "reason": f"ExecutionPolicy: PreToolUse DENIED - '{tool_name}' is forbidden during Developer read-only planning."}
+    elif tool_name == "view_file":
+        target_raw = args.get("AbsolutePath") or args.get("TargetFile") or ""
+        if target_raw:
+            cleaned = str(target_raw).strip().strip('"').strip("'")
+            p = Path(cleaned)
+            if p.is_absolute() or (len(p.parts) > 0 and ":" in p.parts[0]):
+                try:
+                    resolved = p.resolve()
+                    if not resolved.is_relative_to(workspace_root):
+                        decision = {"decision": "deny", "reason": f"ExecutionPolicy: PreToolUse DENIED - path '{cleaned}' escapes planning workspace."}
+                    else:
+                        decision = {"decision": "allow"}
+                except Exception as e:
+                    decision = {"decision": "deny", "reason": f"ExecutionPolicy: PreToolUse DENIED - invalid path '{cleaned}': {e}"}
+            elif ".." in p.parts:
+                decision = {"decision": "deny", "reason": f"ExecutionPolicy: PreToolUse DENIED - directory traversal in '{cleaned}'"}
+            else:
+                decision = {"decision": "allow"}
+        else:
+            decision = {"decision": "allow"}
+    elif tool_name == "send_message":
+        decision = {"decision": "allow"}
+    else:
+        decision = {"decision": "deny", "reason": f"ExecutionPolicy: PreToolUse DENIED - tool '{tool_name}' is not authorized during Developer read-only planning."}
+
+    try:
+        audit_entry = {
+            "tool": tool_name,
+            "args": args,
+            "decision": decision["decision"],
+            "reason": decision.get("reason", ""),
+        }
+        with open(audit_log, "a", encoding="utf-8") as f:
+            f.write(json.dumps(audit_entry) + "\\n")
+    except Exception:
+        pass
+
+    sys.stdout.write(json.dumps(decision))
+    sys.stdout.flush()
+
+if __name__ == "__main__":
+    run()
+"""
+    hook_py.write_text(hook_py_code, encoding="utf-8")
+
+    if sys.platform == "win32":
+        hook_cmd = agents_dir / "hook.bat"
+        hook_cmd.write_text(f'@"{sys.executable}" "{hook_py}"\n', encoding="utf-8")
+        command_str = str(hook_cmd)
+    else:
+        hook_cmd = agents_dir / "hook.sh"
+        hook_cmd.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{hook_py}" "$@"\n', encoding="utf-8")
+        hook_cmd.chmod(0o755)
+        command_str = str(hook_cmd)
+
+    hooks_json = agents_dir / "hooks.json"
+    hooks_spec = {
+        "planning-read-only-policy": {
+            "PreToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": command_str,
+                            "timeout": 15,
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    hooks_json.write_text(json.dumps(hooks_spec, indent=2), encoding="utf-8")
+
+    return audit_log

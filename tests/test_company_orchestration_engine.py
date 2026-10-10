@@ -44,6 +44,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+from typing import Dict, Optional
 from unittest.mock import MagicMock
 import pytest
 
@@ -231,8 +232,10 @@ class MockMultiAgentRuntime(AntigravityRuntime):
         self,
         agent: str,
         prompt: str,
-        timeout: float = None,
+        timeout: Optional[float] = None,
         cwd=None,
+        workspace_dir: Optional[Path] = None,
+        env: Optional[Dict[str, str]] = None,
     ) -> AgentExecutionResult:
         agent_norm = agent.lower()
         self.execution_counts[agent_norm] = self.execution_counts.get(agent_norm, 0) + 1
@@ -645,7 +648,7 @@ def test_requirement_ab_ac_specialist_failure_blocks_dependents(service_and_obj)
 
     # Create a failing runtime for research
     class FailingResearchRuntime(MockMultiAgentRuntime):
-        def execute(self, agent, prompt, timeout=None, cwd=None):
+        def execute(self, agent, prompt, timeout=None, cwd=None, workspace_dir=None, env=None):
             if agent == "research":
                 return AgentExecutionResult(
                     agent="research",
@@ -657,7 +660,7 @@ def test_requirement_ab_ac_specialist_failure_blocks_dependents(service_and_obj)
                     timed_out=False,
                     command=["agy"],
                 )
-            return super().execute(agent, prompt, timeout, cwd)
+            return super().execute(agent, prompt, timeout, cwd, workspace_dir, env)
 
     service.runtime = FailingResearchRuntime(objective_id=obj.id)
     run = service.create_company_run(obj)

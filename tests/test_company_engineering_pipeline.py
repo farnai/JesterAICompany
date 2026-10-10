@@ -223,7 +223,7 @@ class DeterministicMockRuntime(AntigravityRuntime):
                 return make_agent_result(agent_norm, payload)
 
             # Check if bounded mutation execution
-            if workspace_dir or "EXECUTION GRANT" in prompt or "MUTATION" in prompt:
+            if "EXECUTION GRANT" in prompt or "MUTATION" in prompt:
                 if workspace_dir and (Path(workspace_dir) / "calculator.py").exists():
                     calc_path = Path(workspace_dir) / "calculator.py"
                     content = calc_path.read_text(encoding="utf-8")
