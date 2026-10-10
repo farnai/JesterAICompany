@@ -13,7 +13,7 @@ from pathlib import Path
 import re
 import sys
 import uuid
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .core import (
     Artifact,
@@ -415,7 +415,46 @@ def authorize_and_convert_qa_actions(
             )
             continue
 
-        # 7. Authorized!
+        # 7. Frontend build specific validation (package.json and build script must exist)
+        if act_type in {"npm_build", "frontend_build"}:
+            pkg_json = resolved if resolved.is_file() and resolved.name == "package.json" else (resolved / "package.json")
+            if not pkg_json.is_file():
+                audits.append(
+                    QAExecutionActionAudit(
+                        action_type=act_type,
+                        target=target,
+                        purpose=purpose,
+                        decision=QAActionAuthorizationDecision.REJECTED_TARGET_NOT_FOUND.value,
+                        reason=f"Target '{target}' is missing 'package.json'.",
+                    )
+                )
+                continue
+            try:
+                pkg_data = json.loads(pkg_json.read_text(encoding="utf-8"))
+                if not isinstance(pkg_data, dict) or "build" not in pkg_data.get("scripts", {}):
+                    audits.append(
+                        QAExecutionActionAudit(
+                            action_type=act_type,
+                            target=target,
+                            purpose=purpose,
+                            decision=QAActionAuthorizationDecision.REJECTED_TARGET_NOT_FOUND.value,
+                            reason=f"Target '{target}' package.json does not define a 'build' script.",
+                        )
+                    )
+                    continue
+            except Exception as exc:
+                audits.append(
+                    QAExecutionActionAudit(
+                        action_type=act_type,
+                        target=target,
+                        purpose=purpose,
+                        decision=QAActionAuthorizationDecision.REJECTED_TARGET_NOT_FOUND.value,
+                        reason=f"Target '{target}' package.json error: {exc}",
+                    )
+                )
+                continue
+
+        # 8. Authorized!
         converted = VerificationAction(action_type=act_type, target=norm_target)
         authorized_actions.append(converted)
         audits.append(
@@ -435,10 +474,53 @@ def authorize_and_convert_qa_actions(
 # Deterministic Verdict Constraint Enforcer
 # ==============================================================================
 
+def is_frontend_path(path: str) -> bool:
+    """Return True if path belongs to the frontend subsystem."""
+    norm = str(path).replace("\\", "/").strip().lstrip("/")
+    return norm == "frontend" or norm.startswith("frontend/") or norm.endswith((".tsx", ".jsx"))
+
+
+def is_frontend_verification_action(action: Any) -> bool:
+    """Return True if a verification action targets or exercises the frontend subsystem."""
+    action_type = getattr(action, "action_type", "") or ""
+    target = getattr(action, "target", "") or ""
+    norm_target = str(target).replace("\\", "/").strip().lstrip("/")
+    if action_type.lower() in {"npm", "npm_test", "npm_build", "frontend_build", "vitest", "jest"}:
+        return True
+    return (
+        norm_target == "frontend"
+        or norm_target.startswith("frontend/")
+        or norm_target.endswith((".tsx", ".jsx", "package.json"))
+    )
+
+
+def extract_changed_files_from_patch(patch_text: Optional[str]) -> List[str]:
+    """Extract changed file paths from unified git diff text."""
+    if not patch_text or not isinstance(patch_text, str):
+        return []
+    files: List[str] = []
+    for line in patch_text.splitlines():
+        line = line.strip()
+        if line.startswith("diff --git a/"):
+            parts = line.split()
+            if len(parts) >= 4 and parts[3].startswith("b/"):
+                files.append(parts[3][2:].replace("\\", "/"))
+        elif line.startswith("+++ b/"):
+            files.append(line[6:].strip().replace("\\", "/"))
+        elif line.startswith("+++ ") and not line.startswith("+++ /dev/null"):
+            target = line[4:].strip().replace("\\", "/")
+            if target.startswith("b/"):
+                target = target[2:]
+            files.append(target)
+    return list(dict.fromkeys(files))
+
+
 def enforce_deterministic_verdict_constraints(
     verdict_result: QAExecutionVerdictResult,
     action_audits: List[QAExecutionActionAudit],
     verification_results: List[VerificationExecutionResult],
+    changed_files: Optional[Sequence[str]] = None,
+    code_patch_text: Optional[str] = None,
 ) -> QAExecutionVerdictResult:
     """Enforce deterministic safety invariants over the QA Agent's verdict.
 
@@ -449,10 +531,16 @@ def enforce_deterministic_verdict_constraints(
     2. If any executed verification action failed (exit code != 0 or status != PASS):
        - PASS is strictly FORBIDDEN.
        - Overridden to FAIL.
-    3. PASS is only allowed when:
+    3. If frontend code changes were made:
+       - Relevant frontend verification MUST actually execute and succeed.
+       - If zero frontend actions executed -> BLOCKED.
+       - If any frontend verification failed or timed out -> FAIL.
+       - Missing changed-file metadata must not silently bypass relevance checks.
+    4. PASS is only allowed when:
        - At least one action was authorized and executed, or no actions were recommended.
        - 100% of executed actions passed (status=PASS, exit_code=0).
        - Zero action audits were rejected.
+       - Subsystem relevance requirements are satisfied.
        - No blocking issues recorded.
     """
     has_rejected_actions = any(
@@ -494,6 +582,57 @@ def enforce_deterministic_verdict_constraints(
                 )
         return verdict_result
 
+    # Constraint 3: Subsystem relevance check.
+    # Frontend changes require relevant frontend verification that actually executes and succeeds.
+    # Missing changed-file metadata must not silently bypass relevance checks.
+    effective_changed_files = list(changed_files) if changed_files is not None else []
+    if code_patch_text:
+        patch_files = extract_changed_files_from_patch(code_patch_text)
+        effective_changed_files = list(dict.fromkeys(effective_changed_files + patch_files))
+
+    has_frontend_in_files = bool(any(is_frontend_path(f) for f in effective_changed_files))
+    has_frontend_in_audits = any(
+        is_frontend_path(a.target) or is_frontend_verification_action(a)
+        for a in action_audits
+    )
+    has_frontend_in_results = any(
+        is_frontend_path(getattr(vr.action, "target", "")) or is_frontend_verification_action(vr.action)
+        for vr in verification_results
+    )
+    has_frontend_changes = has_frontend_in_files or has_frontend_in_audits or has_frontend_in_results
+
+    if has_frontend_changes:
+        frontend_results = [vr for vr in verification_results if is_frontend_verification_action(vr.action)]
+        has_successful_frontend = any(vr.passed for vr in frontend_results)
+        has_failing_frontend = any(not vr.passed for vr in frontend_results)
+
+        if has_failing_frontend:
+            if verdict_result.verdict != QAFinalVerdict.FAIL.value:
+                verdict_result.deterministic_override_applied = True
+                verdict_result.override_reason = (
+                    "Deterministic override: Frontend verification action(s) failed or timed out."
+                )
+                verdict_result.verdict = QAFinalVerdict.FAIL.value
+                verdict_result.release_recommendation = "REJECTED_NEEDS_FIX"
+                if not any("frontend verification failed" in issue.lower() for issue in verdict_result.blocking_issues):
+                    verdict_result.blocking_issues.append("One or more executed frontend verification actions failed.")
+            return verdict_result
+
+        if not has_successful_frontend:
+            if verdict_result.verdict == QAFinalVerdict.PASS.value:
+                verdict_result.deterministic_override_applied = True
+                verdict_result.override_reason = (
+                    "Deterministic override: Frontend code changes cannot receive a release-ready PASS "
+                    "solely from unrelated backend tests."
+                )
+                verdict_result.verdict = QAFinalVerdict.BLOCKED.value
+                verdict_result.release_recommendation = "BLOCKED_ON_FRONTEND_VERIFICATION"
+                if not any("frontend verification" in issue.lower() for issue in verdict_result.blocking_issues):
+                    verdict_result.blocking_issues.append(
+                        "Frontend code was modified, but no frontend verification actions succeeded."
+                    )
+            return verdict_result
+
     return verdict_result
 
 
@@ -512,7 +651,7 @@ def build_qa_verdict_prompt(
     ux_content: Optional[str] = None,
 ) -> str:
     """Build the final release verdict prompt for read-only QA Agent evaluation."""
-    product_slice = (product_content.strip())[:2500]
+    product_slice = (product_content.strip())[:2500] if product_content.strip() else f"Direct Developer Work Item Objective:\n{getattr(task, 'goal', '').strip() or 'Direct code improvement without separate product artifact.'}"
     ux_slice = (ux_content.strip())[:1500] if ux_content else ""
     plan_slice = (developer_plan_content.strip())[:2000]
     patch_slice = (code_patch_text.strip())[:4000]
@@ -552,6 +691,8 @@ CRITICAL OPERATING BOUNDARIES:
   - If any executed test failed, the verdict MUST be FAIL.
   - If required verification could not execute (e.g. test target missing or not implemented), the verdict CANNOT be PASS (must be BLOCKED or FAIL).
   - Verdict PASS is ONLY permitted if all requirements are satisfied AND all executed tests passed cleanly.
+  - In DIRECT DEVELOPER EXECUTION mode (where no separate Product or UX artifacts exist), the Developer Plan and Work Item Objective constitute the authoritative specification. Do NOT block release due to the absence of separate Product/UX specification documents. If all executed verification actions PASS and the CODE_PATCH satisfies the work item objective, the verdict SHOULD be PASS.
+  - Frontend code changes require frontend verification. Passing unrelated backend tests (e.g. tests/core/test_canonical.py) does NOT satisfy frontend requirements.
 
 ---
 
@@ -631,6 +772,8 @@ def parse_and_validate_qa_verdict(
     raw_output: str,
     action_audits: List[QAExecutionActionAudit],
     verification_results: List[VerificationExecutionResult],
+    changed_files: Optional[Sequence[str]] = None,
+    code_patch_text: Optional[str] = None,
 ) -> QAExecutionVerdictResult:
     """Deterministically parse and validate the QA Agent's final release verdict."""
     json_text = extract_qa_json_text(raw_output)
@@ -711,4 +854,6 @@ def parse_and_validate_qa_verdict(
         verdict_result=parsed,
         action_audits=action_audits,
         verification_results=verification_results,
+        changed_files=changed_files,
+        code_patch_text=code_patch_text,
     )

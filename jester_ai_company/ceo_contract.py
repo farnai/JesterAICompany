@@ -108,6 +108,7 @@ class CEODecisionSecurityError(CEOPlanSecurityError):
 def build_ceo_planning_prompt(
     objective: CompanyObjective,
     project_knowledge: Optional[Any] = None,
+    team_selection: Optional[Any] = None,
 ) -> str:
     """Build a deterministic, bounded planning prompt for the CEO agent.
 
@@ -140,6 +141,21 @@ def build_ceo_planning_prompt(
         from .context import format_project_knowledge_prompt_block
         knowledge_block = format_project_knowledge_prompt_block(project_knowledge)
 
+    if team_selection and getattr(team_selection, "allow_direct_developer", False):
+        selected_str = ", ".join(f"'{r}'" for r in getattr(team_selection, "selected_roles", ["developer"]))
+        workforce_rule = (
+            f"10. Critical Developer Fan-In invariant (DIRECT EXECUTION EXCEPTION): "
+            f"Approved workforce for this task is: [{selected_str}]. Direct developer execution is authorized. "
+            f"Plan ONLY the selected roles: {selected_str}. "
+            f"Do NOT include omitted roles (such as product, ux, research, or marketing). "
+            f"Developer work item should have no upstream product/ux dependencies.\n"
+        )
+    else:
+        workforce_rule = (
+            "10. Critical Developer Fan-In invariant: If a 'developer' work item is planned, "
+            "it MUST directly depend on BOTH a 'product' work item and a 'ux' work item in 'depends_on'.\n"
+        )
+
     return (
         "SYSTEM INSTRUCTION: You are the CEO of Jester AI Company operating in "
         "ORCHESTRATION PLANNING MODE.\n\n"
@@ -153,7 +169,7 @@ def build_ceo_planning_prompt(
         f"7. Work item count must be between 1 and {MAX_PLANNED_WORK_ITEMS}.\n"
         f"8. Maximum graph depth is {MAX_GRAPH_DEPTH} (root nodes have depth 1).\n"
         f"9. Eligible macro specialist roles are: {roles_str}. Never assign work items to 'ceo'.\n"
-        "10. Critical Developer Fan-In invariant: If a 'developer' work item is planned, it MUST directly depend on BOTH a 'product' work item and a 'ux' work item in 'depends_on'.\n"
+        f"{workforce_rule}"
         f"11. QA Role Contract: Engineering QA certification is strictly application-owned inside code pipelines. If a 'qa' work item is planned in the DAG, it must be delegated ONLY for non-mutating planning or audit work with an explicit 'capability' field matching one of: {qa_caps_str}. A 'qa' work item must NEVER depend on 'developer', must NEVER request certification or patch verification, and must NEVER issue execution grants or apply permissions.\n"
         "12. 'depends_on' represents execution ordering; it is NOT automatic artifact sharing.\n\n"
         f"{knowledge_block}"

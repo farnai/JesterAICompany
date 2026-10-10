@@ -693,6 +693,7 @@ def build_real_repo_apply_proposal(
     project_id: Optional[str] = None,
     repository_id: Optional[str] = None,
     allow_untracked: bool = False,
+    allow_dirty_unrelated: bool = False,
 ) -> RealRepoApplyProposal:
     """Build an immutable, typed proposal for human review. PERFORMS ZERO REPOSITORY MUTATION."""
     # 1. Eligibility validation
@@ -724,16 +725,30 @@ def build_real_repo_apply_proposal(
     # Cleanliness check & Crash State Classification (Principles 3 & 4)
     is_clean, dirty_stdout = verify_target_repo_cleanliness(repo_resolved, allow_untracked=allow_untracked)
     if not is_clean:
-        crash_state = classify_crash_state(repo_resolved, patch_text, changed_files, allow_untracked=allow_untracked)
+        crash_state = classify_crash_state(
+            repo_resolved,
+            patch_text,
+            changed_files,
+            allow_untracked=allow_untracked,
+            allow_dirty_unrelated=allow_dirty_unrelated,
+        )
         if crash_state == CrashStateClassification.PARTIAL_OR_UNKNOWN_STATE:
             raise CrashRecoveryBlockError(
                 f"Target repository '{repo_resolved}' has an unresolved crash/partial apply state ({crash_state.value}). "
                 f"Fails closed and blocks new apply.\nStatus:\n{dirty_stdout}"
             )
-        raise TargetRepositoryDirtyError(
-            f"Target repository '{repo_resolved}' is dirty:\n{dirty_stdout}\n"
-            f"A clean repository working tree is mandatory prior to real repository apply."
-        )
+        # Check if any expected patch file is dirty in the target repository
+        expected_set = {Path(f).as_posix().lstrip("/").lower() for f in changed_files}
+        cmd = ["status", "--porcelain"]
+        if allow_untracked:
+            cmd.append("--untracked-files=no")
+        code, status_out, _ = run_git(cmd, cwd=repo_resolved)
+        dirty_files = {line[3:].strip().replace("\\", "/").lower() for line in status_out.splitlines() if line.strip()} if code == 0 else set()
+        if (dirty_files & expected_set) or not allow_dirty_unrelated:
+            raise TargetRepositoryDirtyError(
+                f"Target repository '{repo_resolved}' is dirty for target file(s) {sorted(dirty_files & expected_set)}:\n{dirty_stdout}\n"
+                f"A clean repository working tree for target files is mandatory prior to real repository apply."
+            )
 
     # Non-mutating precheck in isolation
     precheck_code_patch_applicability(repo_resolved, patch_text)
@@ -1029,6 +1044,7 @@ def classify_crash_state(
     patch_text: str,
     expected_files: Tuple[str, ...],
     allow_untracked: bool = False,
+    allow_dirty_unrelated: bool = False,
 ) -> CrashStateClassification:
     """Classify repository state to detect incomplete or crashed transactions."""
     is_clean, _ = verify_target_repo_cleanliness(repo_root, allow_untracked=allow_untracked)
@@ -1041,6 +1057,19 @@ def classify_crash_state(
             return CrashStateClassification.EXACT_APPROVED_PATCH_PRESENT
     except PostApplyDiffMismatchError:
         pass
+
+    if allow_dirty_unrelated:
+        # Inspect whether any expected patch file has dirty state (indicating partial apply / crash of this patch)
+        expected_set = {Path(f).as_posix().lstrip("/").lower() for f in expected_files}
+        cmd = ["status", "--porcelain"]
+        if allow_untracked:
+            cmd.append("--untracked-files=no")
+        code, status_out, _ = run_git(cmd, cwd=repo_root)
+        if code == 0:
+            dirty_files = {line[3:].strip().replace("\\", "/").lower() for line in status_out.splitlines() if line.strip()}
+            # If none of the patch's expected files are dirty, this is not a crashed patch transaction.
+            if not (dirty_files & expected_set):
+                return CrashStateClassification.NOT_APPLIED
 
     return CrashStateClassification.PARTIAL_OR_UNKNOWN_STATE
 

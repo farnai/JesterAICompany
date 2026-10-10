@@ -299,6 +299,7 @@ class Task:
     approvals: List[Approval] = field(default_factory=list)
     result: Optional[TaskResult] = None
     input_artifacts: List[ArtifactInputRef] = field(default_factory=list)
+    allow_direct_developer: bool = False
 
     def create_run(self) -> TaskRun:
         attempt = len(self.runs) + 1

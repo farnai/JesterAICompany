@@ -25,6 +25,7 @@ Security & Architecture Invariants:
 
 from datetime import datetime, timezone
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
@@ -45,6 +46,7 @@ from .execution_grant import (
     ProtectedPathError,
     VerificationAction,
 )
+from .qa_execution import is_frontend_path
 from .worktree import is_test_file
 from .orchestrator import (
     CEOPlannedWorkItem,
@@ -162,8 +164,13 @@ class EngineeringPipelineAdapter:
         has_ux_in_plan = "ux" in all_plan_roles
         is_direct_allowed = (
             getattr(run.active_plan, "allow_direct_developer", False)
-            or getattr(run.active_plan, "task_category", None) in ("BUG_FIX", "bug_fix", "SECURITY_SENSITIVE", "security_sensitive")
-            or (run.team_selection and run.team_selection.get("task_category") in ("BUG_FIX", "SECURITY_SENSITIVE"))
+            or getattr(run.active_plan, "task_category", None) in (
+                "BUG_FIX", "bug_fix", "SECURITY_SENSITIVE", "security_sensitive",
+                "SMALL_FEATURE", "small_feature", "UI_UX_CHANGE", "ui_ux_change",
+            )
+            or (run.team_selection and run.team_selection.get("task_category") in (
+                "BUG_FIX", "SECURITY_SENSITIVE", "SMALL_FEATURE", "UI_UX_CHANGE",
+            ))
         )
 
         requires_fan_in = (has_prod_in_plan or has_ux_in_plan) or not is_direct_allowed
@@ -361,9 +368,13 @@ class EngineeringPipelineAdapter:
                 required_roles=["developer"],
                 expected_output=list(target_item.expected_outputs),
             )
-            # Attach verified Product and UX artifacts
-            self.service.attach_input_artifact(plan_task.id, prod_art.id, project_id=proj.id)
-            self.service.attach_input_artifact(plan_task.id, ux_art.id, project_id=proj.id)
+            plan_task.allow_direct_developer = not requires_fan_in
+
+            # Attach verified Product and UX artifacts if present
+            if prod_art:
+                self.service.attach_input_artifact(plan_task.id, prod_art.id, project_id=proj.id)
+            if ux_art:
+                self.service.attach_input_artifact(plan_task.id, ux_art.id, project_id=proj.id)
 
             plan_run = self.service.execute_developer_planning_task(plan_task.id, project_id=proj.id)
             if plan_run.status != RunStatus.SUCCESS.value:
@@ -451,11 +462,51 @@ class EngineeringPipelineAdapter:
                     verification_actions.append(VerificationAction("pytest", f))
                     break
 
+        # If frontend files are modified/created and target repo has a frontend build script, add frontend_build
+        has_frontend = any(is_frontend_path(f) for f in files_to_modify + files_to_create)
+        frontend_pkg = target_repo / "frontend" / "package.json"
+        if has_frontend and frontend_pkg.is_file():
+            has_fe_action = any(va.action_type in {"frontend_build", "npm_build"} for va in verification_actions)
+            if not has_fe_action:
+                try:
+                    pkg_data = json.loads(frontend_pkg.read_text(encoding="utf-8"))
+                    if isinstance(pkg_data, dict) and "build" in pkg_data.get("scripts", {}):
+                        verification_actions.append(VerificationAction("frontend_build", "frontend"))
+                except Exception:
+                    pass
+
         if not verification_actions:
-            test_files = list(target_repo.rglob("test_*.py"))
-            if test_files:
-                rel_test = str(test_files[0].relative_to(target_repo)).replace("\\", "/")
-                verification_actions.append(VerificationAction("pytest", rel_test))
+            canonical_test = "tests/core/test_canonical.py"
+            if (target_repo / canonical_test).is_file():
+                verification_actions.append(VerificationAction("pytest", canonical_test))
+            else:
+                try:
+                    import subprocess
+                    res = subprocess.run(
+                        ["git", "ls-files", "tests/**/test_*.py", "**/test_*.py"],
+                        cwd=str(target_repo),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    tracked_tests = [
+                        line.strip().replace("\\", "/")
+                        for line in res.stdout.splitlines()
+                        if line.strip() and not line.strip().startswith("scratch/")
+                    ]
+                    if tracked_tests:
+                        verification_actions.append(VerificationAction("pytest", tracked_tests[0]))
+                except Exception:
+                    pass
+
+                if not verification_actions:
+                    test_files = [
+                        f for f in target_repo.rglob("test_*.py")
+                        if "scratch" not in f.parts and ".git" not in f.parts
+                    ]
+                    if test_files:
+                        rel_test = str(test_files[0].relative_to(target_repo)).replace("\\", "/")
+                        verification_actions.append(VerificationAction("pytest", rel_test))
 
         founder_approval_id = f"founder_grant_{run.run_id}"
         has_tests = any(is_test_file(f) for f in files_to_modify + files_to_create)
@@ -615,8 +666,10 @@ class EngineeringPipelineAdapter:
                 goal=f"Inspect CODE_PATCH {code_patch_art.id} against requirements",
                 required_roles=["qa"],
             )
-            self.service.attach_input_artifact(qa_inspect_task.id, prod_art.id, project_id=proj.id)
-            self.service.attach_input_artifact(qa_inspect_task.id, ux_art.id, project_id=proj.id)
+            if prod_art:
+                self.service.attach_input_artifact(qa_inspect_task.id, prod_art.id, project_id=proj.id)
+            if ux_art:
+                self.service.attach_input_artifact(qa_inspect_task.id, ux_art.id, project_id=proj.id)
             self.service.attach_input_artifact(qa_inspect_task.id, plan_art.id, project_id=proj.id)
             self.service.attach_input_artifact(qa_inspect_task.id, code_patch_art.id, project_id=proj.id)
 
@@ -674,8 +727,10 @@ class EngineeringPipelineAdapter:
                 goal=f"Verify CODE_PATCH {code_patch_art.id} in fresh isolated worktree",
                 required_roles=["qa"],
             )
-            self.service.attach_input_artifact(qa_verify_task.id, prod_art.id, project_id=proj.id)
-            self.service.attach_input_artifact(qa_verify_task.id, ux_art.id, project_id=proj.id)
+            if prod_art:
+                self.service.attach_input_artifact(qa_verify_task.id, prod_art.id, project_id=proj.id)
+            if ux_art:
+                self.service.attach_input_artifact(qa_verify_task.id, ux_art.id, project_id=proj.id)
             self.service.attach_input_artifact(qa_verify_task.id, plan_art.id, project_id=proj.id)
             self.service.attach_input_artifact(qa_verify_task.id, code_patch_art.id, project_id=proj.id)
             self.service.attach_input_artifact(qa_verify_task.id, qa_report_art.id, project_id=proj.id)
@@ -813,6 +868,7 @@ class EngineeringPipelineAdapter:
             target_repo_root=target_repo,
             project_id=proj.id,
             company_run_id=run.run_id,
+            allow_dirty_unrelated=True,
         )
 
         run.real_repo_apply_proposal_id = proposal.proposal_id

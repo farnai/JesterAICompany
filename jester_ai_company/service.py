@@ -1871,31 +1871,41 @@ class CompanyService:
                 f"Cannot execute task '{task.id}': Task is assigned to {task.required_roles}, expected exactly ['developer']."
             )
 
-        # 2. Exact Fan-In Shape Validation (STEP 13A)
-        if len(task.input_artifacts) != 2:
+        # 2. Exact Fan-In Shape Validation (STEP 13A & STEP 23B.3 Adaptive Exception)
+        allow_direct = getattr(task, "allow_direct_developer", False)
+        if not allow_direct and len(task.input_artifacts) != 2:
             raise HandoffPolicyError(
                 f"Developer planning task '{task.id}' requires exactly 2 input artifacts (1 Product, 1 UX), found {len(task.input_artifacts)}."
             )
 
-        ref1, ref2 = task.input_artifacts[0], task.input_artifacts[1]
-        if ref1.artifact_id == ref2.artifact_id:
-            raise HandoffPolicyError(
-                f"Developer planning task '{task.id}' contains duplicate references to artifact '{ref1.artifact_id}'."
-            )
+        if not allow_direct:
+            ref1, ref2 = task.input_artifacts[0], task.input_artifacts[1]
+            if ref1.artifact_id == ref2.artifact_id:
+                raise HandoffPolicyError(
+                    f"Developer planning task '{task.id}' contains duplicate references to artifact '{ref1.artifact_id}'."
+                )
 
-        lineage1 = self.find_artifact(ref1.artifact_id)
-        lineage2 = self.find_artifact(ref2.artifact_id)
-        if not lineage1 or not lineage2:
-            raise ArtifactVerificationError("One or more input artifacts could not be found in company state.")
+            lineage1 = self.find_artifact(ref1.artifact_id)
+            lineage2 = self.find_artifact(ref2.artifact_id)
+            if not lineage1 or not lineage2:
+                raise ArtifactVerificationError("One or more input artifacts could not be found in company state.")
 
-        producer_roles = {
-            (lineage1[2].producer_role or "").lower(),
-            (lineage2[2].producer_role or "").lower(),
-        }
-        if producer_roles != {"product", "ux"}:
-            raise HandoffPolicyError(
-                f"Developer planning task requires exactly one 'product' artifact and one 'ux' artifact. Found roles: {sorted(producer_roles)}."
-            )
+            producer_roles = {
+                (lineage1[2].producer_role or "").lower(),
+                (lineage2[2].producer_role or "").lower(),
+            }
+            if producer_roles != {"product", "ux"}:
+                raise HandoffPolicyError(
+                    f"Developer planning task requires exactly one 'product' artifact and one 'ux' artifact. Found roles: {sorted(producer_roles)}."
+                )
+        else:
+            seen_ids = set()
+            for ref in task.input_artifacts:
+                if ref.artifact_id in seen_ids:
+                    raise HandoffPolicyError(f"Duplicate reference to artifact '{ref.artifact_id}'.")
+                seen_ids.add(ref.artifact_id)
+                if not self.find_artifact(ref.artifact_id):
+                    raise ArtifactVerificationError(f"Input artifact '{ref.artifact_id}' could not be found in company state.")
 
         # 3. Preflight validation & loading of input artifacts
         verified_artifacts = self._verify_and_load_input_artifacts(task)
@@ -2580,17 +2590,24 @@ class CompanyService:
                     f"[{QAFailureReason.QA_INPUT_INVALID.value}] Unrecognized input artifact type '{art.artifact_type}' for QA task."
                 )
 
-        if len(product_inputs) != 1:
-            raise QAInputInvalidError(
-                f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA task requires exactly 1 Product specification artifact, found {len(product_inputs)}."
-            )
-        prod_ref, prod_art, prod_task = product_inputs[0]
-
         if len(plan_inputs) != 1:
             raise QAInputInvalidError(
                 f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA task requires exactly 1 Developer Plan artifact, found {len(plan_inputs)}."
             )
         plan_ref, plan_art, plan_task = plan_inputs[0]
+
+        plan_consumed_prods = any((inp.producer_role or "").lower() == "product" for inp in plan_task.input_artifacts)
+        if plan_consumed_prods:
+            if len(product_inputs) != 1:
+                raise QAInputInvalidError(
+                    f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA task requires exactly 1 Product specification artifact, found {len(product_inputs)}."
+                )
+        else:
+            if len(product_inputs) > 1:
+                raise QAInputInvalidError(
+                    f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA task cannot have more than 1 Product specification artifact, found {len(product_inputs)}."
+                )
+        prod_ref, prod_art, prod_task = product_inputs[0] if product_inputs else (None, None, None)
 
         if len(patch_inputs) != 1:
             raise QAInputInvalidError(
@@ -2606,10 +2623,16 @@ class CompanyService:
 
         # 3. Lineage Validation
         plan_consumed_prods = {inp.artifact_id for inp in plan_task.input_artifacts if (inp.producer_role or "").lower() == "product"}
-        if prod_art.id not in plan_consumed_prods:
-            raise QALineageMismatchError(
-                f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] Product artifact '{prod_art.id}' does not match the Developer Plan's upstream Product artifact '{sorted(plan_consumed_prods)}'."
-            )
+        if plan_consumed_prods:
+            if not prod_art or prod_art.id not in plan_consumed_prods:
+                raise QALineageMismatchError(
+                    f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] Product artifact '{prod_art.id if prod_art else 'None'}' does not match the Developer Plan's upstream Product artifact '{sorted(plan_consumed_prods)}'."
+                )
+        else:
+            if prod_art is not None:
+                raise QALineageMismatchError(
+                    f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] QA task was provided Product artifact '{prod_art.id}', but Developer Plan did not consume any Product artifact."
+                )
 
         plan_consumed_ux = {inp.artifact_id for inp in plan_task.input_artifacts if (inp.producer_role or "").lower() == "ux"}
         if plan_consumed_ux:
@@ -2679,7 +2702,7 @@ class CompanyService:
                 )
 
         # 5. Load and verify input contents
-        product_content = load_and_verify_input_artifact(Path(self.output_dir), prod_art, prod_ref)
+        product_content = load_and_verify_input_artifact(Path(self.output_dir), prod_art, prod_ref) if prod_art and prod_ref else ""
         plan_content = load_and_verify_input_artifact(Path(self.output_dir), plan_art, plan_ref)
         ux_content = load_and_verify_input_artifact(Path(self.output_dir), ux_art, ux_ref) if ux_art and ux_ref else None
         patch_text = patch_bytes.decode("utf-8")
@@ -2698,8 +2721,8 @@ class CompanyService:
         )
 
         lineage_metadata: Dict[str, Any] = {
-            "product_artifact_id": prod_art.id,
-            "product_sha256": prod_art.sha256,
+            "product_artifact_id": prod_art.id if prod_art else None,
+            "product_sha256": prod_art.sha256 if prod_art else None,
             "ux_artifact_id": ux_art.id if ux_art else None,
             "ux_sha256": ux_art.sha256 if ux_art else None,
             "developer_plan_artifact_id": plan_art.id,
@@ -2927,17 +2950,24 @@ class CompanyService:
                     f"[{QAFailureReason.QA_INPUT_INVALID.value}] Unrecognized input artifact type '{art.artifact_type}' for QA verification task."
                 )
 
-        if len(product_inputs) != 1:
-            raise QAInputInvalidError(
-                f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA verification task requires exactly 1 Product specification artifact, found {len(product_inputs)}."
-            )
-        prod_ref, prod_art, prod_task = product_inputs[0]
-
         if len(plan_inputs) != 1:
             raise QAInputInvalidError(
                 f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA verification task requires exactly 1 Developer Plan artifact, found {len(plan_inputs)}."
             )
         plan_ref, plan_art, plan_task = plan_inputs[0]
+
+        plan_consumed_prods = any((inp.producer_role or "").lower() == "product" for inp in plan_task.input_artifacts)
+        if plan_consumed_prods:
+            if len(product_inputs) != 1:
+                raise QAInputInvalidError(
+                    f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA verification task requires exactly 1 Product specification artifact, found {len(product_inputs)}."
+                )
+        else:
+            if len(product_inputs) > 1:
+                raise QAInputInvalidError(
+                    f"[{QAFailureReason.QA_INPUT_INVALID.value}] QA verification task cannot have more than 1 Product specification artifact, found {len(product_inputs)}."
+                )
+        prod_ref, prod_art, prod_task = product_inputs[0] if product_inputs else (None, None, None)
 
         if len(patch_inputs) != 1:
             raise QAInputInvalidError(
@@ -2959,10 +2989,16 @@ class CompanyService:
 
         # 4. Lineage Validation
         plan_consumed_prods = {inp.artifact_id for inp in plan_task.input_artifacts if (inp.producer_role or "").lower() == "product"}
-        if prod_art.id not in plan_consumed_prods:
-            raise QALineageMismatchError(
-                f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] Product artifact '{prod_art.id}' does not match Developer Plan upstream Product '{sorted(plan_consumed_prods)}'."
-            )
+        if plan_consumed_prods:
+            if not prod_art or prod_art.id not in plan_consumed_prods:
+                raise QALineageMismatchError(
+                    f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] Product artifact '{prod_art.id if prod_art else 'None'}' does not match Developer Plan upstream Product '{sorted(plan_consumed_prods)}'."
+                )
+        else:
+            if prod_art is not None:
+                raise QALineageMismatchError(
+                    f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] QA task was provided Product artifact '{prod_art.id}', but Developer Plan did not consume any Product artifact."
+                )
 
         plan_consumed_ux = {inp.artifact_id for inp in plan_task.input_artifacts if (inp.producer_role or "").lower() == "ux"}
         if plan_consumed_ux:
@@ -2995,9 +3031,10 @@ class CompanyService:
             raise QALineageMismatchError(
                 f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] QA_REPORT references code_patch '{qa_rep_meta.get('code_patch_artifact_id')}', expected '{patch_art.id}'."
             )
-        if qa_rep_meta.get("product_artifact_id") != prod_art.id:
+        expected_prod_id = prod_art.id if prod_art else None
+        if qa_rep_meta.get("product_artifact_id") != expected_prod_id:
             raise QALineageMismatchError(
-                f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] QA_REPORT product_artifact_id mismatch: '{qa_rep_meta.get('product_artifact_id')}' != '{prod_art.id}'."
+                f"[{QAFailureReason.QA_LINEAGE_MISMATCH.value}] QA_REPORT product_artifact_id mismatch: '{qa_rep_meta.get('product_artifact_id')}' != '{expected_prod_id}'."
             )
         if qa_rep_meta.get("developer_plan_artifact_id") != plan_art.id:
             raise QALineageMismatchError(
@@ -3029,7 +3066,7 @@ class CompanyService:
                 )
 
         # 5. Load and verify input contents & disk hashes
-        prod_content = load_and_verify_input_artifact(Path(self.output_dir), prod_art, prod_ref)
+        prod_content = load_and_verify_input_artifact(Path(self.output_dir), prod_art, prod_ref) if prod_art and prod_ref else ""
         plan_content = load_and_verify_input_artifact(Path(self.output_dir), plan_art, plan_ref)
         patch_text = load_and_verify_input_artifact(Path(self.output_dir), patch_art, patch_ref)
         qa_rep_content = load_and_verify_input_artifact(Path(self.output_dir), qa_rep_art, qa_rep_ref)
@@ -3150,10 +3187,17 @@ class CompanyService:
 
             # 14. Deterministic parsing and constraint enforcement
             try:
+                changed_files_for_verdict = (
+                    diff_res.changed_files
+                    if "diff_res" in locals() and diff_res and hasattr(diff_res, "changed_files")
+                    else (patch_meta.get("changed_files") or [])
+                )
                 verdict_res = parse_and_validate_qa_verdict(
                     raw_output=exec_res.stdout,
                     action_audits=action_audits,
                     verification_results=verification_results,
+                    changed_files=changed_files_for_verdict,
+                    code_patch_text=patch_text,
                 )
             except Exception as parse_err:
                 err_msg = f"Failed to parse and validate QA verdict: {parse_err}"
@@ -3163,8 +3207,8 @@ class CompanyService:
 
             # 15. Materialize durable QA_EXECUTION_REPORT
             lineage_metadata: Dict[str, Any] = {
-                "product_artifact_id": prod_art.id,
-                "product_sha256": prod_art.sha256,
+                "product_artifact_id": prod_art.id if prod_art else None,
+                "product_sha256": prod_art.sha256 if prod_art else None,
                 "ux_artifact_id": ux_art.id if ux_art else None,
                 "ux_sha256": ux_art.sha256 if ux_art else None,
                 "developer_plan_artifact_id": plan_art.id,
@@ -3328,12 +3372,12 @@ class CompanyService:
                 raise RepairError(f"DEVELOPER_PLAN_REPORT artifact '{plan_art_id}' not found.")
             _, _, original_plan_art = plan_lineage
 
-            if not prod_art_id:
-                raise RepairError("QA_EXECUTION_REPORT missing product_artifact_id.")
-            prod_lineage = self.find_artifact(prod_art_id)
-            if not prod_lineage:
-                raise RepairError(f"PRODUCT_REQUIREMENTS artifact '{prod_art_id}' not found.")
-            _, _, prod_art = prod_lineage
+            prod_art = None
+            if prod_art_id:
+                prod_lineage = self.find_artifact(prod_art_id)
+                if not prod_lineage:
+                    raise RepairError(f"PRODUCT_REQUIREMENTS artifact '{prod_art_id}' not found.")
+                _, _, prod_art = prod_lineage
 
             ux_art = None
             if ux_art_id:
@@ -3859,6 +3903,7 @@ class CompanyService:
         target_repo_root: Optional[Path] = None,
         project_id: Optional[str] = None,
         company_run_id: Optional[str] = None,
+        allow_dirty_unrelated: bool = False,
     ) -> RealRepoApplyProposal:
         """Prepare an immutable proposal for human review before real repository mutation (STEP 16).
 
@@ -3943,6 +3988,7 @@ class CompanyService:
                 qa_execution_report_file_path=qa_exec_file_path,
                 project_id=project_id,
                 allow_untracked=allow_untracked,
+                allow_dirty_unrelated=allow_dirty_unrelated,
             )
 
             # 6. Store in proposal registry & durable storage (STEP 20A)
@@ -4319,7 +4365,11 @@ class CompanyService:
         if not isinstance(objective, CompanyObjective):
             raise CompanyServiceError("Expected CompanyObjective instance.")
 
-        prompt = build_ceo_planning_prompt(objective, project_knowledge=project_knowledge)
+        prompt = build_ceo_planning_prompt(
+            objective,
+            project_knowledge=project_knowledge,
+            team_selection=team_selection,
+        )
         exec_result = self.runtime.execute(
             agent="ceo",
             prompt=prompt,

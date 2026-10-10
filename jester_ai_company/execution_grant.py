@@ -13,7 +13,7 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Allowed verification action types in V1
-ALLOWED_VERIFICATION_ACTION_TYPES: Set[str] = {"pytest"}
+ALLOWED_VERIFICATION_ACTION_TYPES: Set[str] = {"pytest", "npm_build", "frontend_build"}
 
 # Disallowed characters in verification targets (prevent command injection)
 DISALLOWED_TARGET_CHARS_PATTERN: re.Pattern = re.compile(r"[|&;><$`\n\r]")
@@ -90,8 +90,13 @@ class VerificationAction:
 
     def to_argument_vector(self) -> List[str]:
         """Convert typed action deterministically to argument array (shell=False)."""
-        if self.action_type.strip().lower() == "pytest":
+        norm_type = self.action_type.strip().lower()
+        if norm_type == "pytest":
             return ["python", "-m", "pytest", self.target.strip()]
+        if norm_type in {"npm_build", "frontend_build"}:
+            import shutil
+            npm_bin = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
+            return [npm_bin, "run", "build"]
         raise GrantValidationError(f"Unsupported verification action type: '{self.action_type}'.")
 
     def to_dict(self) -> Dict[str, Any]:

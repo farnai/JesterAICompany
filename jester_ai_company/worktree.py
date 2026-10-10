@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .execution_grant import (
@@ -381,6 +382,22 @@ class WorktreeSession:
             return
 
         try:
+            # 0. Safely remove any junctions or symlinks inside the worktree before deleting
+            if self.worktree_path.exists():
+                for root, dirs, _ in os.walk(str(self.worktree_path), topdown=True):
+                    for d in list(dirs):
+                        d_path = Path(root) / d
+                        try:
+                            is_junc = getattr(os.path, "isjunction", lambda p: False)(str(d_path))
+                            if is_junc or d_path.is_symlink() or os.path.islink(str(d_path)):
+                                if sys.platform == "win32":
+                                    os.rmdir(str(d_path))
+                                else:
+                                    d_path.unlink()
+                                dirs.remove(d)
+                        except Exception:
+                            pass
+
             # 1. Ask git to remove worktree
             exit_code, _, stderr = run_git(
                 ["worktree", "remove", "--force", str(self.worktree_path)],

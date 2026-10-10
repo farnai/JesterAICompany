@@ -978,3 +978,135 @@ def test_live_qa_agent_successful_proof():
         exec_reports = [a for a in run.artifacts if a.artifact_type == ArtifactType.QA_EXECUTION_REPORT.value]
         assert len(exec_reports) == 1
         assert (repo / ".runs" / exec_reports[0].path).exists()
+
+
+def test_24_deterministic_constraint_blocks_frontend_changes_with_only_backend_tests():
+    """24. Frontend changes cannot receive PASS solely from unrelated backend tests -> BLOCKED."""
+    agent_verdict = QAExecutionVerdictResult(
+        schema_version="1.0",
+        verdict=QAFinalVerdict.PASS.value,
+        summary="Agent prematurely passed frontend changes based on backend tests",
+        requirements_evaluations=[],
+        blocking_issues=[],
+        release_recommendation="APPROVED_FOR_RELEASE",
+    )
+    va = VerificationAction("pytest", "tests/core/test_canonical.py")
+    audits = [
+        QAExecutionActionAudit(
+            action_type="pytest",
+            target="tests/core/test_canonical.py",
+            purpose="regression",
+            decision=QAActionAuthorizationDecision.AUTHORIZED.value,
+            converted_action=va,
+        )
+    ]
+    exec_result = VerificationExecutionResult(
+        action=va,
+        status=VerificationStatus.PASS.value,
+        exit_code=0,
+        stdout="1 passed in 0.05s",
+        stderr="",
+        duration_ms=50,
+    )
+    changed_files = ["frontend/src/modules/onboarding/BirthDataOnboardingPage.tsx"]
+
+    constrained = enforce_deterministic_verdict_constraints(
+        verdict_result=agent_verdict,
+        action_audits=audits,
+        verification_results=[exec_result],
+        changed_files=changed_files,
+    )
+
+    assert constrained.verdict == QAFinalVerdict.BLOCKED.value
+    assert constrained.release_recommendation == "BLOCKED_ON_FRONTEND_VERIFICATION"
+    assert constrained.deterministic_override_applied is True
+    assert "Frontend code changes cannot receive a release-ready PASS" in constrained.override_reason
+    assert any("frontend verification" in issue.lower() for issue in constrained.blocking_issues)
+
+
+def test_25_deterministic_constraint_permits_backend_changes_with_backend_tests():
+    """25. Backend changes verified by passing backend tests maintain PASS."""
+    agent_verdict = QAExecutionVerdictResult(
+        schema_version="1.0",
+        verdict=QAFinalVerdict.PASS.value,
+        summary="Backend changes verified cleanly",
+        requirements_evaluations=[],
+        blocking_issues=[],
+        release_recommendation="APPROVED_FOR_RELEASE",
+    )
+    va = VerificationAction("pytest", "tests/core/test_canonical.py")
+    audits = [
+        QAExecutionActionAudit(
+            action_type="pytest",
+            target="tests/core/test_canonical.py",
+            purpose="backend regression",
+            decision=QAActionAuthorizationDecision.AUTHORIZED.value,
+            converted_action=va,
+        )
+    ]
+    exec_result = VerificationExecutionResult(
+        action=va,
+        status=VerificationStatus.PASS.value,
+        exit_code=0,
+        stdout="1 passed in 0.05s",
+        stderr="",
+        duration_ms=50,
+    )
+    changed_files = ["jester_ai_company/service.py"]
+
+    constrained = enforce_deterministic_verdict_constraints(
+        verdict_result=agent_verdict,
+        action_audits=audits,
+        verification_results=[exec_result],
+        changed_files=changed_files,
+    )
+
+    assert constrained.verdict == QAFinalVerdict.PASS.value
+    assert constrained.release_recommendation == "APPROVED_FOR_RELEASE"
+    assert constrained.deterministic_override_applied is False
+
+
+def test_26_parse_and_validate_qa_verdict_enforces_frontend_subsystem_relevance():
+    """26. parse_and_validate_qa_verdict deterministically blocks frontend change with backend test."""
+    raw_json = json.dumps({
+        "schema_version": "1.0",
+        "verdict": "PASS",
+        "summary": "Agent passed because test_canonical passed",
+        "requirements_evaluations": [
+            {"requirement_id": "REQ-1", "status": "SATISFIED", "evidence": "pytest passed", "notes": "ok"}
+        ],
+        "executed_tests_summary": "1/1 passed",
+        "blocking_issues": [],
+        "release_recommendation": "APPROVED_FOR_RELEASE",
+    })
+    va = VerificationAction("pytest", "tests/core/test_canonical.py")
+    audits = [
+        QAExecutionActionAudit(
+            action_type="pytest",
+            target="tests/core/test_canonical.py",
+            purpose="canonical test",
+            decision=QAActionAuthorizationDecision.AUTHORIZED.value,
+            converted_action=va,
+        )
+    ]
+    exec_result = VerificationExecutionResult(
+        action=va,
+        status=VerificationStatus.PASS.value,
+        exit_code=0,
+        stdout="1 passed",
+        stderr="",
+        duration_ms=45,
+    )
+    changed_files = ["frontend/src/modules/onboarding/BirthDataOnboardingPage.tsx"]
+
+    res = parse_and_validate_qa_verdict(
+        raw_output=raw_json,
+        action_audits=audits,
+        verification_results=[exec_result],
+        changed_files=changed_files,
+    )
+
+    assert res.verdict == QAFinalVerdict.BLOCKED.value
+    assert res.release_recommendation == "BLOCKED_ON_FRONTEND_VERIFICATION"
+    assert res.deterministic_override_applied is True
+    assert "Frontend code changes cannot receive a release-ready PASS" in res.override_reason
