@@ -6,7 +6,7 @@ LLM calls, or filesystem mutations.
 """
 
 from collections import deque
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Sequence, Set
 
 from .orchestrator import (
     CEOOrchestrationPlan,
@@ -31,18 +31,23 @@ RECOGNIZED_MACRO_ROLES: Set[str] = {
 }
 
 
-def validate_dag_structure(plan: CEOOrchestrationPlan) -> None:
+def validate_dag_structure(
+    plan: CEOOrchestrationPlan,
+    required_roles: Optional[Sequence[str]] = None,
+) -> None:
     """Deterministically validate the structural integrity of a CEOOrchestrationPlan DAG.
 
     Enforces:
     1. Work item count between 1 and MAX_PLANNED_WORK_ITEMS (6).
     2. Unique work_item_id for all nodes.
     3. Recognized macro specialist roles (CEO role rejected).
-    4. Valid dependency references (no self-dependencies, no unknown targets).
-    5. No direct Developer -> QA edge (QA is application-owned in code pipelines).
-    6. Critical Developer Fan-In invariant (Developer must depend on both Product and UX).
-    7. Acyclic structure (cycle detection via Kahn's algorithm).
-    8. Maximum graph depth <= MAX_GRAPH_DEPTH (4).
+    4. Founder-mandated specialist roles presence.
+    5. Valid dependency references (no self-dependencies, no unknown targets).
+    6. No direct Developer -> QA edge (QA is application-owned in code pipelines).
+    7. Required dependency ordering (UX depends on Product, Developer depends on Product and UX).
+    8. Critical Developer Fan-In invariant (Developer must depend on both Product and UX).
+    9. Acyclic structure (cycle detection via Kahn's algorithm).
+    10. Maximum graph depth <= MAX_GRAPH_DEPTH (4).
 
     Raises:
         PlanValidationError: If basic plan properties, work item counts, or roles are invalid.
@@ -86,6 +91,27 @@ def validate_dag_structure(plan: CEOOrchestrationPlan) -> None:
         items_by_id[item_id] = item
 
     all_ids = set(items_by_id.keys())
+    all_plan_roles = {it.role.lower() for it in items_by_id.values()}
+
+    # 3b. Founder-mandated specialist roles enforcement
+    if required_roles:
+        norm_required = [str(r).strip().lower() for r in required_roles if str(r).strip()]
+        missing_roles = [r for r in norm_required if r not in all_plan_roles]
+        if missing_roles:
+            raise DAGValidationError(
+                f"Plan violates Founder workforce constraints: missing required roles {missing_roles}. "
+                f"Planned roles: {sorted(all_plan_roles)}, required: {norm_required}."
+            )
+
+    # 3c. Required dependency ordering (UX depends on Product when both are mandated by Founder)
+    if required_roles and "product" in norm_required and "ux" in norm_required:
+        product_ids = {it.work_item_id for it in items_by_id.values() if it.role.lower() == "product"}
+        ux_items = [it for it in items_by_id.values() if it.role.lower() == "ux"]
+        for ux_it in ux_items:
+            if not any(dep in product_ids for dep in ux_it.depends_on):
+                raise DAGValidationError(
+                    f"UX work item '{ux_it.work_item_id}' must depend on Product work item in 'depends_on'."
+                )
 
     # 4. Dependency reference & role-specific invariants
     for item_id, item in items_by_id.items():

@@ -58,6 +58,7 @@ from .project import (
     inspect_repository_state,
     verify_target_repository_identity,
 )
+from .knowledge import create_jester_registration_manifest
 from .service import (
     CompanyService,
     CompanyServiceError,
@@ -75,41 +76,43 @@ FRONTEND_PUBLIC_DIR = Path(__file__).resolve().parent.parent / "frontend" / "pub
 
 def ensure_default_repository_project(service: CompanyService) -> None:
     """Ensure the authoritative Jester project is registered under ProjectRegistry."""
-    if service.get_repository_project("prj_jester") is not None:
-        return
+    if service.get_repository_project("prj_jester") is None:
+        real_jester_path = Path(r"C:\Users\fiord\OneDrive\Desktop\Jester").resolve()
+        root_path_str = str(real_jester_path) if real_jester_path.exists() else str(service.repo_root)
 
-    real_jester_path = Path(r"C:\Users\fiord\OneDrive\Desktop\Jester").resolve()
-    root_path_str = str(real_jester_path) if real_jester_path.exists() else str(service.repo_root)
+        repo_ref = RepositoryRef(
+            repository_id="repo_jester",
+            root_path=root_path_str,
+            target_branch="main",
+            expected_remote="git@github.com:farnai/Jester.git",
+            allow_untracked=True,
+        )
+        repo_policy = RepositoryPolicy(
+            read_allowed=(
+                "docs/**",
+                "backend/**",
+                "frontend/**",
+                "tests/**",
+                "scripts/**",
+                "*.md",
+                "*.ini",
+                "*.txt",
+            ),
+            mutation_allowed=("backend/**", "frontend/**", "tests/**"),
+            denied=(".git", ".git/**", ".env*", "*.key", "*.secret"),
+        )
+        project = RepositoryProject(
+            project_id="prj_jester",
+            name="Jester — People Discovery & Relationship Intelligence Engine",
+            description="High-performance People Discovery and Relationship Intelligence platform",
+            repository=repo_ref,
+            policy=repo_policy,
+        )
+        service.register_repository_project(project, validate_repo=False)
 
-    repo_ref = RepositoryRef(
-        repository_id="repo_jester",
-        root_path=root_path_str,
-        target_branch="main",
-        expected_remote="git@github.com:farnai/Jester.git",
-        allow_untracked=True,
-    )
-    repo_policy = RepositoryPolicy(
-        read_allowed=(
-            "docs/**",
-            "backend/**",
-            "frontend/**",
-            "tests/**",
-            "scripts/**",
-            "*.md",
-            "*.ini",
-            "*.txt",
-        ),
-        mutation_allowed=("backend/**", "frontend/**", "tests/**"),
-        denied=(".git", ".git/**", ".env*", "*.key", "*.secret"),
-    )
-    project = RepositoryProject(
-        project_id="prj_jester",
-        name="Jester — People Discovery & Relationship Intelligence Engine",
-        description="High-performance People Discovery and Relationship Intelligence platform",
-        repository=repo_ref,
-        policy=repo_policy,
-    )
-    service.register_repository_project(project, validate_repo=False)
+    if service.get_project_knowledge_manifest("prj_jester") is None:
+        manifest = create_jester_registration_manifest(project_id="prj_jester", repository_id="repo_jester")
+        service.register_project_knowledge_manifest(manifest)
 
 
 def enrich_company_run_data(run: CompanyRun, service: CompanyService) -> Dict[str, Any]:

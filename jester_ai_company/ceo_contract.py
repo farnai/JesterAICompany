@@ -141,7 +141,24 @@ def build_ceo_planning_prompt(
         from .context import format_project_knowledge_prompt_block
         knowledge_block = format_project_knowledge_prompt_block(project_knowledge)
 
-    if team_selection and getattr(team_selection, "allow_direct_developer", False):
+    if getattr(objective, "required_roles", None):
+        selected_str = ", ".join(f"'{r}'" for r in objective.required_roles)
+        has_prod = "product" in objective.required_roles
+        has_ux = "ux" in objective.required_roles
+        has_dev = "developer" in objective.required_roles
+        dep_clause = ""
+        if has_prod and has_ux and has_dev:
+            dep_clause = (
+                "Required dependency chain: Product -> UX -> Developer ('ux' work item MUST depend on 'product' in depends_on, "
+                "and 'developer' work item MUST depend on both 'product' and 'ux' in depends_on)."
+            )
+        workforce_rule = (
+            f"10. FOUNDER MANDATED WORKFORCE INVARIANT: "
+            f"Approved and mandated workforce for this task is: [{selected_str}]. "
+            f"You MUST plan work items for all mandated roles: [{selected_str}]. "
+            f"{dep_clause}\n"
+        )
+    elif team_selection and getattr(team_selection, "allow_direct_developer", False):
         selected_str = ", ".join(f"'{r}'" for r in getattr(team_selection, "selected_roles", ["developer"]))
         workforce_rule = (
             f"10. Critical Developer Fan-In invariant (DIRECT EXECUTION EXCEPTION): "
@@ -474,6 +491,11 @@ def parse_and_validate_ceo_plan(
     elif task_category in ("BUG_FIX", "SECURITY_SENSITIVE"):
         allow_direct_developer = True
 
+    if getattr(objective, "required_roles", None):
+        req_norm = [str(r).lower() for r in objective.required_roles]
+        if "product" in req_norm or "ux" in req_norm:
+            allow_direct_developer = False
+
     plan = CEOOrchestrationPlan(
         schema_version=CEO_PLAN_SCHEMA_VERSION,
         plan_id=plan_id,
@@ -487,7 +509,7 @@ def parse_and_validate_ceo_plan(
     )
 
     # 8. Deterministic DAG validation (roles, cycles, depth, Developer Fan-In, QA pipeline)
-    validate_dag_structure(plan)
+    validate_dag_structure(plan, required_roles=getattr(objective, "required_roles", None))
 
     return plan
 
@@ -967,6 +989,8 @@ class TeamSelectionResult:
     avoidable_delegation_warnings: List[str] = field(default_factory=list)
     allow_direct_developer: bool = False
     enforce_strict_roles: bool = False
+    fallback_activated: bool = False
+    fallback_reason: Optional[str] = None
     evaluated_at: str = field(default_factory=_utc_now_iso)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -986,6 +1010,8 @@ class TeamSelectionResult:
             "avoidable_delegation_warnings": list(self.avoidable_delegation_warnings),
             "allow_direct_developer": self.allow_direct_developer,
             "enforce_strict_roles": self.enforce_strict_roles,
+            "fallback_activated": self.fallback_activated,
+            "fallback_reason": self.fallback_reason,
             "evaluated_at": self.evaluated_at,
         }
 
@@ -1075,6 +1101,9 @@ class TeamSelectionResult:
         if clean_cat == "RESEARCH" and "developer" in selected_roles:
             warnings.append("Warning: Developer assigned to research objective.")
 
+        fallback_act = bool(data.get("fallback_activated", False))
+        fallback_res = data.get("fallback_reason")
+
         return cls(
             task_category=clean_cat,
             complexity=comp_raw,
@@ -1091,6 +1120,8 @@ class TeamSelectionResult:
             avoidable_delegation_warnings=warnings,
             allow_direct_developer=allow_direct,
             enforce_strict_roles=bool(data.get("enforce_strict_roles", False)),
+            fallback_activated=fallback_act,
+            fallback_reason=str(fallback_res).strip() if fallback_res else None,
             evaluated_at=data.get("evaluated_at") or _utc_now_iso(),
         )
 
@@ -1115,6 +1146,15 @@ def build_ceo_team_selection_prompt(
             f"- {c.get('response', '')}" for c in founder_clarifications
         )
 
+    founder_roles_block = ""
+    if getattr(objective, "required_roles", None):
+        req_str = ", ".join(f"'{r}'" for r in objective.required_roles)
+        founder_roles_block = (
+            f"\nFOUNDER-MANDATED SPECIALIST WORKFORCE:\n"
+            f"The Human Founder has explicitly mandated the following specialist roles: [{req_str}].\n"
+            f"You MUST include ALL mandated roles in 'selected_roles'. Do NOT omit any of these roles.\n"
+        )
+
     return f"""You are the CEO of Jester AI Company.
 Assess the following objective and select the MINIMUM SUFFICIENT SPECIALIST TEAM.
 
@@ -1122,7 +1162,7 @@ OBJECTIVE:
 Title: {objective.title}
 Description: {objective.description}
 Constraints: {json.dumps(objective.constraints)}
-Criteria: {json.dumps(objective.acceptance_criteria)}{findings_block}{clarifications_block}
+Criteria: {json.dumps(objective.acceptance_criteria)}{findings_block}{clarifications_block}{founder_roles_block}
 
 AVAILABLE SPECIALIST ROLES:
 {roles_str}
@@ -1132,6 +1172,7 @@ ALLOWED TASK CATEGORIES:
 
 TEAM SELECTION PRINCIPLES:
 1. MINIMUM SUFFICIENT WORKFORCE: Select only roles strictly required to fulfill the deliverable.
+   - If Founder-mandated specialist roles are specified above, you MUST include all of them.
    - Simple backend bug: developer only (Engineering QA is handled deterministically by the platform).
    - UI styling adjustment: ux and developer only.
    - Research-only task: research only (no developer or ux).
@@ -1168,18 +1209,34 @@ Output MUST be a single valid JSON dictionary matching this exact schema:
 """
 
 
-def parse_and_validate_team_selection(raw_text_or_dict: Any) -> TeamSelectionResult:
+def parse_and_validate_team_selection(
+    raw_text_or_dict: Any,
+    objective: Optional[CompanyObjective] = None,
+) -> TeamSelectionResult:
     """Extract and validate TeamSelectionResult from raw JSON string or dictionary."""
     if isinstance(raw_text_or_dict, dict):
-        return TeamSelectionResult.from_dict(raw_text_or_dict)
-    if not isinstance(raw_text_or_dict, str):
+        result = TeamSelectionResult.from_dict(raw_text_or_dict)
+    elif not isinstance(raw_text_or_dict, str):
         raise CEODecisionValidationError("Expected JSON string or dictionary for TeamSelectionResult.")
-    json_text = extract_ceo_plan_json(raw_text_or_dict)
-    try:
-        data = json.loads(json_text, strict=False)
-    except Exception as exc:
-        raise CEOPlanExtractionError(f"Malformed JSON in team selection: {exc}") from exc
-    return TeamSelectionResult.from_dict(data)
+    else:
+        json_text = extract_ceo_plan_json(raw_text_or_dict)
+        try:
+            data = json.loads(json_text, strict=False)
+        except Exception as exc:
+            raise CEOPlanExtractionError(f"Malformed JSON in team selection: {exc}") from exc
+        result = TeamSelectionResult.from_dict(data)
+
+    if objective and getattr(objective, "required_roles", None):
+        norm_required = [str(r).strip().lower() for r in objective.required_roles if str(r).strip()]
+        selected_set = {str(sr).strip().lower() for sr in result.selected_roles}
+        missing_roles = [r for r in norm_required if r not in selected_set]
+        if missing_roles:
+            raise CEODecisionValidationError(
+                f"Team selection omitted Founder-mandated specialist roles: {missing_roles}. "
+                f"Required: {norm_required}, selected: {result.selected_roles}."
+            )
+
+    return result
 
 
 def evaluate_team_selection_heuristically(
@@ -1201,6 +1258,101 @@ def evaluate_team_selection_heuristically(
 
     text_lower = full_text.lower()
     is_georgian = bool(re.search(r"[\u10A0-\u10FF]", full_text))
+
+    # 0. Structured Founder-Mandated Specialist Roles (HIGHEST STRATEGIC AUTHORITY)
+    if getattr(objective, "required_roles", None):
+        req_roles = [str(r).strip().lower() for r in objective.required_roles if str(r).strip()]
+        has_prod = "product" in req_roles
+        has_ux = "ux" in req_roles
+        has_dev = "developer" in req_roles
+        has_res = "research" in req_roles
+        has_mkt = "marketing" in req_roles
+
+        selected_roles = list(req_roles)
+
+        if has_prod and has_ux and has_dev:
+            task_category = TaskCategory.LARGE_FEATURE.value
+            complexity = ComplexityLevel.HIGH.value
+            uncertainty = UncertaintyLevel.MEDIUM.value
+            risk = RiskLevel.MEDIUM.value
+            capabilities = ["product_specification", "interaction_design", "full_stack_implementation"]
+            allow_direct_dev = False
+        elif has_ux and has_dev and not has_prod:
+            task_category = TaskCategory.UI_UX_CHANGE.value
+            complexity = ComplexityLevel.LOW.value
+            uncertainty = UncertaintyLevel.LOW.value
+            risk = RiskLevel.LOW.value
+            capabilities = ["ui_design", "frontend_implementation"]
+            allow_direct_dev = True
+        elif has_res and not has_dev:
+            task_category = TaskCategory.RESEARCH.value
+            complexity = ComplexityLevel.LOW.value
+            uncertainty = UncertaintyLevel.LOW.value
+            risk = RiskLevel.LOW.value
+            capabilities = ["market_research", "synthesis"]
+            allow_direct_dev = False
+        elif has_mkt and not has_dev:
+            task_category = TaskCategory.MARKETING.value
+            complexity = ComplexityLevel.LOW.value
+            uncertainty = UncertaintyLevel.LOW.value
+            risk = RiskLevel.LOW.value
+            capabilities = ["content_creation", "messaging"]
+            allow_direct_dev = False
+        elif has_dev and not (has_prod or has_ux):
+            task_category = TaskCategory.BUG_FIX.value
+            complexity = ComplexityLevel.LOW.value
+            uncertainty = UncertaintyLevel.LOW.value
+            risk = RiskLevel.LOW.value
+            capabilities = ["code_patch", "automated_testing"]
+            allow_direct_dev = True
+        else:
+            task_category = TaskCategory.LARGE_FEATURE.value
+            complexity = ComplexityLevel.MEDIUM.value
+            uncertainty = UncertaintyLevel.LOW.value
+            risk = RiskLevel.LOW.value
+            capabilities = ["specialist_execution"]
+            allow_direct_dev = False
+
+        role_requirements = []
+        for r in selected_roles:
+            role_requirements.append(RoleRequirement(
+                role=r,
+                why_necessary="Explicitly mandated by Founder constraint.",
+                expected_deliverable=f"Verified {r} deliverable.",
+                required_upstream_inputs=[],
+                is_essential=True,
+            ))
+
+        omitted = {}
+        for r in sorted(RECOGNIZED_MACRO_ROLES):
+            if r != "ceo" and r not in selected_roles:
+                omitted[r] = "Not requested in Founder mandated specialist workforce."
+
+        reasoning = (
+            f"Workforce formulated strictly to satisfy Founder-mandated specialist roles: "
+            f"{selected_roles}."
+        )
+
+        return TeamSelectionResult(
+            task_category=task_category,
+            complexity=complexity,
+            uncertainty=uncertainty,
+            risk=risk,
+            required_capabilities=capabilities,
+            selected_roles=selected_roles,
+            role_requirements=role_requirements,
+            omitted_roles_rationale=omitted,
+            selection_reasoning=reasoning,
+            escalation_conditions=[
+                "Discovered architectural ambiguity exceeding mandated workforce scope",
+                "Uncovered missing security or infrastructure requirements",
+            ],
+            estimated_specialist_count=len(selected_roles),
+            actual_specialist_count=len(selected_roles),
+            avoidable_delegation_warnings=[],
+            allow_direct_developer=allow_direct_dev,
+            enforce_strict_roles=True,
+        )
 
     # 1. Security-sensitive task
     sec_terms = [

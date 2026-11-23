@@ -25,6 +25,8 @@ from .research_result import ResearchTaskResult
 from .ux_result import UXTaskResult
 from .marketing_result import MarketingTaskResult
 from .developer_result import DeveloperTaskResult
+from .prototype_renderer import render_prototype_previews
+from .design_concept import DesignConcept, DesignProposalPackage
 
 
 class MaterializationError(Exception):
@@ -210,6 +212,36 @@ def format_ux_report(task: Task, result: UXTaskResult) -> str:
         else "- None identified"
     )
 
+    concepts_content = ""
+    if getattr(result, "concepts", None):
+        concepts_sections = []
+        for idx, c in enumerate(result.concepts, start=1):
+            refs_str = ", ".join(c.product_references) if c.product_references else "None"
+            lims_str = ", ".join(c.known_limitations) if c.known_limitations else "None"
+            method_str = getattr(c, "rendering_method", "GENERIC_SVG_FALLBACK")
+            is_screenshot_str = "True (Browser Screenshot)" if getattr(c, "is_browser_screenshot", False) else "False (SVG Fallback)"
+            concepts_sections.append(
+                f"### Concept {idx}: {c.name} (`{c.concept_id}`)\n\n"
+                f"- **Design Rationale:** {c.design_rationale}\n"
+                f"- **HTML Prototype:** `prototype_{c.concept_id}.html` (SHA-256: `{c.html_sha256}`)\n"
+                f"- **Desktop Preview:** `{c.desktop_preview_path or 'preview_desktop_' + c.concept_id + ('.png' if getattr(c, 'is_browser_screenshot', False) else '.svg')}` (SHA-256: `{c.desktop_preview_sha256 or 'N/A'}`)\n"
+                f"- **Mobile Preview:** `{c.mobile_preview_path or 'preview_mobile_' + c.concept_id + ('.png' if getattr(c, 'is_browser_screenshot', False) else '.svg')}` (SHA-256: `{c.mobile_preview_sha256 or 'N/A'}`)\n"
+                f"- **Rendering Method:** `{method_str}` | **True Screenshot:** `{is_screenshot_str}`\n"
+                f"- **Product References:** {refs_str}\n"
+                f"- **Known Limitations:** {lims_str}\n\n"
+                f"#### Implementation-Oriented UX Specification\n\n{c.ux_specification}"
+            )
+        rec_block = ""
+        if getattr(result, "recommended_concept_id", None):
+            rec_block = (
+                f"\n\n## UX Agent Recommendation\n\n"
+                f"- **Recommended Concept:** `{result.recommended_concept_id}`\n\n"
+                f"> [!NOTE]\n"
+                f"> UX Agent recommendation is an advisory proposal for Founder Review. "
+                f"Founder Design Approval is strictly required before Developer Implementation begins."
+            )
+        concepts_content = f"## Visual Design Proposals\n\n" + "\n\n".join(concepts_sections) + rec_block + "\n\n"
+
     return (
         f"# UX Report: {task.title}\n\n"
         f"- **Task ID:** `{task.id}`\n"
@@ -217,6 +249,7 @@ def format_ux_report(task: Task, result: UXTaskResult) -> str:
         f"- **Schema Version:** `{result.schema_version}`\n\n"
         f"## Executive Summary\n\n{result.summary}\n\n"
         f"## Goal\n\n{task.goal}\n\n"
+        f"{concepts_content}"
         f"## User Flows\n\n{flows_content}\n\n"
         f"## Screen & State Architecture\n\n{screens_content}\n\n"
         f"## Interaction Rules\n\n{interaction_rules_content}\n\n"
@@ -443,6 +476,83 @@ def materialize_specialist_artifact(
     elif agent_name == "ux":
         filename = "ux_report.md"
         artifact_type = ArtifactType.UX_SPECIFICATION.value
+        if getattr(typed_result, "concepts", None):
+            for c in typed_result.concepts:
+                render_res = render_prototype_previews(
+                    html_source=c.html_prototype,
+                    output_dir=target_dir,
+                    concept_id=c.concept_id,
+                )
+                d_file, m_file, d_sha, m_sha = render_res
+                html_file = target_dir / f"prototype_{c.concept_id}.html"
+                html_sha = hashlib.sha256(html_file.read_bytes()).hexdigest()
+                c.html_sha256 = html_sha
+                c.source_html_sha256 = html_sha
+                c.desktop_preview_sha256 = d_sha
+                c.mobile_preview_sha256 = m_sha
+                c.rendering_method = getattr(render_res, "rendering_method", "GENERIC_SVG_FALLBACK")
+                c.is_browser_screenshot = getattr(render_res, "is_browser_screenshot", False)
+                c.desktop_viewport = getattr(render_res, "desktop_viewport", "1280x800")
+                c.mobile_viewport = getattr(render_res, "mobile_viewport", "390x844")
+
+                try:
+                    proto_rel = str(html_file.relative_to(base_output_dir.resolve()))
+                except ValueError:
+                    proto_rel = str(html_file)
+                run.add_artifact(
+                    name=f"prototype_{c.concept_id}.html",
+                    artifact_type=ArtifactType.UX_PROTOTYPE.value,
+                    path=proto_rel,
+                    durable=True,
+                    sha256=html_sha,
+                    producer_role=agent_name,
+                    metadata={"concept_id": c.concept_id, "name": c.name},
+                )
+
+                try:
+                    d_rel = str(d_file.relative_to(base_output_dir.resolve()))
+                except ValueError:
+                    d_rel = str(d_file)
+                run.add_artifact(
+                    name=d_file.name,
+                    artifact_type=ArtifactType.UX_MOCKUP.value,
+                    path=d_rel,
+                    durable=True,
+                    sha256=d_sha,
+                    producer_role=agent_name,
+                    metadata={
+                        "concept_id": c.concept_id,
+                        "viewport": "desktop",
+                        "viewport_dimensions": c.desktop_viewport,
+                        "rendering_method": c.rendering_method,
+                        "is_browser_screenshot": c.is_browser_screenshot,
+                        "source_html_sha256": html_sha,
+                    },
+                )
+
+                try:
+                    m_rel = str(m_file.relative_to(base_output_dir.resolve()))
+                except ValueError:
+                    m_rel = str(m_file)
+                run.add_artifact(
+                    name=m_file.name,
+                    artifact_type=ArtifactType.UX_MOCKUP.value,
+                    path=m_rel,
+                    durable=True,
+                    sha256=m_sha,
+                    producer_role=agent_name,
+                    metadata={
+                        "concept_id": c.concept_id,
+                        "viewport": "mobile",
+                        "viewport_dimensions": c.mobile_viewport,
+                        "rendering_method": c.rendering_method,
+                        "is_browser_screenshot": c.is_browser_screenshot,
+                        "source_html_sha256": html_sha,
+                    },
+                )
+
+                c.desktop_preview_path = d_rel
+                c.mobile_preview_path = m_rel
         content = format_ux_report(task, typed_result)
     elif agent_name == "marketing":
         filename = "marketing_report.md"

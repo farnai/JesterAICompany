@@ -7,9 +7,10 @@ Product Agent execution results.
 from dataclasses import asdict, dataclass, field
 import json
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from .core import Task
+from .knowledge import format_project_knowledge_prompt_block
 
 PRODUCT_SCHEMA_VERSION: str = "1.0"
 ALLOWED_PRODUCT_STATUSES: Set[str] = {"completed", "failed"}
@@ -173,6 +174,7 @@ def parse_and_validate_product_result(raw_text: str) -> ProductTaskResult:
 def build_product_execution_prompt(
     task: Task,
     verified_artifacts: Optional[List[Any]] = None,
+    project_knowledge: Optional[Sequence[Any]] = None,
 ) -> str:
     """Build the prompt instructing Product Agent to execute a registered Task."""
     constraints_block = (
@@ -184,6 +186,21 @@ def build_product_execution_prompt(
         "\n".join(f"- {eo}" for eo in task.expected_output)
         if task.expected_output
         else "- None specified"
+    )
+
+    authority_hierarchy_block = (
+        "SOURCE AUTHORITY & CONFLICT RESOLUTION HIERARCHY:\n"
+        "1. Authorized Founder Objective and explicit constraints (HIGHEST PRIORITY).\n"
+        "2. Approved product requirements (e.g., PRD / Product deliverables).\n"
+        "3. Approved design-system decisions.\n"
+        "4. Strategic brand and marketing guidance.\n"
+        "5. Exploratory design proposals.\n"
+        "6. Existing implementation as evidence of current behavior (LOWEST SPECIFICATION PRIORITY).\n\n"
+        "CONFLICT RESOLUTION RULES:\n"
+        "- Lower-authority sources CANNOT override higher-authority constraints or Founder directives.\n"
+        "- Exploratory design proposals or prototype code cannot override explicit Founder requirements or approved product specifications.\n"
+        "- Do NOT silently substitute proposed or prototype styling for explicit Founder requirements.\n"
+        "- If an approved design token matching a Founder constraint does not exist in the codebase, preserve the Founder direction and explicitly flag the token decision for review in open_questions or deliverables.\n\n"
     )
 
     trust_boundary_block = ""
@@ -219,9 +236,54 @@ def build_product_execution_prompt(
             + "\n\n"
         )
 
+    knowledge_block = ""
+    if project_knowledge:
+        knowledge_block = "\n" + format_project_knowledge_prompt_block(project_knowledge)
+
+    task_metadata = getattr(task, "metadata", None) or {}
+    if not isinstance(task_metadata, dict):
+        task_metadata = {}
+
+    is_compact = bool(task_metadata.get("compact_prd") or task_metadata.get("bounded"))
+    is_retry = bool(task_metadata.get("is_retry"))
+    word_budget = task_metadata.get("word_budget")
+
+    task_text = f"{task.title} {task.goal} {' '.join(task.constraints or [])} {' '.join(task.expected_output or [])}".lower()
+    if any(kw in task_text for kw in ("visual pilot", "registration visual", "compact", "bounded prd")):
+        is_compact = True
+
+    scope_budget_block = ""
+    if is_compact:
+        target_budget = word_budget or "approximately 800–1200 words"
+        scope_budget_block = (
+            "EXECUTION SCOPE & OUTPUT BUDGET (COMPACT PRD MODE):\n"
+            f"- TARGET OUTPUT BUDGET: {target_budget} total for the PRD deliverable content.\n"
+            "- BOUNDED EXECUTION: Do NOT perform exhaustive codebase exploration, do NOT rediscover the entire product, and do NOT generate exhaustive onboarding or multi-phase product strategy.\n"
+            "- CITATION OVER RE-INVENTION: Authoritative project knowledge and verified upstream artifacts provided below must be cited as verified context, not re-generated or impersonated as new findings.\n"
+            "- DELIVERABLE STRUCTURE: The PRD deliverable content MUST be compact, structured, and focused specifically on the following 7 core sections:\n"
+            "  1. Existing Functionality (concise current baseline)\n"
+            "  2. Authentication Boundaries (security and credential constraints)\n"
+            "  3. User Goals (core target user motivations and conversion outcomes)\n"
+            "  4. Brand Constraints (tone, voice, and visual character boundaries)\n"
+            "  5. UX Constraints (layout, responsiveness, Georgian-first typography)\n"
+            "  6. Acceptance Criteria (clear, numbered, deterministically measurable criteria)\n"
+            "  7. Known Unknowns (explicit open technical or design questions)\n"
+            "- EXPLICIT IN/OUT SCOPE: Clearly define what is strictly IN-SCOPE and what is OUT-OF-SCOPE for this work item.\n\n"
+        )
+
+    retry_alert_block = ""
+    if is_retry:
+        retry_alert_block = (
+            "RECOVERY EXECUTION ALERT:\n"
+            "- A previous execution attempt timed out due to excessive exploration or oversized output.\n"
+            "- You MUST NOT run open-ended exploration or multi-step research loops.\n"
+            "- Formulate and return the validated JSON response directly adhering strictly to the schema and word budget.\n\n"
+        )
+
     return (
         "SYSTEM INSTRUCTION: You are operating in STRUCTURED PRODUCT EXECUTION MODE.\n"
         "Execute the assigned product task and return a single valid JSON object adhering strictly to schema_version '1.0'.\n\n"
+        f"{retry_alert_block}"
         "ROLE BOUNDARIES & RESTRICTIONS:\n"
         "- You are the Product Agent. Perform ONLY product strategy, scoping, and requirements work.\n"
         "- Do NOT perform user research or pretend user studies were conducted (defer to Research).\n"
@@ -229,6 +291,8 @@ def build_product_execution_prompt(
         "- Do NOT write code, migrations, or implementation details (defer to Developer).\n"
         "- Do NOT build test harnesses or run tests (defer to QA).\n"
         "- Do NOT invoke any other agent and do NOT modify any files.\n\n"
+        f"{scope_budget_block}"
+        f"{authority_hierarchy_block}"
         f"{trust_boundary_block}"
         "REQUIRED JSON OUTPUT STRUCTURE:\n"
         "{\n"
@@ -254,4 +318,5 @@ def build_product_execution_prompt(
         f"Constraints:\n{constraints_block}\n\n"
         f"Expected Output:\n{expected_output_block}\n"
         f"{upstream_block}"
+        f"{knowledge_block}"
     )

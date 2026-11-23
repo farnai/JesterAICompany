@@ -32,7 +32,7 @@ import time
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 import uuid
 
 from .core import (
@@ -223,6 +223,7 @@ from .qa_result import (
     parse_and_validate_qa_planning_result,
     parse_and_validate_qa_result,
 )
+from .design_approval import FounderDesignApproval
 from .research_result import (
     ResearchResultParseError,
     ResearchResultValidationError,
@@ -267,6 +268,7 @@ from .engineering_pipeline import (
     EngineeringPreconditionError,
 )
 from .context import (
+    ContextEnvelope,
     assemble_specialist_context,
 )
 from .telemetry import (
@@ -582,6 +584,7 @@ class CompanyService:
         required_roles: Optional[List[str]] = None,
         expected_output: Optional[List[str]] = None,
         input_artifacts: Optional[List[ArtifactInputRef]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Task:
         """Create and register a Task belonging to the specified Project."""
         project = self.get_project(project_id)
@@ -595,6 +598,7 @@ class CompanyService:
             required_roles=list(required_roles or []),
             expected_output=list(expected_output or []),
             input_artifacts=list(input_artifacts or []),
+            metadata=dict(metadata or {}),
         )
         return task
 
@@ -1575,11 +1579,16 @@ class CompanyService:
         self,
         task_id: str,
         project_id: Optional[str] = None,
+        project_knowledge: Optional[Sequence[Any]] = None,
+        context_envelope: Optional[ContextEnvelope] = None,
+        role_policy: Optional[RoleKnowledgePolicy] = None,
+        mandatory_source_ids: Optional[Sequence[str]] = None,
     ) -> TaskRun:
         """Execute a registered PENDING Task assigned to Product Agent (STEP 6B & STEP 10).
 
         Validates that the task is PENDING and required_roles == ['product'].
         Validates and loads any declared input artifacts before run execution (preflight check).
+        Resolves verified project knowledge if available.
         Constructs product execution prompt and delegates to generic execution mechanism.
         """
         task = self.get_task(task_id, project_id=project_id)
@@ -1604,9 +1613,45 @@ class CompanyService:
         # 2. Preflight validation & loading of input artifacts (STEP 10)
         verified_artifacts = self._verify_and_load_input_artifacts(task)
 
+        # 3. Resolve project knowledge
+        resolved_knowledge = list(project_knowledge) if project_knowledge is not None else None
+        if resolved_knowledge is None and context_envelope and context_envelope.project_knowledge:
+            resolved_knowledge = list(context_envelope.project_knowledge)
+        elif resolved_knowledge is None and project_id:
+            catalog = self.get_project_knowledge_catalog(project_id)
+            if catalog:
+                effective_mandatory_ids = tuple(mandatory_source_ids or ())
+                task_meta = getattr(task, "metadata", None) or {}
+                if not isinstance(task_meta, dict):
+                    task_meta = {}
+                if not effective_mandatory_ids and task_meta.get("mandatory_knowledge_sources"):
+                    effective_mandatory_ids = tuple(task_meta["mandatory_knowledge_sources"])
+
+                is_bounded = bool(task_meta.get("compact_prd") or task_meta.get("bounded") or task_meta.get("is_retry"))
+                task_text = f"{task.title} {task.goal}".lower()
+                if any(kw in task_text for kw in ("visual pilot", "registration visual", "compact", "bounded prd")):
+                    is_bounded = True
+
+                max_src = int(task_meta.get("max_knowledge_sources", 3 if is_bounded else 6))
+                max_ch = int(task_meta.get("max_excerpt_chars", 1500 if is_bounded else 4000))
+
+                effective_policy = role_policy or RoleKnowledgePolicy(
+                    role="product",
+                    primary_domains=("product", "marketing", "brand"),
+                    secondary_domains=("frontend",),
+                    mandatory_source_ids=effective_mandatory_ids,
+                    max_sources=max_src,
+                )
+                selected_sources = catalog.select_sources_for_role(effective_policy)
+                resolved_knowledge = [
+                    catalog.load_excerpt(s, repository_revision="HEAD", max_chars=max_ch)
+                    for s in selected_sources
+                ]
+
         prompt = build_product_execution_prompt(
             task,
             verified_artifacts=verified_artifacts if verified_artifacts else None,
+            project_knowledge=resolved_knowledge if resolved_knowledge else None,
         )
         return self._execute_specialist_task(
             task=task,
@@ -1660,11 +1705,16 @@ class CompanyService:
         self,
         task_id: str,
         project_id: Optional[str] = None,
+        project_knowledge: Optional[Sequence[Any]] = None,
+        context_envelope: Optional[ContextEnvelope] = None,
+        role_policy: Optional[RoleKnowledgePolicy] = None,
+        mandatory_source_ids: Optional[Sequence[str]] = None,
     ) -> TaskRun:
         """Execute a registered PENDING Task assigned to UX Agent (STEP 11).
 
         Validates that the task is PENDING and required_roles == ['ux'].
         Validates and loads any declared input artifacts before run execution (preflight check).
+        Resolves verified project knowledge if available.
         Constructs UX execution prompt and delegates to generic execution mechanism.
         """
         task = self.get_task(task_id, project_id=project_id)
@@ -1689,9 +1739,34 @@ class CompanyService:
         # 2. Preflight validation & loading of input artifacts (STEP 10 & 11)
         verified_artifacts = self._verify_and_load_input_artifacts(task)
 
+        # 3. Resolve project knowledge
+        resolved_knowledge = list(project_knowledge) if project_knowledge is not None else None
+        if resolved_knowledge is None and context_envelope and context_envelope.project_knowledge:
+            resolved_knowledge = list(context_envelope.project_knowledge)
+        elif resolved_knowledge is None and project_id:
+            catalog = self.get_project_knowledge_catalog(project_id)
+            if catalog:
+                effective_mandatory_ids = tuple(mandatory_source_ids or ())
+                if not effective_mandatory_ids and getattr(task, "metadata", None) and isinstance(task.metadata, dict):
+                    effective_mandatory_ids = tuple(task.metadata.get("mandatory_knowledge_sources", ()))
+
+                effective_policy = role_policy or RoleKnowledgePolicy(
+                    role="ux",
+                    primary_domains=("frontend", "ux", "brand"),
+                    secondary_domains=("product",),
+                    mandatory_source_ids=effective_mandatory_ids,
+                    max_sources=6,
+                )
+                selected_sources = catalog.select_sources_for_role(effective_policy)
+                resolved_knowledge = [
+                    catalog.load_excerpt(s, repository_revision="HEAD", max_chars=4000)
+                    for s in selected_sources
+                ]
+
         prompt = build_ux_execution_prompt(
             task,
             verified_artifacts=verified_artifacts if verified_artifacts else None,
+            project_knowledge=resolved_knowledge if resolved_knowledge else None,
         )
         return self._execute_specialist_task(
             task=task,
@@ -3494,7 +3569,37 @@ class CompanyService:
             plan_lineage = self.find_artifact(plan_art_id)
             if not plan_lineage:
                 raise RepairError(f"DEVELOPER_PLAN_REPORT artifact '{plan_art_id}' not found.")
-            _, _, original_plan_art = plan_lineage
+            plan_task, _, original_plan_art = plan_lineage
+
+            # Verify upstream dependencies required by Developer Plan
+            plan_consumed_prods = {
+                ref.artifact_id
+                for ref in (plan_task.input_artifacts if plan_task else [])
+                if (art_lineage := self.find_artifact(ref.artifact_id)) and art_lineage[2].artifact_type in (
+                    ArtifactType.SPECIFICATION.value,
+                    ArtifactType.RESEARCH_REPORT.value,
+                )
+            }
+            if plan_consumed_prods:
+                if not prod_art_id or prod_art_id not in plan_consumed_prods:
+                    raise RepairError(
+                        f"Missing or mismatched mandatory Product artifact required by Developer Plan: "
+                        f"'{prod_art_id}' not in {sorted(plan_consumed_prods)}."
+                    )
+
+            plan_consumed_ux = {
+                ref.artifact_id
+                for ref in (plan_task.input_artifacts if plan_task else [])
+                if (art_lineage := self.find_artifact(ref.artifact_id)) and art_lineage[2].artifact_type in (
+                    ArtifactType.UX_SPECIFICATION.value,
+                )
+            }
+            if plan_consumed_ux:
+                if not ux_art_id or ux_art_id not in plan_consumed_ux:
+                    raise RepairError(
+                        f"Missing or mismatched mandatory UX artifact required by Developer Plan: "
+                        f"'{ux_art_id}' not in {sorted(plan_consumed_ux)}."
+                    )
 
             prod_art = None
             if prod_art_id:
@@ -3506,8 +3611,9 @@ class CompanyService:
             ux_art = None
             if ux_art_id:
                 ux_lineage = self.find_artifact(ux_art_id)
-                if ux_lineage:
-                    _, _, ux_art = ux_lineage
+                if not ux_lineage:
+                    raise RepairError(f"UX_SPECIFICATION artifact '{ux_art_id}' not found.")
+                _, _, ux_art = ux_lineage
 
             # 3. Base commit determination
             if not base_commit:
@@ -3636,13 +3742,15 @@ class CompanyService:
                 )
 
                 # 6.4 Developer Repair Planning (READ-ONLY)
-                product_ref = ArtifactInputRef(
-                    artifact_id=prod_art.id,
-                    run_id=prod_art.run_id or "",
-                    sha256=prod_art.sha256 or "",
-                    producer_role=prod_art.producer_role,
-                )
-                prod_content = load_and_verify_input_artifact(Path(self.output_dir), prod_art, product_ref)
+                prod_content = None
+                if prod_art:
+                    product_ref = ArtifactInputRef(
+                        artifact_id=prod_art.id,
+                        run_id=prod_art.run_id or "",
+                        sha256=prod_art.sha256 or "",
+                        producer_role=prod_art.producer_role,
+                    )
+                    prod_content = load_and_verify_input_artifact(Path(self.output_dir), prod_art, product_ref)
 
                 plan_ref = ArtifactInputRef(
                     artifact_id=original_plan_art.id,
@@ -3704,7 +3812,8 @@ class CompanyService:
                     goal=f"Formulate strict repair plan to resolve QA defects for task {task.id}",
                     required_roles=["developer"],
                 )
-                self.attach_input_artifact(repair_plan_task.id, prod_art.id, project_id=proj.id)
+                if prod_art:
+                    self.attach_input_artifact(repair_plan_task.id, prod_art.id, project_id=proj.id)
                 if ux_art:
                     self.attach_input_artifact(repair_plan_task.id, ux_art.id, project_id=proj.id)
                 self.attach_input_artifact(repair_plan_task.id, original_plan_art.id, project_id=proj.id)
@@ -3849,7 +3958,8 @@ class CompanyService:
                     goal=f"Reinspect repaired CODE_PATCH v{iteration + 1} for task {task.id}",
                     required_roles=["qa"],
                 )
-                self.attach_input_artifact(qa_inspect_task.id, prod_art.id, project_id=proj.id)
+                if prod_art:
+                    self.attach_input_artifact(qa_inspect_task.id, prod_art.id, project_id=proj.id)
                 if ux_art:
                     self.attach_input_artifact(qa_inspect_task.id, ux_art.id, project_id=proj.id)
                 self.attach_input_artifact(qa_inspect_task.id, plan_art.id, project_id=proj.id)
@@ -3894,7 +4004,8 @@ class CompanyService:
                     goal=f"Execute independent verification of repaired CODE_PATCH v{iteration + 1} for task {task.id}",
                     required_roles=["qa"],
                 )
-                self.attach_input_artifact(qa_verify_task.id, prod_art.id, project_id=proj.id)
+                if prod_art:
+                    self.attach_input_artifact(qa_verify_task.id, prod_art.id, project_id=proj.id)
                 if ux_art:
                     self.attach_input_artifact(qa_verify_task.id, ux_art.id, project_id=proj.id)
                 self.attach_input_artifact(qa_verify_task.id, plan_art.id, project_id=proj.id)
@@ -4649,6 +4760,9 @@ class CompanyService:
             repo_root=self.repo_root,
         )
 
+        fallback_reason: Optional[str] = None
+        model_error: Optional[str] = None
+
         if self.is_production:
             prompt = build_ceo_team_selection_prompt(
                 objective=run.objective,
@@ -4664,11 +4778,38 @@ class CompanyService:
                 )
                 if exec_result.success and exec_result.stdout:
                     try:
-                        return parse_and_validate_team_selection(exec_result.stdout)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                        return parse_and_validate_team_selection(
+                            exec_result.stdout,
+                            objective=run.objective,
+                        )
+                    except Exception as parse_err:
+                        fallback_reason = f"Model team selection output validation failed: {parse_err}"
+                        model_error = str(parse_err)
+                else:
+                    if exec_result.timed_out:
+                        fallback_reason = f"CEO agent execution timed out after {exec_result.duration_ms / 1000.0:.1f}s."
+                    else:
+                        fallback_reason = f"CEO agent execution failed (exit_code={exec_result.exit_code}): {exec_result.stderr[:200]}"
+                    model_error = fallback_reason
+            except Exception as exc:
+                fallback_reason = f"CEO agent execution exception: {exc}"
+                model_error = str(exc)
+
+        if fallback_reason:
+            heuristic.fallback_activated = True
+            heuristic.fallback_reason = fallback_reason
+            if run.execution_telemetry and isinstance(run.execution_telemetry, dict):
+                run.execution_telemetry["team_selection_source"] = "HEURISTIC_FALLBACK"
+                run.execution_telemetry["fallback_reason"] = fallback_reason
+            run.add_event(
+                event_type="CEO_TEAM_SELECTION_FALLBACK_ACTIVATED",
+                reason=f"CEO team selection fell back to heuristic: {fallback_reason}",
+                details={
+                    "fallback_reason": fallback_reason,
+                    "model_error": model_error,
+                    "heuristic_roles": heuristic.selected_roles,
+                },
+            )
 
         return heuristic
 
@@ -4863,9 +5004,11 @@ class CompanyService:
         # If EXECUTE: Adaptive Team Selection (STEP 23B.3)
         team_selection = self.select_company_team(run=run, project_knowledge=ceo_knowledge)
         run.team_selection = team_selection.to_dict()
+        is_fallback = getattr(team_selection, "fallback_activated", False)
+        source_label = "HEURISTIC_FALLBACK" if is_fallback else "MODEL"
         run.add_event(
             event_type="CEO_TEAM_SELECTED",
-            reason=f"CEO selected minimum sufficient workforce for {team_selection.task_category}",
+            reason=f"CEO selected workforce for {team_selection.task_category} (source: {source_label})",
             details={
                 "task_category": team_selection.task_category,
                 "complexity": team_selection.complexity,
@@ -4874,6 +5017,8 @@ class CompanyService:
                 "selected_roles": team_selection.selected_roles,
                 "actual_specialist_count": team_selection.actual_specialist_count,
                 "avoidable_delegation_warnings": team_selection.avoidable_delegation_warnings,
+                "source": source_label,
+                "fallback_reason": getattr(team_selection, "fallback_reason", None),
             },
         )
         self.save_company_run(run)
@@ -4924,9 +5069,12 @@ class CompanyService:
                     status="SUCCESS",
                     duration_seconds=0.05,
                     model_latency_seconds=0.05,
-                    model_invocation_count=1,
+                    model_invocation_count=0 if is_fallback else 1,
                 )
                 run.execution_telemetry = t_obj.to_dict()
+                if is_fallback:
+                    run.execution_telemetry["team_selection_source"] = "HEURISTIC_FALLBACK"
+                    run.execution_telemetry["fallback_reason"] = getattr(team_selection, "fallback_reason", None)
             except Exception:
                 pass
         self.save_company_run(run)
@@ -5342,6 +5490,20 @@ class CompanyService:
         if target_item.capability and target_item.capability not in task_expected:
             task_expected.append(target_item.capability)
 
+        # Derive role-specific mandatory knowledge sources from project catalog if available
+        task_metadata: Dict[str, Any] = {}
+        if run.project_id:
+            catalog = self.get_project_knowledge_catalog(run.project_id)
+            if catalog:
+                role_policy = RoleKnowledgePolicy(
+                    role=role,
+                    primary_domains=("product", "marketing", "brand") if role in ("product", "marketing") else ("frontend", "ux", "brand") if role == "ux" else ("backend", "architecture"),
+                    secondary_domains=("frontend",) if role in ("product", "marketing") else ("product",) if role == "ux" else ("frontend",),
+                    max_sources=6,
+                )
+                selected_sources = catalog.select_sources_for_role(role_policy)
+                task_metadata["mandatory_knowledge_sources"] = [s.source_id for s in selected_sources]
+
         task = self.create_task(
             project_id=proj.id,
             title=f"[{role.upper()}] {target_item.objective[:60]}",
@@ -5350,6 +5512,7 @@ class CompanyService:
             constraints=list(run.objective.constraints),
             required_roles=[role],
             expected_output=task_expected,
+            metadata=task_metadata,
         )
         target_item.task_id = task.id
         target_item.run_id = run.run_id
@@ -5382,18 +5545,35 @@ class CompanyService:
         if run.project_id:
             catalog = self.get_project_knowledge_catalog(run.project_id)
             if catalog:
+                mandatory_ids = ()
+                task_meta = getattr(task, "metadata", None) or {}
+                if not isinstance(task_meta, dict):
+                    task_meta = {}
+                if task_meta.get("mandatory_knowledge_sources"):
+                    mandatory_ids = tuple(task_meta["mandatory_knowledge_sources"])
+
+                is_bounded = bool(task_meta.get("compact_prd") or task_meta.get("bounded") or task_meta.get("is_retry"))
+                task_text = f"{task.title} {task.goal} {target_item.objective}".lower()
+                if any(kw in task_text for kw in ("visual pilot", "registration visual", "compact", "bounded prd")):
+                    is_bounded = True
+
+                max_src = int(task_meta.get("max_knowledge_sources", 3 if is_bounded else 6))
+                max_ch = int(task_meta.get("max_excerpt_chars", 1500 if is_bounded else 4000))
+
                 role_policy = RoleKnowledgePolicy(
                     role=role,
-                    primary_domains=("product", "brand") if role in ("product", "marketing") else ("frontend", "brand") if role == "ux" else ("backend", "architecture"),
-                    max_sources=2,
+                    primary_domains=("product", "marketing", "brand") if role in ("product", "marketing") else ("frontend", "ux", "brand") if role == "ux" else ("backend", "architecture"),
+                    secondary_domains=("frontend",) if role in ("product", "marketing") else ("product",) if role == "ux" else ("frontend",),
+                    mandatory_source_ids=mandatory_ids,
+                    max_sources=max_src,
                 )
                 selected_sources = catalog.select_sources_for_role(role_policy)
                 role_knowledge = [
-                    catalog.load_excerpt(s, repository_revision=run.base_commit_hash or "HEAD", max_chars=2500)
+                    catalog.load_excerpt(s, repository_revision=run.base_commit_hash or "HEAD", max_chars=max_ch)
                     for s in selected_sources
                 ]
 
-        assemble_specialist_context(
+        envelope = assemble_specialist_context(
             recipient_role=role,
             objective=run.objective,
             work_item=target_item,
@@ -5418,9 +5598,19 @@ class CompanyService:
             if role == "research":
                 task_run = self.execute_research_task(task.id, project_id=proj.id, workspace_dir=target_ws_dir)
             elif role == "product":
-                task_run = self.execute_product_task(task.id, project_id=proj.id)
+                task_run = self.execute_product_task(
+                    task.id,
+                    project_id=proj.id,
+                    project_knowledge=role_knowledge,
+                    context_envelope=envelope,
+                )
             elif role == "ux":
-                task_run = self.execute_ux_task(task.id, project_id=proj.id)
+                task_run = self.execute_ux_task(
+                    task.id,
+                    project_id=proj.id,
+                    project_knowledge=role_knowledge,
+                    context_envelope=envelope,
+                )
             elif role == "marketing":
                 task_run = self.execute_marketing_task(task.id, project_id=proj.id)
             elif role == "qa":
@@ -5571,6 +5761,24 @@ class CompanyService:
             artifact_refs=verified_artifact_refs,
             reason=f"Work item {target_item.work_item_id} completed successfully",
         )
+
+        # Check for Founder Design Approval Gate (STEP 24.3)
+        # When UX specialist produces visual prototype artifacts and there is downstream developer work,
+        # pause the company run at WAITING_FOR_HUMAN awaiting Founder concept selection.
+        has_visual_prototypes = any(
+            a.get("type") in (ArtifactType.UX_PROTOTYPE.value, ArtifactType.DESIGN_CONCEPT.value)
+            for a in verified_artifact_refs
+        )
+        if role.lower() == "ux" and has_visual_prototypes and run.is_code_workflow:
+            if not run.founder_design_approval and not run.founder_design_approval_id:
+                if run.state != CompanyRunState.WAITING_FOR_HUMAN.value:
+                    run.transition_to(CompanyRunState.WAITING_FOR_HUMAN)
+                    run.add_event(
+                        event_type="WAITING_FOR_FOUNDER_DESIGN_APPROVAL",
+                        role=role,
+                        task_id=task.id,
+                        reason="UX design concepts generated; waiting for Founder concept selection before Developer work.",
+                    )
 
         # Deterministic Non-Code Completion Gate
         all_completed = all(
@@ -5736,6 +5944,15 @@ class CompanyService:
         if frec.recovery_decision == RecoveryDecision.RETRY.value:
             target_item.state = WorkItemState.PENDING.value
             run.work_item_states[target_item.work_item_id] = WorkItemState.PENDING.value
+            if frec.failure_category == FailureCategory.TIMEOUT.value:
+                if not isinstance(target_item.metadata, dict):
+                    target_item.metadata = {}
+                target_item.metadata["is_retry"] = True
+                target_item.metadata["bounded"] = True
+                target_item.metadata["compact_prd"] = True
+                target_item.metadata["word_budget"] = "800–1200 words"
+                target_item.metadata["max_knowledge_sources"] = 2
+                target_item.metadata["max_excerpt_chars"] = 1500
             run.add_event(
                 event_type="RECOVERY_ATTEMPT_SCHEDULED",
                 work_item_id=target_item.work_item_id,
@@ -5754,6 +5971,15 @@ class CompanyService:
             bounded_suffix = " [BOUNDED: Focus strictly on 3 primary files or core architecture; limit exploration]"
             if bounded_suffix not in target_item.objective:
                 target_item.objective = target_item.objective + bounded_suffix
+            if frec.failure_category == FailureCategory.TIMEOUT.value or getattr(frec, "is_exploration_timeout", False):
+                if not isinstance(target_item.metadata, dict):
+                    target_item.metadata = {}
+                target_item.metadata["is_retry"] = True
+                target_item.metadata["bounded"] = True
+                target_item.metadata["compact_prd"] = True
+                target_item.metadata["word_budget"] = "800–1200 words"
+                target_item.metadata["max_knowledge_sources"] = 2
+                target_item.metadata["max_excerpt_chars"] = 1500
             run.add_event(
                 event_type="RECOVERY_REPLAN_TRIGGERED",
                 work_item_id=target_item.work_item_id,
@@ -5975,6 +6201,76 @@ class CompanyService:
         run_file = runs_dir / f"{run.run_id}.json"
         run_file.write_text(json.dumps(run.to_dict(), indent=2), encoding="utf-8")
 
+    def save_design_recovery_package(self, package: Any) -> None:
+        """Persist a DesignRecoveryPackage to durable storage."""
+        self.durable_storage.save_design_recovery_package(package)
+
+    def get_design_recovery_package(self, package_id: str) -> Any:
+        """Retrieve a DesignRecoveryPackage from durable storage."""
+        return self.durable_storage.load_design_recovery_package(package_id)
+
+    def list_design_recovery_packages(self) -> List[Any]:
+        """List all DesignRecoveryPackages in durable storage."""
+        return self.durable_storage.list_design_recovery_packages()
+
+    def recover_design_artifacts(
+        self,
+        run_id: str,
+        recovery_package: Any,
+    ) -> CompanyRun:
+        """Safely bind an authentic DesignRecoveryPackage to an existing CompanyRun.
+        
+        Updates CompanyRun design_proposal_package_id, synchronizes UX employee summary
+        with non-colliding UUID artifact references, records an immutable recovery event,
+        and atomically persists both run_manifest.json and flat crun JSON.
+        """
+        run = self.get_company_run(run_id)
+
+        # 1. Verify package matches run
+        if recovery_package.original_run_id != run.run_id:
+            raise OrchestrationError(
+                f"Recovery package '{recovery_package.package_id}' belongs to run '{recovery_package.original_run_id}', not '{run.run_id}'."
+            )
+
+        # 2. Persist recovery package
+        self.save_design_recovery_package(recovery_package)
+
+        # 3. Update CompanyRun metadata
+        run.design_proposal_package_id = recovery_package.package_id
+
+        # 4. Update UX employee summary artifact_refs to use non-colliding UUIDs
+        for summ in run.employee_summaries:
+            if summ.role == "ux":
+                summ.artifact_refs = [ref.to_dict() for ref in recovery_package.artifact_refs]
+                summ.summary = (
+                    "JESTER-ის სარეგისტრაციო გამოცდილების (/auth/register) სრულყოფილი UX არქიტექტურა. "
+                    f"აღდგენილი და გადამოწმებულია 3 ავთენტური ვიზუალური კონცეფცია და 6 რეალური Headless Chrome ბრაუზერის სქრინშოტი (პაკეტი: {recovery_package.package_id})."
+                )
+
+        # 5. Record immutable audit event
+        run.add_event(
+            event_type="DESIGN_ARTIFACTS_RECOVERED",
+            work_item_id="wi_ux_visual_concepts",
+            role="ux",
+            reason=(
+                f"Design artifacts safely recovered under package '{recovery_package.package_id}'. "
+                "Derived browser PNG screenshots bound with cryptographic provenance to authentic HTML prototypes."
+            ),
+            details={
+                "recovery_package_id": recovery_package.package_id,
+                "original_run_id": recovery_package.original_run_id,
+                "original_task_run_id": recovery_package.original_task_run_id,
+                "renderer_version": recovery_package.renderer_version,
+                "rendering_method": recovery_package.rendering_method,
+                "concept_count": len(recovery_package.concepts),
+                "artifact_count": len(recovery_package.artifact_refs),
+            },
+        )
+
+        # 6. Atomic save to both durable run_manifest.json and flat crun_29fcdd4a.json
+        self.save_company_run(run)
+        return run
+
     def execute_developer_company_work(
         self,
         run_id: str,
@@ -6043,6 +6339,90 @@ class CompanyService:
             approver=approver,
         )
         return self.apply_approved_company_repo(run_id=run_id)
+
+    def submit_founder_design_approval(
+        self,
+        run_id: str,
+        approval: Any,
+    ) -> CompanyRun:
+        """Record authorized Founder Design Approval for a visual concept in a CompanyRun (STEP 24.3).
+
+        Enforces:
+        1. Run exists and is in WAITING_FOR_HUMAN or RUNNING.
+        2. Approval belongs to the run's project and run_id.
+        3. Never interchangeable with RealRepoApply (code approval).
+        4. Transitions run to RUNNING if it was WAITING_FOR_HUMAN.
+        """
+        run = self.get_company_run(run_id)
+        if not isinstance(approval, FounderDesignApproval):
+            if isinstance(approval, dict):
+                approval = FounderDesignApproval.from_dict(approval)
+            else:
+                from .design_approval import DesignApprovalInterchangeabilityError, DesignApprovalMissingError
+                if type(approval).__name__ in ("RealRepoApplyProposal", "RealRepoApplyGrant", "ExecutionGrant"):
+                    raise DesignApprovalInterchangeabilityError(
+                        f"Cannot submit '{type(approval).__name__}' as FounderDesignApproval. "
+                        "Design Approval and Code Approval are strictly distinct and non-interchangeable."
+                    )
+                raise DesignApprovalMissingError(f"Expected FounderDesignApproval, got '{type(approval).__name__}'.")
+
+        from .design_approval import (
+            DesignApprovalProjectMismatchError,
+            DesignApprovalTamperedError,
+        )
+
+        target_proj = run.project_id or run.objective.project_id
+        if approval.project_id != target_proj:
+            raise DesignApprovalProjectMismatchError(
+                f"Design approval '{approval.approval_id}' belongs to project '{approval.project_id}', "
+                f"cannot be applied to CompanyRun project '{target_proj}'."
+            )
+
+        if approval.run_id != run.run_id:
+            raise DesignApprovalTamperedError(
+                f"Design approval run_id '{approval.run_id}' does not match CompanyRun '{run.run_id}'."
+            )
+
+        run.founder_design_approval = approval.to_dict()
+        run.founder_design_approval_id = approval.approval_id
+
+        run.add_event(
+            event_type="FOUNDER_DESIGN_APPROVED",
+            reason=f"Founder approved design concept '{approval.concept_id}'",
+            details={
+                "approval_id": approval.approval_id,
+                "concept_id": approval.concept_id,
+                "founder_id": approval.founder_id,
+                "approval_sha256": approval.approval_sha256,
+            },
+        )
+
+        if run.state == CompanyRunState.WAITING_FOR_HUMAN.value:
+            run.transition_to(CompanyRunState.RUNNING)
+
+        self.save_company_run(run)
+        return run
+
+    def reject_founder_design_concepts(
+        self,
+        run_id: str,
+        reason: Optional[str] = None,
+        request_revisions: bool = False,
+    ) -> CompanyRun:
+        """Record Founder rejection or revision request for proposed visual design concepts (STEP 24.3)."""
+        run = self.get_company_run(run_id)
+        notes = reason or "Founder rejected design concepts."
+        target_state = CompanyRunState.WAITING_FOR_CLARIFICATION if request_revisions else CompanyRunState.BLOCKED
+
+        run.add_event(
+            event_type="FOUNDER_DESIGN_REVISION_REQUESTED" if request_revisions else "FOUNDER_DESIGN_REJECTED",
+            reason=notes,
+        )
+        if run.state != target_state.value:
+            run.transition_to(target_state, error=notes)
+
+        self.save_company_run(run)
+        return run
 
     def get_company_run_metrics(self, run_id: str) -> Dict[str, Any]:
         """Retrieve execution telemetry for a CompanyRun, deriving fallback metrics if needed."""

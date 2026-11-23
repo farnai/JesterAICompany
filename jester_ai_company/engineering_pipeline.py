@@ -78,6 +78,17 @@ from .repair import (
 from .developer_mutation import DeveloperMutationStatus
 from .durable_storage import ProposalNotFoundError
 from .project import TargetRepositoryMismatchError, verify_target_repository_identity
+from .design_approval import (
+    DesignApprovalError,
+    DesignApprovalMissingError,
+    DesignApprovalTamperedError,
+    DesignApprovalProjectMismatchError,
+    DesignApprovalSelfApprovalForbiddenError,
+    DesignApprovalInterchangeabilityError,
+    FounderDesignApproval,
+    validate_design_approval_for_developer_handoff,
+)
+from .design_concept import DesignConcept
 
 
 def _resolve_artifact_file_path(base_output_dir: Path, artifact: Artifact) -> Path:
@@ -288,6 +299,66 @@ class EngineeringPipelineAdapter:
                     self.service.save_company_run(run)
                     raise ArtifactVerificationError(err_msg)
 
+        # ----------------------------------------------------------------------
+        # 1.5 Founder Design Approval Enforcement Gate (STEP 24.3)
+        # ----------------------------------------------------------------------
+        ux_prototype_art = None
+        has_visual_concepts = False
+        if ux_item and ux_item.task_id:
+            try:
+                ux_t = self.service.get_task(ux_item.task_id)
+                if ux_t and ux_t.runs:
+                    latest_ux_run = ux_t.runs[-1]
+                    for a in latest_ux_run.artifacts:
+                        if a.artifact_type in (ArtifactType.UX_PROTOTYPE.value, ArtifactType.DESIGN_CONCEPT.value):
+                            has_visual_concepts = True
+                            ux_prototype_art = a
+                            break
+            except Exception:
+                pass
+
+        if has_visual_concepts:
+            if not run.founder_design_approval and not run.founder_design_approval_id:
+                err_msg = "Developer Mutation blocked: Visual design concepts require authorized Founder Design Approval before implementation."
+                target_item.state = WorkItemState.BLOCKED.value
+                run.work_item_states[target_item.work_item_id] = WorkItemState.BLOCKED.value
+                if run.state != CompanyRunState.BLOCKED.value:
+                    run.transition_to(CompanyRunState.BLOCKED, error=err_msg)
+                run.add_event("WORK_ITEM_BLOCKED", work_item_id=target_item.work_item_id, role=role, reason=err_msg)
+                self.service.save_company_run(run)
+                raise DesignApprovalMissingError(err_msg)
+
+            # Reconstruct approved concept from UX task result for cryptographic verification
+            approved_concept = None
+            if ux_task and ux_task.result and isinstance(ux_task.result.details, dict):
+                raw_concepts = ux_task.result.details.get("concepts", [])
+                appr_cid = (
+                    run.founder_design_approval.get("concept_id")
+                    if isinstance(run.founder_design_approval, dict)
+                    else getattr(run.founder_design_approval, "concept_id", None)
+                ) if run.founder_design_approval else None
+                for rc in raw_concepts:
+                    if isinstance(rc, dict) and rc.get("concept_id") == appr_cid:
+                        approved_concept = DesignConcept.from_dict(rc)
+                        break
+
+            # Validate Founder Design Approval against concept and target project
+            try:
+                validate_design_approval_for_developer_handoff(
+                    approval=run.founder_design_approval,
+                    concept=approved_concept,
+                    target_project_id=proj_id,
+                )
+            except Exception as da_err:
+                err_msg = f"Developer handoff rejected: {da_err}"
+                target_item.state = WorkItemState.FAILED.value
+                run.work_item_states[target_item.work_item_id] = WorkItemState.FAILED.value
+                if run.state != CompanyRunState.FAILED.value:
+                    run.transition_to(CompanyRunState.FAILED, error=err_msg)
+                run.add_event("WORK_ITEM_FAILED", work_item_id=target_item.work_item_id, role=role, reason=err_msg)
+                self.service.save_company_run(run)
+                raise
+
         # Resolve target repository root
         target_repo = Path(run.objective.target_repository).resolve() if run.objective.target_repository else self.service.repo_root
         if not (target_repo / ".git").exists():
@@ -375,6 +446,15 @@ class EngineeringPipelineAdapter:
                 self.service.attach_input_artifact(plan_task.id, prod_art.id, project_id=proj.id)
             if ux_art:
                 self.service.attach_input_artifact(plan_task.id, ux_art.id, project_id=proj.id)
+            if ux_prototype_art:
+                self.service.attach_input_artifact(plan_task.id, ux_prototype_art.id, project_id=proj.id)
+
+            if has_visual_concepts and run.founder_design_approval:
+                appr_data = run.founder_design_approval if isinstance(run.founder_design_approval, dict) else run.founder_design_approval.to_dict()
+                plan_task.metadata["approved_concept_id"] = appr_data.get("concept_id")
+                plan_task.metadata["approved_ux_spec_sha256"] = appr_data.get("ux_spec_sha256")
+                plan_task.metadata["approved_html_prototype_sha256"] = appr_data.get("html_prototype_sha256")
+                plan_task.metadata["design_tokens"] = appr_data.get("design_tokens") or {}
 
             plan_run = self.service.execute_developer_planning_task(plan_task.id, project_id=proj.id)
             if plan_run.status != RunStatus.SUCCESS.value:

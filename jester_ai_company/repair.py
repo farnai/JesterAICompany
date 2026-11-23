@@ -72,6 +72,7 @@ from .qa_execution import (
     QAExecutionVerdictResult,
     QAFinalVerdict,
     QARequirementExecutionEvaluation,
+    is_frontend_path,
 )
 from .verification import (
     VerificationExecutionResult,
@@ -141,8 +142,8 @@ class DeveloperRepairTask:
     max_iterations: int = MAX_REPAIR_ITERATIONS
 
     # Upstream Canonical Artifact References
-    product_artifact_id: str = ""
-    product_sha256: str = ""
+    product_artifact_id: Optional[str] = None
+    product_sha256: Optional[str] = None
     ux_artifact_id: Optional[str] = None
     ux_sha256: Optional[str] = None
     original_developer_plan_id: str = ""
@@ -437,7 +438,7 @@ def build_developer_repair_task(
     repair_id: str,
     original_task_id: str,
     iteration: int,
-    product_art: Artifact,
+    product_art: Optional[Artifact],
     plan_art: Artifact,
     patch_art: Artifact,
     qa_report_art: Artifact,
@@ -486,8 +487,8 @@ def build_developer_repair_task(
         original_task_id=original_task_id,
         iteration=iteration,
         max_iterations=max_iterations,
-        product_artifact_id=product_art.id,
-        product_sha256=product_art.sha256 or "",
+        product_artifact_id=product_art.id if product_art else None,
+        product_sha256=(product_art.sha256 or "") if product_art else None,
         ux_artifact_id=ux_art.id if ux_art else None,
         ux_sha256=ux_art.sha256 if ux_art else None,
         original_developer_plan_id=plan_art.id,
@@ -509,20 +510,29 @@ def build_developer_repair_task(
 
 def build_developer_repair_planning_prompt(
     repair_task: DeveloperRepairTask,
-    product_content: str,
-    original_plan_content: str,
-    previous_patch_text: str,
-    qa_report_content: str,
-    qa_execution_report_content: str,
+    product_content: Optional[str] = None,
+    original_plan_content: str = "",
+    previous_patch_text: str = "",
+    qa_report_content: str = "",
+    qa_execution_report_content: str = "",
     ux_content: Optional[str] = None,
 ) -> str:
     """Build a hardened prompt for the Developer Agent in read-only repair planning mode."""
-    product_slice = (product_content.strip())[:5000]
+    product_slice = (product_content.strip())[:5000] if product_content else ""
     ux_slice = (ux_content.strip())[:3000] if ux_content else ""
     plan_slice = (original_plan_content.strip())[:3000]
     patch_slice = (previous_patch_text.strip())[:5000]
     qa_rep_slice = (qa_report_content.strip())[:3000]
     qa_exec_slice = (qa_execution_report_content.strip())[:3000]
+
+    product_section = ""
+    if product_slice:
+        product_section = f"""
+==================================================
+CANONICAL PRODUCT SPECIFICATION (UNTRUSTED DATA)
+==================================================
+{product_slice}
+"""
 
     ux_section = ""
     if ux_slice:
@@ -572,12 +582,7 @@ FAILED VERIFICATIONS:
 
 ELIGIBLE SCOPE HINT:
 {allowed_scope_str}
-
-==================================================
-CANONICAL PRODUCT SPECIFICATION (UNTRUSTED DATA)
-==================================================
-{product_slice}
-{ux_section}
+{product_section}{ux_section}
 ==================================================
 ORIGINAL DEVELOPER PLAN (UNTRUSTED DATA)
 ==================================================
@@ -840,6 +845,29 @@ def derive_repair_execution_grant(
     total_files = len(cumulative_mod) + len(cumulative_create)
     max_files = max(total_files, previous_grant.max_files_changed, 5)
 
+    # 5. Verification action targeting and filtering (STEP 24.3 & Section 7 & 8.12)
+    # Ensure frontend-only repairs do not default to unrelated backend tests.
+    is_frontend_scope = bool(all_proposed) and all(is_frontend_path(p) for p in all_proposed)
+    candidate_actions: List[VerificationAction] = list(plan.proposed_verification_actions)
+
+    if is_frontend_scope:
+        # Strip out unrelated backend test suites
+        filtered_actions: List[VerificationAction] = []
+        for va in candidate_actions:
+            target_lower = va.target.lower()
+            if va.action_type == "pytest" and ("backend" in target_lower or "jwt" in target_lower or "api" in target_lower):
+                continue
+            filtered_actions.append(va)
+
+        # If no frontend verification action remains, default to frontend_build on frontend
+        has_frontend = any(
+            va.action_type in ("frontend_build", "npm_build") or "frontend" in va.target.lower()
+            for va in filtered_actions
+        )
+        if not has_frontend:
+            filtered_actions.append(VerificationAction(action_type="frontend_build", target="frontend"))
+        candidate_actions = filtered_actions
+
     grant_id = f"grant_{plan.repair_id}"
     effective_task_id = task_id or plan.repair_id
 
@@ -851,11 +879,11 @@ def derive_repair_execution_grant(
         base_commit_hash=base_commit_hash,
         approved_files_to_modify=tuple(sorted(cumulative_mod)),
         approved_files_to_create=tuple(sorted(cumulative_create)),
-        verification_actions=tuple(plan.proposed_verification_actions),
+        verification_actions=tuple(candidate_actions),
         allow_test_modifications=effective_allow_tests,
         max_files_changed=max_files,
         max_bytes_written=100_000,
-        max_verification_actions=max(len(plan.proposed_verification_actions), 5),
+        max_verification_actions=max(len(candidate_actions), 5),
         max_duration_seconds=max(120, previous_grant.max_duration_seconds if previous_grant else 120),
         network_enabled=False,
         founder_approval_id=founder_approval_id.strip(),

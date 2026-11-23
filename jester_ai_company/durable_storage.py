@@ -145,6 +145,7 @@ class DurableRunStorage:
         self.proposals_dir = self.storage_root / "proposals"
         self.grants_dir = self.storage_root / "grants"
         self.locks_dir = self.storage_root / "locks"
+        self.recovery_packages_dir = self.storage_root / "design_recovery_packages"
         self.ensure_dirs()
 
     def ensure_dirs(self) -> None:
@@ -153,6 +154,7 @@ class DurableRunStorage:
         self.proposals_dir.mkdir(parents=True, exist_ok=True)
         self.grants_dir.mkdir(parents=True, exist_ok=True)
         self.locks_dir.mkdir(parents=True, exist_ok=True)
+        self.recovery_packages_dir.mkdir(parents=True, exist_ok=True)
 
     # --------------------------------------------------------------------------
     # RealRepoApplyProposal Persistence & Recovery
@@ -401,6 +403,9 @@ class DurableRunStorage:
         )
         atomic_write_text(run_dir / "events.json", json.dumps(run.events, indent=2))
 
+        # 5. Flat manifest for backwards compatibility and instant synchronization
+        atomic_write_text(self.runs_dir / f"{run.run_id}.json", json.dumps(run.to_dict(), indent=2))
+
         return run_dir
 
     def load_company_run(self, run_id: str) -> CompanyRun:
@@ -444,6 +449,44 @@ class DurableRunStorage:
                 except Exception as exc:
                     logger.warning("Skipping corrupted CompanyRun '%s': %s", entry.name, exc)
         return runs
+
+    # --------------------------------------------------------------------------
+    # Design Recovery Package Persistence & Recovery (STEP 24.4.3)
+    # --------------------------------------------------------------------------
+
+    def save_design_recovery_package(self, package: Any) -> Path:
+        """Atomically persist a DesignRecoveryPackage to durable storage."""
+        pkg_dir = self.recovery_packages_dir / package.package_id
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(pkg_dir / "package.json", json.dumps(package.to_dict(), indent=2))
+        return pkg_dir
+
+    def load_design_recovery_package(self, package_id: str) -> Any:
+        """Load a persisted DesignRecoveryPackage from durable storage."""
+        from .design_recovery import DesignRecoveryPackage
+        clean_id = package_id.strip()
+        pkg_file = self.recovery_packages_dir / clean_id / "package.json"
+        if not pkg_file.is_file():
+            raise StorageError(f"DesignRecoveryPackage '{clean_id}' not found at '{pkg_file}'.")
+        try:
+            data = json.loads(pkg_file.read_text(encoding="utf-8"))
+            return DesignRecoveryPackage.from_dict(data)
+        except Exception as exc:
+            raise StorageError(f"Failed to load DesignRecoveryPackage '{clean_id}': {exc}") from exc
+
+    def list_design_recovery_packages(self) -> List[Any]:
+        """List all persisted DesignRecoveryPackages."""
+        from .design_recovery import DesignRecoveryPackage
+        pkgs = []
+        if not self.recovery_packages_dir.is_dir():
+            return pkgs
+        for entry in self.recovery_packages_dir.iterdir():
+            if entry.is_dir() and (entry / "package.json").is_file():
+                try:
+                    pkgs.append(self.load_design_recovery_package(entry.name))
+                except Exception as exc:
+                    logger.warning("Skipping corrupted DesignRecoveryPackage '%s': %s", entry.name, exc)
+        return pkgs
 
     # --------------------------------------------------------------------------
     # Retention Policy & Garbage Collection Protection

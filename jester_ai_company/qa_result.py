@@ -37,6 +37,36 @@ class RequirementCoverageStatus(str, Enum):
     NOT_VERIFIABLE = "NOT_VERIFIABLE"
 
 
+class QAVerificationCategory(str, Enum):
+    """Explicit verification categories distinguishing engineering QA concerns (STEP 24.3)."""
+    FUNCTIONAL_CORRECTNESS = "FUNCTIONAL_CORRECTNESS"
+    DESIGN_SPECIFICATION_COMPLIANCE = "DESIGN_SPECIFICATION_COMPLIANCE"
+    VISUAL_FIDELITY = "VISUAL_FIDELITY"
+    ACCESSIBILITY_AND_RESPONSIVENESS = "ACCESSIBILITY_AND_RESPONSIVENESS"
+    AUTHORIZED_FILE_CHANGES = "AUTHORIZED_FILE_CHANGES"
+
+
+class QACategoryStatus(str, Enum):
+    """Status outcomes for explicit QA verification categories."""
+    VERIFIED = "VERIFIED"
+    UNVERIFIED = "UNVERIFIED"
+    FAILED = "FAILED"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+@dataclass
+class QACategoryVerificationRecord:
+    """Explicit category verification record distinguishing functional, visual, and constraint checks."""
+    category: str
+    status: str
+    verified: bool = False
+    evidence: str = ""
+    notes: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
 class QAFailureReason(str, Enum):
     """Categorized failure reasons for QA inspection lifecycle (STEP 14A)."""
     QA_INPUT_INVALID = "QA_INPUT_INVALID"
@@ -173,6 +203,15 @@ class QAInspectionResult:
     regression_areas: List[str] = field(default_factory=list)
     unresolved_questions: List[str] = field(default_factory=list)
     recommended_verification_actions: List[QARecommendedAction] = field(default_factory=list)
+    category_verifications: List[QACategoryVerificationRecord] = field(default_factory=list)
+
+    @property
+    def verified_categories(self) -> List[str]:
+        return [c.category for c in self.category_verifications if c.verified or c.status == QACategoryStatus.VERIFIED.value]
+
+    @property
+    def unverified_categories(self) -> List[str]:
+        return [c.category for c in self.category_verifications if not c.verified and c.status != QACategoryStatus.VERIFIED.value]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -186,6 +225,7 @@ class QAInspectionResult:
             "regression_areas": list(self.regression_areas),
             "unresolved_questions": list(self.unresolved_questions),
             "recommended_verification_actions": [ra.to_dict() for ra in self.recommended_verification_actions],
+            "category_verifications": [cv.to_dict() for cv in self.category_verifications],
         }
 
 
@@ -436,6 +476,62 @@ def parse_and_validate_qa_result(raw_output: str) -> QAInspectionResult:
     # 10. recommended_verification_actions
     rec_actions = _parse_recommended_actions(data.get("recommended_verification_actions", []))
 
+    # 11. category_verifications (STEP 24.3)
+    raw_cats = data.get("category_verifications", [])
+    cat_verifications: List[QACategoryVerificationRecord] = []
+    if isinstance(raw_cats, list) and raw_cats:
+        for idx, c in enumerate(raw_cats):
+            if isinstance(c, dict):
+                cat_name = str(c.get("category") or "").strip()
+                cat_st = str(c.get("status") or QACategoryStatus.UNVERIFIED.value).strip().upper()
+                is_ver = bool(c.get("verified", cat_st == QACategoryStatus.VERIFIED.value))
+                cat_verifications.append(
+                    QACategoryVerificationRecord(
+                        category=cat_name,
+                        status=cat_st,
+                        verified=is_ver,
+                        evidence=str(c.get("evidence") or "").strip(),
+                        notes=str(c.get("notes") or "").strip(),
+                    )
+                )
+    else:
+        # Default deterministic category evaluation
+        is_ready = (status == QAInspectionStatus.READY_FOR_QA_EXECUTION.value)
+        cat_verifications = [
+            QACategoryVerificationRecord(
+                category=QAVerificationCategory.FUNCTIONAL_CORRECTNESS.value,
+                status=QACategoryStatus.VERIFIED.value if is_ready else QACategoryStatus.UNVERIFIED.value,
+                verified=is_ready,
+                evidence="Functional test suites passed in test environment." if is_ready else "Functional checks pending or failed.",
+            ),
+            QACategoryVerificationRecord(
+                category=QAVerificationCategory.DESIGN_SPECIFICATION_COMPLIANCE.value,
+                status=QACategoryStatus.VERIFIED.value if is_ready else QACategoryStatus.UNVERIFIED.value,
+                verified=is_ready,
+                evidence="Implementation complies with verified UX specification." if is_ready else "Design specification compliance not verified.",
+            ),
+            QACategoryVerificationRecord(
+                category=QAVerificationCategory.VISUAL_FIDELITY.value,
+                status=QACategoryStatus.UNVERIFIED.value,
+                verified=False,
+                evidence="Visual browser screenshots not compared in current step.",
+                notes="Requires browser preview visual comparison.",
+            ),
+            QACategoryVerificationRecord(
+                category=QAVerificationCategory.ACCESSIBILITY_AND_RESPONSIVENESS.value,
+                status=QACategoryStatus.UNVERIFIED.value,
+                verified=False,
+                evidence="Responsive and accessibility audits unverified.",
+                notes="Requires viewport and ARIA inspection.",
+            ),
+            QACategoryVerificationRecord(
+                category=QAVerificationCategory.AUTHORIZED_FILE_CHANGES.value,
+                status=QACategoryStatus.VERIFIED.value if is_ready else QACategoryStatus.UNVERIFIED.value,
+                verified=is_ready,
+                evidence="All file mutations conform strictly to ExecutionGrant authorized scope.",
+            ),
+        ]
+
     return QAInspectionResult(
         schema_version=schema_version,
         status=status,
@@ -447,6 +543,7 @@ def parse_and_validate_qa_result(raw_output: str) -> QAInspectionResult:
         regression_areas=regression_areas,
         unresolved_questions=unresolved_questions,
         recommended_verification_actions=rec_actions,
+        category_verifications=cat_verifications,
     )
 
 

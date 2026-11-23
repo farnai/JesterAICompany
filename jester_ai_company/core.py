@@ -37,6 +37,8 @@ class ArtifactType(str, Enum):
     VERIFICATION_REPORT = "VERIFICATION_REPORT"
     RESEARCH_REPORT = "RESEARCH_REPORT"
     UX_MOCKUP = "UX_MOCKUP"
+    UX_PROTOTYPE = "UX_PROTOTYPE"
+    DESIGN_CONCEPT = "DESIGN_CONCEPT"
     UX_SPECIFICATION = "UX_SPECIFICATION"
     MARKETING_BRIEF = "MARKETING_BRIEF"
     MARKETING_REPORT = "MARKETING_REPORT"
@@ -300,6 +302,7 @@ class Task:
     result: Optional[TaskResult] = None
     input_artifacts: List[ArtifactInputRef] = field(default_factory=list)
     allow_direct_developer: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def create_run(self) -> TaskRun:
         attempt = len(self.runs) + 1
@@ -380,6 +383,7 @@ class Project:
         required_roles: Optional[List[str]] = None,
         expected_output: Optional[List[str]] = None,
         input_artifacts: Optional[List[ArtifactInputRef]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Task:
         task = Task(
             id=task_id,
@@ -390,6 +394,7 @@ class Project:
             required_roles=required_roles or [],
             expected_output=expected_output or [],
             input_artifacts=input_artifacts or [],
+            metadata=dict(metadata or {}),
         )
         self.tasks[task_id] = task
         return task

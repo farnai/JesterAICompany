@@ -268,62 +268,14 @@ def classify_specialist_failure(
     combined_raw = f"{error_message or ''} {stderr or ''} {stdout or ''}"
     combined = combined_raw.lower()
     sanitized_evidence = sanitize_recovery_error(combined_raw)
+    error_context = f"{error_message or ''} {stderr or ''}".lower()
 
     record_id = f"frec_{hashlib.sha256(f'{work_item_id}_{attempt_number}_{_utc_now_iso()}'.encode()).hexdigest()[:8]}"
 
     # --------------------------------------------------------------------------
-    # 1. AUTHENTICATION & CREDENTIALS
+    # 1. TIMEOUT (High Priority: A timeout must never be eclipsed by stdout text)
     # --------------------------------------------------------------------------
-    auth_patterns = [
-        "401", "unauthorized", "authentication", "api key", "apikey",
-        "invalid credentials", "token expired", "auth failed", "login required",
-        "permissiondeniederror: 401", "unauthenticated",
-    ]
-    if any(p in combined for p in auth_patterns):
-        return FailureClassificationRecord(
-            record_id=record_id,
-            failure_category=FailureCategory.AUTHENTICATION.value,
-            affected_specialist=role,
-            work_item_id=work_item_id,
-            attempt_number=attempt_number,
-            available_artifacts=artifacts_list,
-            recovery_eligibility=False,
-            recovery_decision=RecoveryDecision.FAIL.value,
-            explanation="Authentication or credential failure detected. Automatic retry is strictly prohibited.",
-            error_evidence=sanitized_evidence,
-        )
-
-    # --------------------------------------------------------------------------
-    # 2. POLICY OR PERMISSION
-    # --------------------------------------------------------------------------
-    policy_patterns = [
-        "403", "forbidden", "permission denied", "repository guard",
-        "read-only", "read_only", "prohibited path", "candidate not eligible",
-        "transition policy error", "transitionpolicyerror", "unsupported role",
-        "unsupportedroleerror", "privilege escalation", "access denied",
-        "cannot modify repository", "read-only constraints",
-        "repositorypolicy", "repository policy", "mutation_allowed",
-        "policyviolationerror", "policy violation", "not within authorized",
-        "denied under repositorypolicy", "scope under repositorypolicy",
-    ]
-    if any(p in combined for p in policy_patterns):
-        return FailureClassificationRecord(
-            record_id=record_id,
-            failure_category=FailureCategory.POLICY_OR_PERMISSION.value,
-            affected_specialist=role,
-            work_item_id=work_item_id,
-            attempt_number=attempt_number,
-            available_artifacts=artifacts_list,
-            recovery_eligibility=False,
-            recovery_decision=RecoveryDecision.BLOCK.value,
-            explanation="Policy or permission boundary violation detected. Automatic retry is strictly prohibited to maintain safety invariants.",
-            error_evidence=sanitized_evidence,
-        )
-
-    # --------------------------------------------------------------------------
-    # 3. TIMEOUT
-    # --------------------------------------------------------------------------
-    is_timeout = timed_out or "timed out" in combined or "timeoutexpired" in combined
+    is_timeout = timed_out or "timed out" in error_context or "timeoutexpired" in error_context
 
     if is_timeout:
         # Distinguish between excessive exploration vs transient network/execution delay
@@ -331,10 +283,11 @@ def classify_specialist_failure(
             "steps", "exploration", "tool calls", "excessive",
             "search loop", "investigation loop", "maximum steps",
             "100 steps", "200 steps", "step 1", "step 2",
+            "bounded:", "excessive exploration",
         ]
         is_exploration = any(p in combined for p in exploration_patterns)
 
-        if is_exploration:
+        if is_exploration or attempt_number == 1:
             # Excessive exploration requires bounded replanning, NEVER identical retry!
             if attempt_number <= max_retries:
                 return FailureClassificationRecord(
@@ -378,6 +331,7 @@ def classify_specialist_failure(
                     recovery_decision=RecoveryDecision.RETRY.value,
                     explanation="Transient execution timeout occurred within retry budget. Scheduling retry.",
                     error_evidence=sanitized_evidence,
+                    is_exploration_timeout=False,
                 )
             else:
                 return FailureClassificationRecord(
@@ -389,9 +343,59 @@ def classify_specialist_failure(
                     available_artifacts=artifacts_list,
                     recovery_eligibility=False,
                     recovery_decision=RecoveryDecision.FAIL.value,
-                    explanation="Specialist timed out and timeout recovery budget exhausted.",
+                    explanation="Timeout retry budget exhausted.",
                     error_evidence=sanitized_evidence,
+                    is_exploration_timeout=False,
                 )
+
+    # --------------------------------------------------------------------------
+    # 2. AUTHENTICATION & CREDENTIALS
+    # --------------------------------------------------------------------------
+    auth_patterns = [
+        "401", "unauthorized", "authentication", "api key", "apikey",
+        "invalid credentials", "token expired", "auth failed", "login required",
+        "permissiondeniederror: 401", "unauthenticated",
+    ]
+    if any(p in error_context for p in auth_patterns):
+        return FailureClassificationRecord(
+            record_id=record_id,
+            failure_category=FailureCategory.AUTHENTICATION.value,
+            affected_specialist=role,
+            work_item_id=work_item_id,
+            attempt_number=attempt_number,
+            available_artifacts=artifacts_list,
+            recovery_eligibility=False,
+            recovery_decision=RecoveryDecision.FAIL.value,
+            explanation="Authentication or credential failure detected. Automatic retry is strictly prohibited.",
+            error_evidence=sanitized_evidence,
+        )
+
+    # --------------------------------------------------------------------------
+    # 3. POLICY OR PERMISSION (Checked against system error context, not agent draft prose)
+    # --------------------------------------------------------------------------
+    policy_patterns = [
+        "403", "forbidden", "permission denied", "repository guard",
+        "read-only", "read_only", "prohibited path", "candidate not eligible",
+        "transition policy error", "transitionpolicyerror", "unsupported role",
+        "unsupportedroleerror", "privilege escalation", "access denied",
+        "cannot modify repository", "read-only constraints",
+        "repositorypolicy", "repository policy", "mutation_allowed",
+        "policyviolationerror", "policy violation", "not within authorized",
+        "denied under repositorypolicy", "scope under repositorypolicy",
+    ]
+    if any(p in error_context for p in policy_patterns):
+        return FailureClassificationRecord(
+            record_id=record_id,
+            failure_category=FailureCategory.POLICY_OR_PERMISSION.value,
+            affected_specialist=role,
+            work_item_id=work_item_id,
+            attempt_number=attempt_number,
+            available_artifacts=artifacts_list,
+            recovery_eligibility=False,
+            recovery_decision=RecoveryDecision.BLOCK.value,
+            explanation="Policy or permission boundary violation detected. Automatic retry is strictly prohibited to maintain safety invariants.",
+            error_evidence=sanitized_evidence,
+        )
 
     # --------------------------------------------------------------------------
     # 4. INVALID OUTPUT

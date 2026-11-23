@@ -216,6 +216,44 @@ class CEOActionType(str, Enum):
     DECLARE_BLOCKED = "DECLARE_BLOCKED"
 
 
+def extract_required_roles_from_constraints(constraints: List[str]) -> Optional[List[str]]:
+    """Extract structured Founder-required specialist roles from objective constraints.
+
+    Recognizes explicit declarations such as:
+    - 'required_roles: product, ux, developer'
+    - 'required specialist roles: product, ux, developer'
+    - 'founder required roles: product, ux, developer'
+    - 'founder workflow requirement: product -> ux -> developer'
+    - 'required specialists: product, ux, developer'
+    """
+    if not constraints:
+        return None
+
+    recognized = {"product", "ux", "developer", "research", "marketing", "qa"}
+    patterns = [
+        r"(?:founder\s+)?required\s+(?:specialist\s+)?roles?\s*:\s*([^\n;]+)",
+        r"require\s+(?:specialist\s+)?roles?\s*:\s*([^\n;]+)",
+        r"required\s+specialists?\s*:\s*([^\n;]+)",
+        r"mandatory\s+(?:specialist\s+)?roles?\s*:\s*([^\n;]+)",
+        r"founder\s+(?:workflow\s+)?requirement\s*:\s*([^\n;]+)",
+        r"founder\s+(?:explicitly\s+)?requires?\s*:\s*([^\n;]+)",
+    ]
+    extracted: List[str] = []
+    for c in constraints:
+        c_str = str(c).strip()
+        for pat in patterns:
+            m = re.search(pat, c_str, re.IGNORECASE)
+            if m:
+                raw_text = m.group(1)
+                tokens = re.split(r"[,->/]+", raw_text)
+                for tok in tokens:
+                    tok_clean = tok.strip().lower()
+                    # Filter out non-specialist governance words like ceo, founder, review
+                    if tok_clean in recognized and tok_clean not in extracted:
+                        extracted.append(tok_clean)
+    return extracted if extracted else None
+
+
 # -----------------------------------------------------------------------------
 # Domain Models
 # -----------------------------------------------------------------------------
@@ -230,6 +268,7 @@ class CompanyObjective:
     acceptance_criteria: List[str] = field(default_factory=list)
     target_repository: Optional[str] = None
     project_id: Optional[str] = None
+    required_roles: Optional[List[str]] = None
     created_at: str = field(default_factory=_utc_now_iso)
     created_by: str = "HUMAN"
 
@@ -238,6 +277,13 @@ class CompanyObjective:
             extracted = extract_acceptance_criteria_from_text(self.description)
             if extracted:
                 self.acceptance_criteria = extracted
+
+        if self.required_roles is not None:
+            self.required_roles = [str(r).strip().lower() for r in self.required_roles if str(r).strip()]
+        else:
+            extracted_roles = extract_required_roles_from_constraints(self.constraints)
+            if extracted_roles:
+                self.required_roles = extracted_roles
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize objective to dictionary."""
@@ -249,6 +295,7 @@ class CompanyObjective:
             "acceptance_criteria": list(self.acceptance_criteria),
             "target_repository": self.target_repository,
             "project_id": self.project_id,
+            "required_roles": list(self.required_roles) if self.required_roles is not None else None,
             "created_at": self.created_at,
             "created_by": self.created_by,
         }
@@ -267,6 +314,10 @@ class CompanyObjective:
         if not crit and data.get("description"):
             crit = extract_acceptance_criteria_from_text(data["description"])
 
+        req_roles = data.get("required_roles")
+        if req_roles is not None and isinstance(req_roles, list):
+            req_roles = [str(r).strip().lower() for r in req_roles if str(r).strip()]
+
         return cls(
             id=data["id"].strip(),
             title=data["title"].strip(),
@@ -275,6 +326,7 @@ class CompanyObjective:
             acceptance_criteria=crit,
             target_repository=data.get("target_repository"),
             project_id=data.get("project_id"),
+            required_roles=req_roles,
             created_at=data.get("created_at") or _utc_now_iso(),
             created_by=data.get("created_by") or "HUMAN",
         )
@@ -323,6 +375,7 @@ class CEOPlannedWorkItem:
     task_id: Optional[str] = None
     run_id: Optional[str] = None
     capability: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize work item to dictionary."""
@@ -340,6 +393,8 @@ class CEOPlannedWorkItem:
         }
         if self.capability is not None:
             d["capability"] = self.capability
+        if self.metadata:
+            d["metadata"] = dict(self.metadata)
         return d
 
     @classmethod
@@ -359,6 +414,7 @@ class CEOPlannedWorkItem:
 
         cap_raw = data.get("capability") or data.get("work_type")
         cap = str(cap_raw).strip().lower() if cap_raw and isinstance(cap_raw, str) else None
+        meta = dict(data.get("metadata", {})) if isinstance(data.get("metadata"), dict) else {}
 
         return cls(
             work_item_id=data["work_item_id"].strip(),
@@ -372,6 +428,7 @@ class CEOPlannedWorkItem:
             task_id=data.get("task_id"),
             run_id=data.get("run_id"),
             capability=cap,
+            metadata=meta,
         )
 
 
@@ -663,6 +720,9 @@ class CompanyRun:
     real_repo_apply_proposal_id: Optional[str] = None
     real_repo_apply_grant_id: Optional[str] = None
     real_repo_apply_result: Optional[Dict[str, Any]] = None
+    founder_design_approval_id: Optional[str] = None
+    founder_design_approval: Optional[Dict[str, Any]] = None
+    design_proposal_package_id: Optional[str] = None
     target_repository_verification: Optional[Dict[str, Any]] = None
     investigation_count: int = 0
     max_investigations: int = 2
@@ -819,6 +879,9 @@ class CompanyRun:
             "real_repo_apply_proposal_id": self.real_repo_apply_proposal_id,
             "real_repo_apply_grant_id": self.real_repo_apply_grant_id,
             "real_repo_apply_result": self.real_repo_apply_result,
+            "founder_design_approval_id": self.founder_design_approval_id,
+            "founder_design_approval": self.founder_design_approval,
+            "design_proposal_package_id": self.design_proposal_package_id,
             "target_repository_verification": self.target_repository_verification,
             "investigation_count": self.investigation_count,
             "max_investigations": self.max_investigations,
@@ -902,6 +965,9 @@ class CompanyRun:
             real_repo_apply_proposal_id=data.get("real_repo_apply_proposal_id"),
             real_repo_apply_grant_id=data.get("real_repo_apply_grant_id"),
             real_repo_apply_result=data.get("real_repo_apply_result"),
+            founder_design_approval_id=data.get("founder_design_approval_id"),
+            founder_design_approval=data.get("founder_design_approval"),
+            design_proposal_package_id=data.get("design_proposal_package_id"),
             target_repository_verification=data.get("target_repository_verification"),
             investigation_count=int(data.get("investigation_count", 0)),
             max_investigations=int(data.get("max_investigations", 2)),
