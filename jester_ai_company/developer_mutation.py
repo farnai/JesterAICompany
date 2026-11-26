@@ -153,6 +153,7 @@ def parse_and_validate_developer_mutation_result(
         raise DeveloperMutationParseError("Empty output received from Developer Agent.")
 
     cleaned = raw_output.strip()
+    json_str: Optional[str] = None  # DEF-014: always initialize before conditional extraction
 
     # 1. First check if outermost { ... } parses as valid JSON directly
     first_brace = cleaned.find("{")

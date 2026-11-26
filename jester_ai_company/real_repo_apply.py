@@ -606,12 +606,20 @@ def validate_candidate_eligibility(
             f"QA_EXECUTION_REPORT SHA mismatch: computed '{actual_qa_sha}' != recorded '{qa_execution_report_artifact.sha256}'."
         )
 
-    # 4. QA Final Verdict must be PASS
+    # 4. QA Final Verdict must be PASS AND at least 1 verification action executed (DEF-010)
     qa_meta = qa_execution_report_artifact.metadata or {}
     verdict = qa_meta.get("verdict")
     if verdict != QAFinalVerdict.PASS.value:
         raise CandidateNotEligibleError(
             f"Cannot apply candidate patch: QA execution verdict is '{verdict}', expected 'PASS'."
+        )
+    if "verification_actions_executed" in qa_meta and int(qa_meta.get("verification_actions_executed") or 0) <= 0:
+        raise CandidateNotEligibleError(
+            "Cannot apply candidate patch: QA_EXECUTION_REPORT executed 0 verification actions (DEF-010)."
+        )
+    if "execution_outcomes" in qa_meta and isinstance(qa_meta.get("execution_outcomes"), list) and len(qa_meta["execution_outcomes"]) == 0:
+        raise CandidateNotEligibleError(
+            "Cannot apply candidate patch: QA_EXECUTION_REPORT contains 0 execution_outcomes (DEF-010)."
         )
 
     # 5. Lineage match

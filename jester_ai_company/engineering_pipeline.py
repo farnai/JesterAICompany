@@ -777,6 +777,7 @@ class EngineeringPipelineAdapter:
                 project_id=proj.id,
                 code_patch_artifact_id=code_patch_art.id,
                 timeout=timeout,
+                target_repo_root=target_repo,
             )
             if qa_inspect_run.status != RunStatus.SUCCESS.value:
                 err_msg = f"QA inspection task failed: {qa_inspect_run.error}"

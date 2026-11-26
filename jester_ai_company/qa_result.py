@@ -50,6 +50,7 @@ class QACategoryStatus(str, Enum):
     """Status outcomes for explicit QA verification categories."""
     VERIFIED = "VERIFIED"
     UNVERIFIED = "UNVERIFIED"
+    NOT_EXECUTED = "NOT_EXECUTED"
     FAILED = "FAILED"
     NOT_APPLICABLE = "NOT_APPLICABLE"
 
@@ -495,40 +496,41 @@ def parse_and_validate_qa_result(raw_output: str) -> QAInspectionResult:
                     )
                 )
     else:
-        # Default deterministic category evaluation
-        is_ready = (status == QAInspectionStatus.READY_FOR_QA_EXECUTION.value)
+        # DEF-011: Static QA inspection (STEP 14A) MUST NEVER fabricate VERIFIED statuses
+        # prior to actual test execution in STEP 14B. All unexecuted categories default
+        # to NOT_EXECUTED with verified=False.
         cat_verifications = [
             QACategoryVerificationRecord(
                 category=QAVerificationCategory.FUNCTIONAL_CORRECTNESS.value,
-                status=QACategoryStatus.VERIFIED.value if is_ready else QACategoryStatus.UNVERIFIED.value,
-                verified=is_ready,
-                evidence="Functional test suites passed in test environment." if is_ready else "Functional checks pending or failed.",
+                status=QACategoryStatus.NOT_EXECUTED.value,
+                verified=False,
+                evidence="Static inspection only (STEP 14A); functional tests not yet executed in STEP 14B.",
             ),
             QACategoryVerificationRecord(
                 category=QAVerificationCategory.DESIGN_SPECIFICATION_COMPLIANCE.value,
-                status=QACategoryStatus.VERIFIED.value if is_ready else QACategoryStatus.UNVERIFIED.value,
-                verified=is_ready,
-                evidence="Implementation complies with verified UX specification." if is_ready else "Design specification compliance not verified.",
+                status=QACategoryStatus.NOT_EXECUTED.value,
+                verified=False,
+                evidence="Static inspection only (STEP 14A); design specification compliance pending execution verification.",
             ),
             QACategoryVerificationRecord(
                 category=QAVerificationCategory.VISUAL_FIDELITY.value,
-                status=QACategoryStatus.UNVERIFIED.value,
+                status=QACategoryStatus.NOT_EXECUTED.value,
                 verified=False,
                 evidence="Visual browser screenshots not compared in current step.",
                 notes="Requires browser preview visual comparison.",
             ),
             QACategoryVerificationRecord(
                 category=QAVerificationCategory.ACCESSIBILITY_AND_RESPONSIVENESS.value,
-                status=QACategoryStatus.UNVERIFIED.value,
+                status=QACategoryStatus.NOT_EXECUTED.value,
                 verified=False,
-                evidence="Responsive and accessibility audits unverified.",
+                evidence="Responsive and accessibility audits not executed.",
                 notes="Requires viewport and ARIA inspection.",
             ),
             QACategoryVerificationRecord(
                 category=QAVerificationCategory.AUTHORIZED_FILE_CHANGES.value,
-                status=QACategoryStatus.VERIFIED.value if is_ready else QACategoryStatus.UNVERIFIED.value,
-                verified=is_ready,
-                evidence="All file mutations conform strictly to ExecutionGrant authorized scope.",
+                status=QACategoryStatus.NOT_EXECUTED.value,
+                verified=False,
+                evidence="Static inspection only (STEP 14A); independent diff verification executes in STEP 14B.",
             ),
         ]
 

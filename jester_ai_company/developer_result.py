@@ -10,6 +10,7 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .core import Task
+from .execution_grant import ALLOWED_VERIFICATION_ACTION_TYPES, GrantValidationError, VerificationAction
 
 DEVELOPER_SCHEMA_VERSION: str = "1.0"
 ALLOWED_DEVELOPER_STATUSES: Set[str] = {"completed", "failed"}
@@ -68,6 +69,7 @@ class DeveloperTaskResult:
     dependencies: List[str] = field(default_factory=list)
     commands_to_run: List[ProposedCommand] = field(default_factory=list)
     verification_plan: List[str] = field(default_factory=list)
+    verification_actions: List[VerificationAction] = field(default_factory=list)
     risks: List[str] = field(default_factory=list)
     assumptions: List[str] = field(default_factory=list)
     open_questions: List[str] = field(default_factory=list)
@@ -83,6 +85,7 @@ class DeveloperTaskResult:
             "dependencies": list(self.dependencies),
             "commands_to_run": [c.to_dict() for c in self.commands_to_run],
             "verification_plan": list(self.verification_plan),
+            "verification_actions": [va.to_dict() for va in self.verification_actions],
             "risks": list(self.risks),
             "assumptions": list(self.assumptions),
             "open_questions": list(self.open_questions),
@@ -254,6 +257,28 @@ def parse_and_validate_developer_result(raw_text: str) -> DeveloperTaskResult:
             raise DeveloperResultValidationError(f"Verification plan at index {idx} must be a non-empty string.")
         verification_plan.append(vp.strip())
 
+    # 9b. Validate optional typed verification_actions (DEF-027)
+    raw_vas = data.get("verification_actions", [])
+    if not isinstance(raw_vas, list):
+        raise DeveloperResultValidationError("Field 'verification_actions' must be a list.")
+    verification_actions: List[VerificationAction] = []
+    for idx, va in enumerate(raw_vas):
+        if not isinstance(va, dict):
+            raise DeveloperResultValidationError(
+                f"Verification action at index {idx} must be an object with 'action_type' and 'target'."
+            )
+        act_type = str(va.get("action_type") or "").strip().lower()
+        target = str(va.get("target") or "").strip()
+        if act_type not in ALLOWED_VERIFICATION_ACTION_TYPES:
+            raise DeveloperResultValidationError(
+                f"Unsupported verification_actions[{idx}].action_type '{act_type}'. "
+                f"Allowed: {sorted(ALLOWED_VERIFICATION_ACTION_TYPES)}."
+            )
+        try:
+            verification_actions.append(VerificationAction(action_type=act_type, target=target))
+        except GrantValidationError as exc:
+            raise DeveloperResultValidationError(f"Invalid verification_actions[{idx}]: {exc}") from exc
+
     # 10. Validate risks
     risks_raw = data.get("risks", [])
     if not isinstance(risks_raw, list):
@@ -294,6 +319,7 @@ def parse_and_validate_developer_result(raw_text: str) -> DeveloperTaskResult:
         dependencies=dependencies,
         commands_to_run=commands_to_run,
         verification_plan=verification_plan,
+        verification_actions=verification_actions,
         risks=risks,
         assumptions=assumptions,
         open_questions=open_questions,

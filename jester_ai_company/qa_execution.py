@@ -537,7 +537,7 @@ def enforce_deterministic_verdict_constraints(
        - If any frontend verification failed or timed out -> FAIL.
        - Missing changed-file metadata must not silently bypass relevance checks.
     4. PASS is only allowed when:
-       - At least one action was authorized and executed, or no actions were recommended.
+       - At least one verification action was authorized AND actually executed (0 tests -> BLOCKED, DEF-010).
        - 100% of executed actions passed (status=PASS, exit_code=0).
        - Zero action audits were rejected.
        - Subsystem relevance requirements are satisfied.
@@ -547,7 +547,8 @@ def enforce_deterministic_verdict_constraints(
         a.decision != QAActionAuthorizationDecision.AUTHORIZED.value for a in action_audits
     )
     has_failing_executions = any(not vr.passed for vr in verification_results)
-    no_actions_executed = (len(verification_results) == 0 and len(action_audits) > 0)
+    # DEF-010: 0 executed verification actions MUST ALWAYS forbid PASS (even if action_audits is empty)
+    no_actions_executed = (len(verification_results) == 0)
 
     # Constraint 1: Execution failure -> must be FAIL
     if has_failing_executions:
@@ -562,13 +563,15 @@ def enforce_deterministic_verdict_constraints(
                 verdict_result.blocking_issues.append("One or more executed verification actions failed.")
         return verdict_result
 
-    # Constraint 2: Action rejected / missing / unavailable -> PASS forbidden, must be BLOCKED
+    # Constraint 2: Action rejected / missing / unavailable / 0 actions executed -> PASS forbidden, must be BLOCKED
     if has_rejected_actions or no_actions_executed:
         if verdict_result.verdict == QAFinalVerdict.PASS.value:
             reasons = []
             for a in action_audits:
                 if a.decision != QAActionAuthorizationDecision.AUTHORIZED.value:
                     reasons.append(f"{a.action_type}:{a.target} ({a.decision})")
+            if not reasons and no_actions_executed:
+                reasons.append("no verification actions were recommended or executed (0 tests executed)")
 
             verdict_result.deterministic_override_applied = True
             verdict_result.override_reason = (
@@ -576,7 +579,10 @@ def enforce_deterministic_verdict_constraints(
             )
             verdict_result.verdict = QAFinalVerdict.BLOCKED.value
             verdict_result.release_recommendation = "BLOCKED_ON_VERIFICATION_INFRASTRUCTURE"
-            if not any("unavailable" in issue.lower() or "missing" in issue.lower() for issue in verdict_result.blocking_issues):
+            if not any(
+                k in issue.lower() for issue in verdict_result.blocking_issues
+                for k in ("unavailable", "missing", "0 tests", "no verification actions")
+            ):
                 verdict_result.blocking_issues.append(
                     f"Required verification could not be executed: {', '.join(reasons)}"
                 )

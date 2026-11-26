@@ -720,7 +720,25 @@ def test_21_qa_verdict_schema_validation():
         "blocking_issues": [],
         "release_recommendation": "APPROVED_FOR_RELEASE",
     })
-    res = parse_and_validate_qa_verdict(valid_json, [], [])
+    passing_audit = [
+        QAExecutionActionAudit(
+            action_type="pytest",
+            target="tests/test_app.py",
+            purpose="Run app tests",
+            decision=QAActionAuthorizationDecision.AUTHORIZED.value,
+        )
+    ]
+    passing_exec = [
+        VerificationExecutionResult(
+            action=VerificationAction(action_type="pytest", target="tests/test_app.py"),
+            status=VerificationStatus.PASS.value,
+            exit_code=0,
+            stdout="1 passed",
+            stderr="",
+            duration_ms=20,
+        )
+    ]
+    res = parse_and_validate_qa_verdict(valid_json, passing_audit, passing_exec)
     assert res.verdict == "PASS"
     assert len(res.requirements_evaluations) == 1
 

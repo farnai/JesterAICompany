@@ -2894,6 +2894,7 @@ class CompanyService:
         project_id: Optional[str] = None,
         code_patch_artifact_id: Optional[str] = None,
         timeout: Optional[float] = None,
+        target_repo_root: Optional[Path] = None,
     ) -> TaskRun:
         """Execute an independent QA Agent inspection of a verified CODE_PATCH against upstream requirements (STEP 14A).
 
@@ -3129,17 +3130,61 @@ class CompanyService:
             "verification_evidence": veri_outcomes,
         }
 
-        # 6. Execute QA Agent under zero-mutation invariant
-        repo_state_before = self._get_repo_working_tree_state()
+        # 6. Execute QA Agent under zero-mutation invariant (DEF-017: route to target_repo_root!)
+        effective_repo = (Path(target_repo_root) if target_repo_root else self.repo_root).resolve()
+        repo_state_before = self._get_repo_working_tree_state(repo_path=effective_repo)
 
-        run = self._execute_qa_specialist_task(
-            task=task,
-            prompt=prompt,
-            lineage_metadata=lineage_metadata,
-            timeout=timeout,
+        qa_wt_session = None
+        qa_workspace_dir: Optional[Path] = None
+        is_real_runtime_exec = (
+            type(self.runtime) is AntigravityRuntime
+            and "execute" not in getattr(self.runtime, "__dict__", {})
         )
+        supports_iso = self._runtime_supports_isolation_kwargs()
+        if (
+            target_repo_root is not None
+            and (effective_repo / ".git").exists()
+            and (is_real_runtime_exec or supports_iso)
+        ):
+            qa_wt_manager = WorktreeManager(
+                repo_root=effective_repo,
+                worktrees_dir=Path(self.output_dir) / "worktrees",
+                protect_company_control=(effective_repo == self.repo_root.resolve()),
+            )
+            qa_wt_session = qa_wt_manager.create_planning_worktree(
+                base_commit_hash=base_commit,
+                session_id=f"qa_inspect_{task.id}_{uuid.uuid4().hex[:6]}",
+            )
+            qa_workspace_dir = qa_wt_session.worktree_path
+            wt_agent_md = qa_workspace_dir / ".agents" / "agents" / "qa" / "agent.md"
+            if not wt_agent_md.exists():
+                src_agent_md = self.repo_root / ".agents" / "agents" / "qa" / "agent.md"
+                if not src_agent_md.exists():
+                    src_agent_md = Path(__file__).resolve().parent.parent / ".agents" / "agents" / "qa" / "agent.md"
+                if src_agent_md.exists():
+                    wt_agent_md.parent.mkdir(parents=True, exist_ok=True)
+                    wt_agent_md.write_text(src_agent_md.read_text(encoding="utf-8"), encoding="utf-8")
+            install_readonly_policy_hook(qa_workspace_dir, protect_company_control=True)
 
-        repo_state_after = self._get_repo_working_tree_state()
+        try:
+            run = self._execute_qa_specialist_task(
+                task=task,
+                prompt=prompt,
+                lineage_metadata=lineage_metadata,
+                timeout=timeout,
+                workspace_dir=qa_workspace_dir,
+            )
+            if qa_wt_session is not None:
+                qa_diff = qa_wt_session.capture_diff()
+                if not qa_diff.is_empty:
+                    raise ExecutionError(
+                        f"Unauthorized mutation detected in QA 14A worktree during task '{task.id}': {qa_diff.changed_files}"
+                    )
+        finally:
+            if qa_wt_session is not None:
+                qa_wt_session.remove()
+
+        repo_state_after = self._get_repo_working_tree_state(repo_path=effective_repo)
         if repo_state_before != repo_state_after:
             raise ExecutionError(f"Repository mutation detected during QA inspection task '{task.id}'!")
 
@@ -3151,8 +3196,9 @@ class CompanyService:
         prompt: str,
         lineage_metadata: Dict[str, Any],
         timeout: Optional[float] = None,
+        workspace_dir: Optional[Path] = None,
     ) -> TaskRun:
-        """Internal execution lifecycle for QA Agent inspection (STEP 14A + Stage 0B-polish DEF-006)."""
+        """Internal execution lifecycle for QA Agent inspection (STEP 14A + Stage 0B/1 DEF-006/017)."""
         run = task.create_run()
         run.status = RunStatus.RUNNING.value
 
@@ -3160,6 +3206,8 @@ class CompanyService:
             agent_name="qa",
             prompt=prompt,
             timeout=timeout,
+            workspace_dir=workspace_dir,
+            env=sanitize_execution_environment() if workspace_dir is not None else None,
         )
 
         # 1. Handle runtime failures
@@ -3230,6 +3278,7 @@ class CompanyService:
         qa_report_artifact_id: Optional[str] = None,
         timeout: Optional[float] = None,
         target_repo_root: Optional[Path] = None,
+        verification_timeout: Optional[float] = None,
     ) -> TaskRun:
         """Execute independent QA verification execution against a verified CODE_PATCH (STEP 14B).
 
@@ -3524,14 +3573,22 @@ class CompanyService:
                 worktree_path=session.worktree_path,
             )
 
-            # 11. Application-owned test execution
+            # 11. Application-owned test execution (DEF-017: configurable verification timeout, no hardcoded 30s)
             sanitized_env = sanitize_execution_environment()
             verification_results: List[VerificationExecutionResult] = []
             for act in authorized_actions:
+                if verification_timeout is not None:
+                    act_timeout = float(verification_timeout)
+                elif timeout is not None:
+                    act_timeout = float(timeout)
+                elif act.action_type in ("frontend_build", "npm_build"):
+                    act_timeout = 180.0
+                else:
+                    act_timeout = 60.0
                 vr = execute_verification_action(
                     action=act,
                     worktree_path=session.worktree_path,
-                    timeout=30.0,
+                    timeout=act_timeout,
                     sanitized_env=sanitized_env,
                 )
                 verification_results.append(vr)
@@ -3622,6 +3679,7 @@ class CompanyService:
                 "worktree_diff_sha256": diff_res.diff_sha256,
                 "qa_execution_actions": [a.to_dict() for a in authorized_actions],
                 "action_audits": [a.to_dict() for a in action_audits],
+                "verification_actions_executed": len(verification_results),
             }
 
             try:
@@ -4262,6 +4320,7 @@ class CompanyService:
                     project_id=proj.id,
                     code_patch_artifact_id=repaired_patch_art.id,
                     timeout=timeout,
+                    target_repo_root=target_repo,
                 )
                 if qa_inspect_run.status != RunStatus.SUCCESS.value:
                     final_status = RepairWorkflowStatus.QA_REEXECUTION_FAILED.value
@@ -4698,6 +4757,24 @@ class CompanyService:
             registry=self.authority_registry,
             authenticator=self.founder_authenticator,
         )
+
+        # DEF-010: Fail closed if referenced QA_EXECUTION_REPORT executed 0 verification actions
+        qa_exec_lineage = self.find_artifact(protected_grant.qa_execution_report_artifact_id)
+        if qa_exec_lineage:
+            _, _, qa_exec_art_obj = qa_exec_lineage
+            qa_exec_meta = qa_exec_art_obj.metadata or {}
+            if qa_exec_meta.get("verdict") != QAFinalVerdict.PASS.value:
+                raise CandidateNotEligibleError(
+                    f"Cannot execute protected apply: QA_EXECUTION_REPORT verdict is '{qa_exec_meta.get('verdict')}', expected 'PASS'."
+                )
+            if "verification_actions_executed" in qa_exec_meta and int(qa_exec_meta.get("verification_actions_executed") or 0) <= 0:
+                raise CandidateNotEligibleError(
+                    "Cannot execute protected apply: QA_EXECUTION_REPORT recorded 0 executed verification actions (DEF-010)."
+                )
+            if "execution_outcomes" in qa_exec_meta and isinstance(qa_exec_meta.get("execution_outcomes"), list) and len(qa_exec_meta["execution_outcomes"]) == 0:
+                raise CandidateNotEligibleError(
+                    "Cannot execute protected apply: QA_EXECUTION_REPORT contains 0 execution_outcomes (DEF-010)."
+                )
 
         # Resolve patch bytes & verify SHA-256 + file scope before applying
         patch_lineage = self.find_artifact(protected_grant.code_patch_artifact_id)
@@ -6219,6 +6296,9 @@ class CompanyService:
                 spec_dur=spec_dur,
             )
 
+        # DEF-014: Compute spec_dur BEFORE artifact integrity checks so missing/tampered
+        # artifact failure branches never raise UnboundLocalError.
+        spec_dur = max(0.001, round(time.perf_counter() - spec_mono_start, 3))
         verified_artifact_refs: List[Dict[str, Any]] = []
         for art in task_run.artifacts:
             art_path = _resolve_artifact_file_path(self.output_dir, art)

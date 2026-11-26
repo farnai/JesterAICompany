@@ -287,7 +287,9 @@ def classify_specialist_failure(
         ]
         is_exploration = any(p in combined for p in exploration_patterns)
 
-        if is_exploration or attempt_number == 1:
+        # DEF-027: Only exploration-pattern timeouts trigger REPLAN; generic transient timeouts
+        # reach the RETRY branch below when within retry budget.
+        if is_exploration:
             # Excessive exploration requires bounded replanning, NEVER identical retry!
             if attempt_number <= max_retries:
                 return FailureClassificationRecord(
@@ -615,20 +617,31 @@ def evaluate_acceptance_criteria(
     if not mandatory:
         return True, [], []
 
-    satisfied_set = set(satisfied_criteria or [])
+    satisfied_set = {s.strip() for s in (satisfied_criteria or []) if isinstance(s, str) and s.strip()}
     artifacts = list(preserved_artifacts or [])
-    art_names = {str(a.get("name", "")).lower() for a in artifacts}
-    art_paths = {str(a.get("path", "")).lower() for a in artifacts}
+    verified_art_names: Set[str] = set()
+    for a in artifacts:
+        if not isinstance(a, dict):
+            continue
+        name = str(a.get("name") or "").strip().lower()
+        sha = a.get("sha256")
+        # DEF-027: Ignore artifacts with explicitly empty sha256 or trivial <=3-char names
+        if len(name) > 3 and (sha is None or (isinstance(sha, str) and sha.strip() != "")):
+            verified_art_names.add(name)
 
     met: List[str] = []
     unmet: List[str] = []
 
     for crit in mandatory:
-        crit_lower = crit.lower()
-        if crit in satisfied_set:
+        crit_clean = crit.strip()
+        crit_lower = crit_clean.lower()
+        if crit_clean in satisfied_set:
             met.append(crit)
-        # Check if deliverable name is referenced in criteria
-        elif any(name in crit_lower for name in art_names if len(name) > 3):
+        # DEF-027: Exact token/boundary filename match (not loose substring like 'app' in 'apple')
+        elif any(
+            re.search(rf"(?<![a-z0-9_.-]){re.escape(name)}(?![a-z0-9_.-])", crit_lower)
+            for name in verified_art_names
+        ):
             met.append(crit)
         else:
             unmet.append(crit)

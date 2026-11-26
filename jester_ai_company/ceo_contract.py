@@ -422,12 +422,7 @@ def parse_and_validate_ceo_plan(
                 raise PlanValidationError(
                     f"Work item '{clean_id}' specifies role '{clean_role}' which was omitted in CEO team selection."
                 )
-            elif sel_roles and clean_role not in [str(r).lower() for r in sel_roles]:
-                sel_roles.append(clean_role)
-                if hasattr(team_selection, "actual_specialist_count"):
-                    team_selection.actual_specialist_count = len(sel_roles)
-                elif isinstance(team_selection, dict):
-                    team_selection["actual_specialist_count"] = len(sel_roles)
+            # DEF-021: Never mutate team_selection.selected_roles or actual_specialist_count in-place!
 
         objective_text = item_data.get("objective")
         if not objective_text or not isinstance(objective_text, str) or not objective_text.strip():
@@ -476,20 +471,21 @@ def parse_and_validate_ceo_plan(
         str(con).strip() for con in data.get("constraints", []) if str(con).strip()
     ]
 
-    task_category = data.get("task_category")
-    allow_direct_developer = bool(data.get("allow_direct_developer", False))
+    # DEF-021: NEVER allow untrusted CEO plan JSON to self-authorize direct developer execution
+    # or override task_category authorization. Both MUST derive strictly from application-trusted
+    # team_selection policy (or remain False/None when team_selection is absent).
+    task_category = None
+    allow_direct_developer = False
     if team_selection is not None:
         sel_cat = getattr(team_selection, "task_category", None)
         sel_direct = getattr(team_selection, "allow_direct_developer", False)
         if isinstance(team_selection, dict):
             sel_cat = team_selection.get("task_category")
             sel_direct = bool(team_selection.get("allow_direct_developer", False))
-        if not task_category and sel_cat:
+        if sel_cat:
             task_category = sel_cat
-        if sel_direct:
+        if sel_direct or sel_cat in ("BUG_FIX", "SECURITY_SENSITIVE"):
             allow_direct_developer = True
-    elif task_category in ("BUG_FIX", "SECURITY_SENSITIVE"):
-        allow_direct_developer = True
 
     if getattr(objective, "required_roles", None):
         req_norm = [str(r).lower() for r in objective.required_roles]
