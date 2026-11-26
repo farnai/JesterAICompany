@@ -1,0 +1,13 @@
+[project]
+name = "jester-ai-company"
+version = "0.1.0"
+description = "JesterAICompany multi-agent software development orchestration engine"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-m 'not live'"
+markers = [
+    "live: tests that invoke live agy CLI models or depend on external Desktop/Jester repository state",
+]

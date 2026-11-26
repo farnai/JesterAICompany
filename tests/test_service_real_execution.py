@@ -20,6 +20,8 @@ from pathlib import Path
 import tempfile
 import pytest
 
+pytestmark = pytest.mark.live
+
 from jester_ai_company.core import RunStatus, TaskStatus
 from jester_ai_company.service import CompanyService
 

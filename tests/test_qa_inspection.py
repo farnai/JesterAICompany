@@ -1034,6 +1034,7 @@ def test_matrix_V_qa_inspection_does_not_mutate_source(monkeypatch):
 # Live Proof: Real QA Agent Execution (agy --agent qa)
 # ==============================================================================
 
+@pytest.mark.live
 def test_live_qa_agent_inspection_detects_coverage_gap():
     """Live proof: Real QA Agent executes via agy --agent qa and detects requirement gap.
 

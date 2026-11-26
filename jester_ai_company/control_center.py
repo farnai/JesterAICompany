@@ -14,15 +14,19 @@ Architecture:
 """
 
 from datetime import datetime, timezone
-import json
+import hmac
+import html
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import logging
 from pathlib import Path
+import secrets
 import socket
 import sys
 import threading
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 import urllib.parse
 
 logger = logging.getLogger(__name__)
@@ -276,58 +280,387 @@ def enrich_company_run_data(run: CompanyRun, service: CompanyService) -> Dict[st
     return run_dict
 
 
+SESSION_COOKIE_NAME = "jester_cc_session"
+AUTH_HEADER_NAME = "X-Jester-Control-Token"
+CSRF_HEADER_NAME = "X-Jester-CSRF-Token"
+_LOOPBACK_HOSTS: FrozenSet[str] = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+
+def _build_allowed_origins(port: int, extra_origins: Optional[Iterable[str]] = None) -> FrozenSet[str]:
+    """Compute strict loopback Origin allowlist for a bound Control Center port. Never allows '*'."""
+    origins: Set[str] = {
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+        f"http://[::1]:{port}",
+    }
+    if extra_origins:
+        for orig in extra_origins:
+            cleaned = str(orig).strip().rstrip("/")
+            if cleaned and cleaned != "*":
+                parsed = urllib.parse.urlparse(cleaned)
+                if parsed.scheme in ("http", "https") and parsed.hostname in ("127.0.0.1", "localhost", "::1"):
+                    origins.add(f"{parsed.scheme}://{parsed.netloc}")
+    return frozenset(origins)
+
+
+def _decode_path_fully(raw_path: str, max_rounds: int = 3) -> str:
+    """Iteratively percent-decode a URL path to detect single- or multi-encoded traversal payloads."""
+    current = raw_path
+    for _ in range(max_rounds):
+        decoded = urllib.parse.unquote(current)
+        if decoded == current:
+            break
+        current = decoded
+    return current
+
+
+def _has_artifact_traversal_tokens(raw_value: str) -> bool:
+    """Validate artifact relative path (allows benign Windows relative subpaths like '00_context\\file.json'
+    while strictly rejecting UNC paths, drive letters, leading slashes, null bytes, and '..' segments)."""
+    if not raw_value or "\x00" in raw_value:
+        return True
+    decoded = _decode_path_fully(raw_value)
+    for candidate in (raw_value, decoded):
+        stripped = candidate.strip()
+        if not stripped or "\x00" in stripped or stripped.startswith(("/", "\\")) or ":" in stripped:
+            return True
+        norm = stripped.replace("\\", "/")
+        if norm.startswith("/") or any(seg == ".." for seg in norm.split("/")):
+            return True
+    return False
+
+
+def _has_path_traversal_tokens(raw_value: str) -> bool:
+    """Return True if raw or percent-decoded path contains traversal, backslash, drive, or null-byte tokens."""
+    if not raw_value or "\x00" in raw_value:
+        return True
+    decoded = _decode_path_fully(raw_value)
+    if "\x00" in decoded or "\\" in raw_value or "\\" in decoded:
+        return True
+    for candidate in (raw_value, decoded):
+        parts = [seg for seg in candidate.split("/") if seg]
+        if any(seg == ".." for seg in parts):
+            return True
+    return False
+
+
+def _resolve_confined_static_file(raw_path: str, allowed_roots: Tuple[Path, ...]) -> Tuple[Optional[Path], bool]:
+    """Safely resolve a static asset path strictly inside allowed_roots (DEF-002).
+
+    Returns:
+        (resolved_file_or_None, is_forbidden_traversal)
+    """
+    if _has_path_traversal_tokens(raw_path):
+        return None, True
+
+    decoded = _decode_path_fully(raw_path)
+    rel_str = decoded.lstrip("/")
+    if not rel_str or ":" in rel_str:
+        return None, True
+
+    rel_path = Path(rel_str)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        return None, True
+
+    for base in allowed_roots:
+        base_resolved = base.resolve()
+        candidate = base_resolved / rel_path
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+
+        if not resolved.is_relative_to(base_resolved):
+            return None, True
+
+        if resolved.is_file():
+            return resolved, False
+
+    return None, False
+
+
 class ControlCenterHandler(BaseHTTPRequestHandler):
     """HTTP Request Handler serving the Control Center UI and REST API."""
 
     service: CompanyService = None  # Injected by server factory
+    auth_token: str = ""  # Ephemeral per-server secret injected by server factory
+    csrf_token: str = ""  # Ephemeral per-server CSRF secret injected by server factory
+    allowed_origins: FrozenSet[str] = frozenset()
+    bound_port: int = 8500
 
     def log_message(self, format: str, *args: Any) -> None:
         """Suppress default stderr request logging in test/silent modes if needed."""
-        # Can be overridden or kept clean
         sys.stderr.write(f"[ControlCenter] {self.address_string()} - {format % args}\n")
 
+    def _get_validated_cors_origin(self) -> Optional[str]:
+        """Return exact Origin header if and only if it is in allowed_origins."""
+        origin = (self.headers.get("Origin") or "").strip().rstrip("/")
+        if origin and origin in self.allowed_origins:
+            return origin
+        return None
+
+    def _send_security_headers(self) -> None:
+        """Attach baseline browser security headers and strict (non-wildcard) CORS if allowed."""
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "same-origin")
+        valid_origin = self._get_validated_cors_origin()
+        if valid_origin:
+            self.send_header("Access-Control-Allow-Origin", valid_origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                f"Content-Type, Authorization, {AUTH_HEADER_NAME}, {CSRF_HEADER_NAME}",
+            )
+            self.send_header("Vary", "Origin")
+
     def _send_json(self, status_code: int, data: Any) -> None:
-        """Helper to send a JSON response with CORS and cache-control headers."""
+        """Helper to send a JSON response with strict security headers (zero wildcard CORS)."""
         body = json.dumps(data, indent=2).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self._send_security_headers()
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_html(self, html_content: str) -> None:
-        """Helper to send an HTML response."""
-        body = html_content.encode("utf-8")
+    def _send_html(self, html_content: str, set_session_cookie: bool = False) -> None:
+        """Helper to send an HTML response with dynamic CSRF meta tag and HttpOnly session cookie."""
+        rendered = html_content
+        if set_session_cookie and self.csrf_token:
+            meta_tag = (
+                f'    <meta name="jester-csrf-token" '
+                f'content="{html.escape(self.csrf_token, quote=True)}" />\n'
+            )
+            if "</head>" in rendered:
+                rendered = rendered.replace("</head>", f"{meta_tag}  </head>", 1)
+            else:
+                rendered = meta_tag + rendered
+
+        body = rendered.encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._send_security_headers()
+        if set_session_cookie and self.auth_token:
+            self.send_header(
+                "Set-Cookie",
+                f"{SESSION_COOKIE_NAME}={self.auth_token}; HttpOnly; SameSite=Strict; Path=/",
+            )
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(body)
 
     def _send_text(self, text_content: str, status_code: int = HTTPStatus.OK) -> None:
-        """Helper to send a plain text response."""
+        """Helper to send a plain text response with strict security headers."""
         body = text_content.encode("utf-8", errors="replace")
         self.send_response(status_code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._send_security_headers()
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_error_json(self, status_code: int, message: str) -> None:
+    def _drain_unread_request_body(self) -> None:
+        """Safely drain bounded unread POST/PUT/DELETE request body before returning early errors.
+
+        Prevents Windows TCP RST (WinError 10053) when rejecting unauthenticated or
+        forbidden requests that sent a JSON payload before the handler called _read_json_body().
+        """
+        if getattr(self, "_body_drained", False):
+            return
+        self._body_drained = True
+        if getattr(self, "command", "") not in ("POST", "PUT", "PATCH", "DELETE"):
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            return
+        if content_length <= 0:
+            return
+        to_read = min(content_length, 1_048_576)
+        try:
+            self.rfile.read(to_read)
+        except OSError:
+            pass
+
+    def _send_error_json(self, status_code: int, message: str, code: Optional[str] = None) -> None:
         """Send standard structured JSON error."""
-        self._send_json(status_code, {"error": message, "status": "error"})
+        self._drain_unread_request_body()
+        payload: Dict[str, Any] = {"error": message, "status": "error"}
+        if code:
+            payload["code"] = code
+        self._send_json(status_code, payload)
+
+    # --------------------------------------------------------------------------
+    # Stage 0A Independent Security Gates (Host, Origin/Fetch, Auth, CSRF)
+    # --------------------------------------------------------------------------
+
+    def _validate_host(self) -> bool:
+        """Verify Host header targets loopback only (anti-DNS-rebinding)."""
+        raw_host = (self.headers.get("Host") or "").strip()
+        if not raw_host:
+            return True  # HTTP/1.0 or minimal local clients without Host header
+        parsed = urllib.parse.urlparse(f"http://{raw_host}")
+        hostname = (parsed.hostname or "").lower()
+        if hostname not in _LOOPBACK_HOSTS:
+            self._send_error_json(
+                HTTPStatus.FORBIDDEN,
+                f"Rejected non-loopback Host header: '{raw_host}'.",
+                code="INVALID_HOST",
+            )
+            return False
+        if parsed.port is not None and self.bound_port and parsed.port != self.bound_port:
+            # Permit Vite dev proxy or explicit allowed loopback origin ports only if configured
+            origin_candidate = f"http://{hostname}:{parsed.port}"
+            if origin_candidate not in self.allowed_origins:
+                self._send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    f"Host port mismatch: '{raw_host}'.",
+                    code="INVALID_HOST_PORT",
+                )
+                return False
+        return True
+
+    def _validate_origin_and_fetch_metadata(self, is_api: bool, is_mutation: bool) -> bool:
+        """Independently enforce Origin allowlist, Sec-Fetch-Site, and Referer checks."""
+        origin = (self.headers.get("Origin") or "").strip().rstrip("/")
+        if origin:
+            if origin not in self.allowed_origins:
+                self._send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    f"Cross-origin request blocked: origin '{origin}' is not allowed.",
+                    code="ORIGIN_NOT_ALLOWED",
+                )
+                return False
+
+        sec_fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if is_api and sec_fetch_site == "cross-site":
+            self._send_error_json(
+                HTTPStatus.FORBIDDEN,
+                "Cross-site fetch metadata rejected for Control Center API.",
+                code="CROSS_SITE_REQUEST_BLOCKED",
+            )
+            return False
+
+        if is_mutation and not origin:
+            referer = (self.headers.get("Referer") or "").strip()
+            if referer:
+                ref_parsed = urllib.parse.urlparse(referer)
+                ref_origin = f"{ref_parsed.scheme}://{ref_parsed.netloc}".rstrip("/")
+                if ref_origin not in self.allowed_origins:
+                    self._send_error_json(
+                        HTTPStatus.FORBIDDEN,
+                        f"Cross-origin Referer blocked for mutation: '{ref_origin}'.",
+                        code="REFERER_NOT_ALLOWED",
+                    )
+                    return False
+
+        return True
+
+    def _authenticate_request(self) -> Optional[str]:
+        """Authenticate local Control Center requests via Bearer/header token or HttpOnly session cookie.
+
+        Returns:
+            "header" or "cookie" if authenticated; None after sending HTTP 401.
+        """
+        expected = self.auth_token
+        if not expected:
+            self._send_error_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "Control Center authentication token is not initialized.",
+                code="AUTH_NOT_CONFIGURED",
+            )
+            return None
+
+        # 1. Explicit Authorization: Bearer <token> or X-Jester-Control-Token: <token>
+        auth_header = (self.headers.get("Authorization") or "").strip()
+        if auth_header.lower().startswith("bearer "):
+            presented = auth_header[7:].strip()
+            if presented and hmac.compare_digest(presented, expected):
+                return "header"
+            self._send_error_json(
+                HTTPStatus.UNAUTHORIZED,
+                "Invalid Control Center Bearer token.",
+                code="AUTHENTICATION_REQUIRED",
+            )
+            return None
+
+        ctrl_token = (self.headers.get(AUTH_HEADER_NAME) or "").strip()
+        if ctrl_token:
+            if hmac.compare_digest(ctrl_token, expected):
+                return "header"
+            self._send_error_json(
+                HTTPStatus.UNAUTHORIZED,
+                f"Invalid {AUTH_HEADER_NAME} header.",
+                code="AUTHENTICATION_REQUIRED",
+            )
+            return None
+
+        # 2. HttpOnly SameSite=Strict session cookie set on same-origin HTML load
+        cookie_header = self.headers.get("Cookie") or ""
+        if cookie_header:
+            cookie: SimpleCookie = SimpleCookie()
+            try:
+                cookie.load(cookie_header)
+            except Exception:
+                cookie = SimpleCookie()
+            if SESSION_COOKIE_NAME in cookie:
+                cookie_val = cookie[SESSION_COOKIE_NAME].value.strip()
+                if cookie_val and hmac.compare_digest(cookie_val, expected):
+                    return "cookie"
+
+        self._send_error_json(
+            HTTPStatus.UNAUTHORIZED,
+            "Authentication required to access Control Center API.",
+            code="AUTHENTICATION_REQUIRED",
+        )
+        return None
+
+    def _validate_csrf(self, auth_method: str) -> bool:
+        """Independently enforce CSRF resistance on state-changing requests.
+
+        1. Rejects non-JSON Content-Type (blocks simple HTML form / text-plain CSRF).
+        2. Requires valid X-Jester-CSRF-Token header for cookie-authenticated mutations.
+        """
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if content_type != "application/json":
+            self._send_error_json(
+                HTTPStatus.FORBIDDEN,
+                f"CSRF protection requires 'Content-Type: application/json', got '{content_type or 'missing'}'.",
+                code="CSRF_CONTENT_TYPE_INVALID",
+            )
+            return False
+
+        if auth_method == "cookie":
+            presented_csrf = (self.headers.get(CSRF_HEADER_NAME) or "").strip()
+            if not presented_csrf or not self.csrf_token or not hmac.compare_digest(presented_csrf, self.csrf_token):
+                self._send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    f"Missing or invalid {CSRF_HEADER_NAME} header for cookie-authenticated mutation.",
+                    code="CSRF_TOKEN_INVALID",
+                )
+                return False
+
+        return True
 
     def do_OPTIONS(self) -> None:
-        """Handle CORS pre-flight requests."""
+        """Handle CORS pre-flight requests strictly without wildcard '*'."""
+        if not self._validate_host():
+            return
+        origin = (self.headers.get("Origin") or "").strip().rstrip("/")
+        if origin and origin not in self.allowed_origins:
+            self._send_error_json(
+                HTTPStatus.FORBIDDEN,
+                f"CORS preflight rejected for disallowed origin '{origin}'.",
+                code="ORIGIN_NOT_ALLOWED",
+            )
+            return
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self._send_security_headers()
         self.end_headers()
 
     # --------------------------------------------------------------------------
@@ -336,58 +669,87 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         """Handle GET requests for static UI and API endpoints."""
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path.rstrip("/")
-        query = urllib.parse.parse_qs(parsed.query)
+        if not self._validate_host():
+            return
 
-        # 1. UI Root (React SPA if built, fallback to dashboard.html)
+        parsed = urllib.parse.urlparse(self.path)
+        raw_path = parsed.path
+        path = raw_path.rstrip("/")
+        query = urllib.parse.parse_qs(parsed.query)
+        is_api = path.startswith("/api/") or path == "/api"
+
+        if not self._validate_origin_and_fetch_metadata(is_api=is_api, is_mutation=False):
+            return
+
+        # 1. UI Root (React SPA if built, fallback to dashboard.html) — issues local HttpOnly cookie + dynamic CSRF meta
         if path in ("", "/index.html"):
             dist_index = FRONTEND_DIST_DIR / "index.html"
             if dist_index.is_file():
                 content = dist_index.read_text(encoding="utf-8")
-                self._send_html(content)
+                self._send_html(content, set_session_cookie=True)
             elif DASHBOARD_HTML_PATH.is_file():
                 content = DASHBOARD_HTML_PATH.read_text(encoding="utf-8")
-                self._send_html(content)
+                self._send_html(content, set_session_cookie=True)
             else:
-                self._send_html("<h1>Jester AI Company Control Center</h1><p>Dashboard HTML not found.</p>")
+                self._send_html(
+                    "<h1>Jester AI Company Control Center</h1><p>Dashboard HTML not found.</p>",
+                    set_session_cookie=True,
+                )
             return
 
-        # 1b. Static Assets (/assets/*, /portraits/* or root public files)
-        if path.startswith(("/assets/", "/portraits/")) or path in ("/office_backdrop.jpg", "/favicon.svg"):
-            asset_file = FRONTEND_DIST_DIR / path.lstrip("/")
-            if not asset_file.is_file():
-                asset_file = FRONTEND_PUBLIC_DIR / path.lstrip("/")
-            if asset_file.is_file():
-                suffix = asset_file.suffix.lower()
-                content_types = {
-                    ".js": "application/javascript; charset=utf-8",
-                    ".css": "text/css; charset=utf-8",
-                    ".svg": "image/svg+xml",
-                    ".png": "image/png",
-                    ".jpg": "image/jpeg",
-                    ".jpeg": "image/jpeg",
-                    ".webp": "image/webp",
-                    ".ico": "image/x-icon",
-                    ".json": "application/json; charset=utf-8",
-                }
-                ctype = content_types.get(suffix, "application/octet-stream")
-                data = asset_file.read_bytes()
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Content-Length", str(len(data)))
-                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
-                self.end_headers()
-                self.wfile.write(data)
+        # 1b. Static Assets (/assets/*, /portraits/* or root public files) with strict confinement (DEF-002)
+        if raw_path.startswith(("/assets/", "/portraits/")) or path in ("/office_backdrop.jpg", "/favicon.svg"):
+            asset_file, is_forbidden = _resolve_confined_static_file(
+                raw_path,
+                (FRONTEND_DIST_DIR, FRONTEND_PUBLIC_DIR),
+            )
+            if is_forbidden:
+                self._send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    "Path traversal or out-of-bounds static file access denied.",
+                    code="PATH_TRAVERSAL_BLOCKED",
+                )
+                return
+            if asset_file is None:
+                self._send_error_json(HTTPStatus.NOT_FOUND, f"Static asset not found: {raw_path}")
                 return
 
-        # 2. Health Check
+            suffix = asset_file.suffix.lower()
+            content_types = {
+                ".js": "application/javascript; charset=utf-8",
+                ".css": "text/css; charset=utf-8",
+                ".svg": "image/svg+xml",
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+                ".ico": "image/x-icon",
+                ".json": "application/json; charset=utf-8",
+            }
+            ctype = content_types.get(suffix, "application/octet-stream")
+            data = asset_file.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self._send_security_headers()
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        # 2. Health Check (minimal non-sensitive liveness endpoint)
         if path == "/api/health":
             self._send_json(HTTPStatus.OK, {
                 "status": "OPERATIONAL",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "auth_required": True,
             })
             return
+
+        # All other /api/* read endpoints expose sensitive operational/artifact/proposal data -> require auth!
+        if is_api:
+            if self._authenticate_request() is None:
+                return
 
         # 3. Company Overview
         if path == "/api/overview":
@@ -484,12 +846,23 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, artifacts)
             return
 
-        # 11. Artifact Content Reader
+        # 11. Artifact Content Reader (strictly confined to output_dir — DEF-003)
         if path == "/api/artifacts/content":
             art_path = query.get("path", [None])[0]
             run_id = query.get("run_id", [None])[0]
             if not art_path:
                 self._send_error_json(HTTPStatus.BAD_REQUEST, "Missing required query parameter 'path'.")
+                return
+
+            if (
+                _has_artifact_traversal_tokens(art_path)
+                or (run_id is not None and (_has_path_traversal_tokens(run_id) or "/" in run_id or ":" in run_id))
+            ):
+                self._send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    "Forbidden artifact path: traversal or out-of-bounds reference denied.",
+                    code="ARTIFACT_PATH_FORBIDDEN",
+                )
                 return
 
             content = self.service.get_artifact_content(art_path, run_id=run_id)
@@ -658,17 +1031,34 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         """Handle POST requests for controlled project, task, and execution operations."""
+        if not self._validate_host():
+            return
+
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path.rstrip("/")
 
+        if not self._validate_origin_and_fetch_metadata(is_api=True, is_mutation=True):
+            return
+
+        auth_method = self._authenticate_request()
+        if auth_method is None:
+            return
+
+        if not self._validate_csrf(auth_method):
+            return
+
         # Parse request body
         content_length = int(self.headers.get("Content-Length", 0))
+        self._body_drained = True
         post_data = self.rfile.read(content_length) if content_length > 0 else b"{}"
 
         try:
             payload = json.loads(post_data.decode("utf-8")) if post_data else {}
         except json.JSONDecodeError:
             self._send_error_json(HTTPStatus.BAD_REQUEST, "Invalid JSON payload.")
+            return
+        if not isinstance(payload, dict):
+            self._send_error_json(HTTPStatus.BAD_REQUEST, "JSON body must be an object.")
             return
 
         # 1. Create Project
@@ -725,20 +1115,26 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                 self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
             return
 
-        # 3. Execute Task: POST /api/tasks/{task_id}/execute
+        # 3. Execute Task: POST /api/tasks/{task_id}/execute (arbitrary verify_cmd disabled — DEF-001)
         if path.startswith("/api/tasks/") and path.endswith("/execute"):
             parts = path.split("/")
             # ["", "api", "tasks", "<task_id>", "execute"]
             if len(parts) == 5:
                 task_id = parts[3]
-                verify_cmd = payload.get("verify_cmd")
+                if "verify_cmd" in payload and payload.get("verify_cmd") is not None:
+                    self._send_error_json(
+                        HTTPStatus.BAD_REQUEST,
+                        "Arbitrary 'verify_cmd' execution via HTTP is disabled for security (DEF-001).",
+                        code="VERIFY_CMD_DISABLED",
+                    )
+                    return
                 mock = payload.get("mock", True)  # Default to mock=True in UI for safety
                 dry_run = payload.get("dry_run", False)
 
                 try:
                     run = self.service.execute_task(
                         task_id=task_id,
-                        verify_cmd=verify_cmd,
+                        verify_cmd=None,
                         mock=mock,
                         dry_run=dry_run,
                     )
@@ -749,19 +1145,25 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                     self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
                 return
 
-        # 4. Retry Task: POST /api/tasks/{task_id}/retry
+        # 4. Retry Task: POST /api/tasks/{task_id}/retry (arbitrary verify_cmd disabled — DEF-001)
         if path.startswith("/api/tasks/") and path.endswith("/retry"):
             parts = path.split("/")
             if len(parts) == 5:
                 task_id = parts[3]
-                verify_cmd = payload.get("verify_cmd")
+                if "verify_cmd" in payload and payload.get("verify_cmd") is not None:
+                    self._send_error_json(
+                        HTTPStatus.BAD_REQUEST,
+                        "Arbitrary 'verify_cmd' execution via HTTP is disabled for security (DEF-001).",
+                        code="VERIFY_CMD_DISABLED",
+                    )
+                    return
                 mock = payload.get("mock", True)
                 dry_run = payload.get("dry_run", False)
 
                 try:
                     run = self.service.retry_task(
                         task_id=task_id,
-                        verify_cmd=verify_cmd,
+                        verify_cmd=None,
                         mock=mock,
                         dry_run=dry_run,
                     )
@@ -908,49 +1310,21 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                 self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
             return
 
-        # 7. Founder Approve Repo Apply: POST /api/company-runs/{run_id}/approve (STEP 21 & STEP 22E)
+        # 7. Founder Approve Repo Apply: POST /api/company-runs/{run_id}/approve
+        # Stage 0A immediate containment (DEF-004): fail closed unconditionally until
+        # Stage 0B authenticated ProtectedOperationGrant verification is implemented.
+        # A caller-supplied string (even non-empty) is NOT authentic founder authorization.
         if path.startswith("/api/company-runs/") and path.endswith("/approve"):
             parts = path.split("/")
             if len(parts) == 5:
                 run_id = parts[3]
-                founder_approval_id = payload.get("founder_approval_id", f"appr_{uuid.uuid4().hex[:8]}")
-                approver = payload.get("approver", "Human Founder")
-                expected_prop_id = payload.get("proposal_id")
-
-                try:
-                    target_run = self.service.get_company_run(run_id)
-                except Exception as exc:
-                    self._send_error_json(HTTPStatus.NOT_FOUND, f"Company run '{run_id}' not found: {exc}")
-                    return
-
-                if not target_run.real_repo_apply_proposal_id:
-                    self._send_error_json(
-                        HTTPStatus.BAD_REQUEST,
-                        f"Cannot approve CompanyRun '{run_id}': No proposal has been generated or verified for this run.",
-                    )
-                    return
-
-                if expected_prop_id and expected_prop_id != target_run.real_repo_apply_proposal_id:
-                    self._send_error_json(
-                        HTTPStatus.BAD_REQUEST,
-                        f"Proposal identity mismatch for CompanyRun '{run_id}': expected '{expected_prop_id}', run has '{target_run.real_repo_apply_proposal_id}'.",
-                    )
-                    return
-
-                try:
-                    grant = self.service.approve_company_repo_apply(
-                        run_id=run_id,
-                        founder_approval_id=founder_approval_id,
-                        approver=approver,
-                    )
-                    run = self.service.get_company_run(run_id)
-                    self._send_json(HTTPStatus.OK, {
-                        "status": "APPROVED",
-                        "grant": grant.to_dict(),
-                        "run": enrich_company_run_data(run, self.service),
-                    })
-                except Exception as exc:
-                    self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                self._send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    f"Protected approval for CompanyRun '{run_id}' is blocked (fail-closed, DEF-004): "
+                    "a caller-supplied 'founder_approval_id' string is not accepted as authentic founder authorization. "
+                    "Authenticated ProtectedOperationGrant support is required (Stage 0B).",
+                    code="UNVERIFIED_PROTECTED_OPERATION",
+                )
                 return
 
         # 8. Founder Reject Repo Apply: POST /api/company-runs/{run_id}/reject (STEP 21)
@@ -972,51 +1346,19 @@ class ControlCenterHandler(BaseHTTPRequestHandler):
                     self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
                 return
 
-        # 9. Real Repo Apply Execution: POST /api/company-runs/{run_id}/apply (STEP 21 & STEP 22E)
+        # 9. Real Repo Apply Execution: POST /api/company-runs/{run_id}/apply
+        # Stage 0A immediate containment (DEF-004): fail closed unconditionally until
+        # Stage 0B authenticated ProtectedOperationGrant verification is implemented.
         if path.startswith("/api/company-runs/") and path.endswith("/apply"):
             parts = path.split("/")
             if len(parts) == 5:
                 run_id = parts[3]
-                expected_prop_id = payload.get("proposal_id")
-                expected_grant_id = payload.get("grant_id")
-
-                try:
-                    target_run = self.service.get_company_run(run_id)
-                except Exception as exc:
-                    self._send_error_json(HTTPStatus.NOT_FOUND, f"Company run '{run_id}' not found: {exc}")
-                    return
-
-                if not target_run.real_repo_apply_grant_id:
-                    self._send_error_json(
-                        HTTPStatus.BAD_REQUEST,
-                        f"Cannot apply CompanyRun '{run_id}': No grant has been issued. Explicit founder approval is required.",
-                    )
-                    return
-
-                if expected_grant_id and expected_grant_id != target_run.real_repo_apply_grant_id:
-                    self._send_error_json(
-                        HTTPStatus.BAD_REQUEST,
-                        f"Grant identity mismatch for CompanyRun '{run_id}': expected '{expected_grant_id}', run has '{target_run.real_repo_apply_grant_id}'.",
-                    )
-                    return
-
-                if expected_prop_id and expected_prop_id != target_run.real_repo_apply_proposal_id:
-                    self._send_error_json(
-                        HTTPStatus.BAD_REQUEST,
-                        f"Proposal identity mismatch for CompanyRun '{run_id}': expected '{expected_prop_id}', run has '{target_run.real_repo_apply_proposal_id}'.",
-                    )
-                    return
-
-                try:
-                    result = self.service.apply_approved_company_repo(run_id=run_id)
-                    run = self.service.get_company_run(run_id)
-                    self._send_json(HTTPStatus.OK, {
-                        "status": "APPLIED",
-                        "result": result.to_dict(),
-                        "run": enrich_company_run_data(run, self.service),
-                    })
-                except Exception as exc:
-                    self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                self._send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    f"Protected real-repository apply for CompanyRun '{run_id}' is blocked (fail-closed, DEF-004): "
+                    "unverified HTTP apply operations are disabled until Stage 0B authenticated ProtectedOperationGrant is ready.",
+                    code="UNVERIFIED_PROTECTED_OPERATION",
+                )
                 return
 
         # 10. Founder Clarification: POST /api/company-runs/{run_id}/clarify (STEP 23B.2)
@@ -1144,19 +1486,46 @@ def create_server(
     port: int = 8500,
     service: Optional[CompanyService] = None,
     load_history: bool = True,
+    auth_token: Optional[str] = None,
+    csrf_token: Optional[str] = None,
+    allowed_origins: Optional[Iterable[str]] = None,
 ) -> ExclusiveThreadingHTTPServer:
-    """Factory to create and configure an ExclusiveThreadingHTTPServer with CompanyService bound."""
+    """Factory to create and configure an ExclusiveThreadingHTTPServer with CompanyService bound.
+
+    Generates ephemeral per-server 256-bit authentication and CSRF tokens unless explicitly
+    injected for programmatic/local test clients. Never uses hardcoded default secrets.
+    """
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        raise ValueError(
+            f"Control Center must bind strictly to loopback (127.0.0.1/localhost/::1), got '{host}'."
+        )
+
     svc = service or CompanyService()
     svc.ensure_default_project()
     ensure_default_repository_project(svc)
     if load_history:
         svc.load_history_from_disk()
 
+    resolved_auth_token = auth_token.strip() if isinstance(auth_token, str) and auth_token.strip() else secrets.token_urlsafe(32)
+    resolved_csrf_token = csrf_token.strip() if isinstance(csrf_token, str) and csrf_token.strip() else secrets.token_urlsafe(32)
+
     # Create handler class bound to this service instance
     class BoundControlCenterHandler(ControlCenterHandler):
         service = svc
+        auth_token = resolved_auth_token
+        csrf_token = resolved_csrf_token
+        allowed_origins = frozenset()
+        bound_port = port
 
     server = ExclusiveThreadingHTTPServer((host, port), BoundControlCenterHandler)
+    actual_port = server.server_address[1]
+    BoundControlCenterHandler.bound_port = actual_port
+    BoundControlCenterHandler.allowed_origins = _build_allowed_origins(actual_port, allowed_origins)
+
+    # Expose ephemeral runtime tokens on the server object for local programmatic callers/tests
+    server.auth_token = resolved_auth_token  # type: ignore[attr-defined]
+    server.csrf_token = resolved_csrf_token  # type: ignore[attr-defined]
+    server.allowed_origins = BoundControlCenterHandler.allowed_origins  # type: ignore[attr-defined]
     return server
 
 

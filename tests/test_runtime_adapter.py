@@ -99,14 +99,14 @@ def test_empty_prompt_rejected(runtime):
         runtime.execute(agent="ceo", prompt="   \n\t  ")
 
 
-@patch("subprocess.run")
-def test_execution_success_captures_stdout(mock_run, runtime):
+@patch("subprocess.Popen")
+def test_execution_success_captures_stdout(mock_popen, runtime):
     """Verifies D, F, I: Successful execution captures stdout, exit code 0, and shell=False."""
-    mock_run.return_value = MagicMock(
-        returncode=0,
-        stdout="Hello, I am the CEO Agent.",
-        stderr="",
-    )
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.pid = 12345
+    mock_proc.communicate.return_value = ("Hello, I am the CEO Agent.", "")
+    mock_popen.return_value = mock_proc
 
     result = runtime.execute(agent="ceo", prompt="Identify yourself", timeout=30.0)
 
@@ -119,20 +119,20 @@ def test_execution_success_captures_stdout(mock_run, runtime):
     assert result.duration_ms >= 0
 
     # Verify subprocess kwargs
-    call_kwargs = mock_run.call_args.kwargs
+    call_kwargs = mock_popen.call_args.kwargs
     assert call_kwargs.get("shell") is False
-    assert call_kwargs.get("timeout") == 30.0
     assert call_kwargs.get("cwd") == str(runtime.repo_root)
+    mock_proc.communicate.assert_called_once_with(timeout=30.0)
 
 
-@patch("subprocess.run")
-def test_execution_failure_captures_stderr(mock_run, runtime):
+@patch("subprocess.Popen")
+def test_execution_failure_captures_stderr(mock_popen, runtime):
     """Verifies E and F: Non-zero exit code captures stderr and produces success=False."""
-    mock_run.return_value = MagicMock(
-        returncode=2,
-        stdout="",
-        stderr="Error: CLI flag not recognized",
-    )
+    mock_proc = MagicMock()
+    mock_proc.returncode = 2
+    mock_proc.pid = 12346
+    mock_proc.communicate.return_value = ("", "Error: CLI flag not recognized")
+    mock_popen.return_value = mock_proc
 
     result = runtime.execute(agent="ceo", prompt="Test failure")
 
@@ -143,15 +143,22 @@ def test_execution_failure_captures_stderr(mock_run, runtime):
     assert result.timed_out is False
 
 
-@patch("subprocess.run")
-def test_execution_timeout_handled(mock_run, runtime):
+@patch("jester_ai_company.runtime.kill_process_tree")
+@patch("subprocess.Popen")
+def test_execution_timeout_handled(mock_popen, mock_kill, runtime):
     """Verifies G: Timeout produces controlled structured failure rather than hanging."""
-    mock_run.side_effect = subprocess.TimeoutExpired(
-        cmd=["agy", "..."],
-        timeout=5.0,
-        output=b"Partial progress before timeout",
-        stderr=b"",
-    )
+    mock_proc = MagicMock()
+    mock_proc.pid = 12347
+    mock_proc.communicate.side_effect = [
+        subprocess.TimeoutExpired(
+            cmd=["agy", "..."],
+            timeout=5.0,
+            output="Partial progress before timeout",
+            stderr="",
+        ),
+        ("", ""),
+    ]
+    mock_popen.return_value = mock_proc
 
     result = runtime.execute(agent="ceo", prompt="Long running task", timeout=5.0)
 
@@ -161,12 +168,13 @@ def test_execution_timeout_handled(mock_run, runtime):
     assert "Partial progress before timeout" in result.stdout
     assert "timed out after 5.0 seconds" in result.stderr
     assert result.duration_ms >= 0
+    mock_kill.assert_called_once_with(12347)
 
 
-@patch("subprocess.run")
-def test_executable_not_found_handled(mock_run, runtime):
+@patch("subprocess.Popen")
+def test_executable_not_found_handled(mock_popen, runtime):
     """Verifies J: Missing agy executable returns controlled structured result."""
-    mock_run.side_effect = FileNotFoundError("Executable not found")
+    mock_popen.side_effect = FileNotFoundError("Executable not found")
 
     result = runtime.execute(agent="ceo", prompt="Test binary missing")
 
@@ -215,13 +223,13 @@ def test_product_agent_runtime_parity(runtime):
     # C. Mock execution proves identical AgentExecutionResult structure without separate runtime class
     mock_proc = MagicMock()
     mock_proc.returncode = 0
-    mock_proc.stdout = "Product requirements document"
-    mock_proc.stderr = ""
-    with patch("subprocess.run", return_value=mock_proc) as mock_run:
+    mock_proc.pid = 12348
+    mock_proc.communicate.return_value = ("Product requirements document", "")
+    with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
         res = runtime.execute(agent="product", prompt="Define product requirements")
         assert res.agent == "product"
         assert res.success is True
         assert res.stdout == "Product requirements document"
         assert res.exit_code == 0
         assert res.duration_ms >= 0
-        mock_run.assert_called_once()
+        mock_popen.assert_called_once()

@@ -47,21 +47,36 @@ def cc_server() -> Generator[dict, None, None]:
         time.sleep(0.05)
 
         base_url = f"http://{host}:{port}"
+        _ACTIVE_TOKENS[base_url] = server.auth_token
         yield {
             "server": server,
             "service": service,
             "base_url": base_url,
             "tmp_dir": tmp_dir,
+            "auth_token": server.auth_token,
         }
 
+        _ACTIVE_TOKENS.pop(base_url, None)
         server.shutdown()
         server.server_close()
 
 
-def api_req(base_url: str, path: str, method: str = "GET", data: dict = None) -> tuple[int, dict | str]:
+_ACTIVE_TOKENS: dict[str, str] = {}
+
+
+def api_req(
+    base_url: str,
+    path: str,
+    method: str = "GET",
+    data: dict = None,
+    auth_token: str = None,
+) -> tuple[int, dict | str]:
     url = f"{base_url}{path}"
     req_data = json.dumps(data).encode("utf-8") if data is not None else None
-    headers = {"Content-Type": "application/json"} if req_data is not None else {}
+    headers = {"Content-Type": "application/json"} if (req_data is not None or method == "POST") else {}
+    token = auth_token or _ACTIVE_TOKENS.get(base_url)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=req_data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req) as resp:
@@ -163,6 +178,7 @@ def test_durable_runs_and_proposals_on_production_server():
     time.sleep(0.05)
 
     base_url = f"http://{host}:{port}"
+    _ACTIVE_TOKENS[base_url] = server.auth_token
     try:
         # 1. Company runs should list real runs
         status, runs = api_req(base_url, "/api/company-runs")
@@ -191,6 +207,7 @@ def test_durable_runs_and_proposals_on_production_server():
         assert "diff" in diff_data
         assert "canonical_pair_seed" in diff_data["diff"]
     finally:
+        _ACTIVE_TOKENS.pop(base_url, None)
         server.shutdown()
         server.server_close()
 
@@ -449,18 +466,19 @@ def test_step22e_server_side_approval_identity_safety(cc_server):
         method="POST",
         data={"approver": "Human Founder"},
     )
-    assert status == HTTPStatus.BAD_REQUEST
-    assert "No proposal has been generated or verified" in err_body.get("error", "")
+    # Stage 0A fail-closed containment (DEF-004): unverified HTTP approve is blocked with 403
+    assert status == HTTPStatus.FORBIDDEN
+    assert err_body.get("code") == "UNVERIFIED_PROTECTED_OPERATION"
 
-    # 2. Attempt apply on run without grant -> 400 Bad Request
+    # 2. Attempt apply on run without grant -> 403 fail-closed
     status_apply, apply_err = api_req(
         base_url,
         f"/api/company-runs/{run_id}/apply",
         method="POST",
         data={},
     )
-    assert status_apply == HTTPStatus.BAD_REQUEST
-    assert "No grant has been issued" in apply_err.get("error", "")
+    assert status_apply == HTTPStatus.FORBIDDEN
+    assert apply_err.get("code") == "UNVERIFIED_PROTECTED_OPERATION"
 
 
 def test_step22e_current_pending_run_preserved():

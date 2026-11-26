@@ -25,6 +25,27 @@ export class ApiError extends Error {
   }
 }
 
+function getCsrfToken(): string | null {
+  if (typeof document === 'undefined') return null
+  const meta = document.querySelector('meta[name="jester-csrf-token"]')
+  const value = meta?.getAttribute('content')?.trim()
+  return value ? value : null
+}
+
+function getSessionAuthHeader(): Record<string, string> {
+  // Never hardcode credentials in frontend source; only read runtime-supplied token if present.
+  if (typeof window === 'undefined') return {}
+  try {
+    const runtimeToken = window.sessionStorage?.getItem('jester_cc_auth_token')?.trim()
+    if (runtimeToken) {
+      return { Authorization: `Bearer ${runtimeToken}` }
+    }
+  } catch {
+    // Ignore storage access errors in restricted environments
+  }
+  return {}
+}
+
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${endpoint}`
   const isTest = (globalThis as any).process?.env?.NODE_ENV === 'test' || typeof window === 'undefined'
@@ -32,14 +53,20 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const timeoutMs = isTest ? 100 : 10000
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
+  const csrfToken = getCsrfToken()
+  const mergedHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...getSessionAuthHeader(),
+    ...(csrfToken ? { 'X-Jester-CSRF-Token': csrfToken } : {}),
+    ...((options?.headers as Record<string, string>) || {}),
+  }
+
   try {
     const res = await fetch(url, {
-      signal: options?.signal || controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options?.headers || {}),
-      },
       ...options,
+      credentials: options?.credentials ?? 'same-origin',
+      signal: options?.signal || controller.signal,
+      headers: mergedHeaders,
     })
     clearTimeout(timeoutId)
 
@@ -188,16 +215,16 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  // 8. Execution & Remediation
-  executeTask: (taskId: string, verifyCmd?: string, mock: boolean = true) =>
+  // 8. Execution & Remediation (verify_cmd disabled over HTTP per Stage 0A DEF-001)
+  executeTask: (taskId: string, _verifyCmd?: string, mock: boolean = true) =>
     request<TaskRun>(`/tasks/${taskId}/execute`, {
       method: 'POST',
-      body: JSON.stringify({ verify_cmd: verifyCmd, mock }),
+      body: JSON.stringify({ mock }),
     }),
-  retryTask: (taskId: string, verifyCmd?: string, mock: boolean = true) =>
+  retryTask: (taskId: string, _verifyCmd?: string, mock: boolean = true) =>
     request<TaskRun>(`/tasks/${taskId}/retry`, {
       method: 'POST',
-      body: JSON.stringify({ verify_cmd: verifyCmd, mock }),
+      body: JSON.stringify({ mock }),
     }),
 
   // 9. Runs & Verifications

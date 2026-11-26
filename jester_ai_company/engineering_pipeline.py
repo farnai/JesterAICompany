@@ -40,6 +40,9 @@ from .core import (
     TaskRun,
     TaskStatus,
 )
+from .authority import (
+    issue_sandbox_execution_token,
+)
 from .execution_grant import (
     ExecutionGrant,
     MissingApprovalError,
@@ -47,7 +50,7 @@ from .execution_grant import (
     VerificationAction,
 )
 from .qa_execution import is_frontend_path
-from .worktree import is_test_file
+from .worktree import is_test_file, resolve_repo_head_commit
 from .orchestrator import (
     CEOPlannedWorkItem,
     CompanyObjective,
@@ -588,13 +591,27 @@ class EngineeringPipelineAdapter:
                         rel_test = str(test_files[0].relative_to(target_repo)).replace("\\", "/")
                         verification_actions.append(VerificationAction("pytest", rel_test))
 
-        founder_approval_id = f"founder_grant_{run.run_id}"
         has_tests = any(is_test_file(f) for f in files_to_modify + files_to_create)
         total_files = len(files_to_modify) + len(files_to_create)
+        base_commit_for_sandbox = resolve_repo_head_commit(target_repo)
+        sandbox_token = issue_sandbox_execution_token(
+            run_id=run.run_id,
+            task_id=plan_task.id,
+            base_commit_hash=base_commit_for_sandbox,
+            plan_artifact_id=plan_art.id,
+            plan_sha256=plan_art.sha256 or "",
+            approved_files_to_modify=files_to_modify,
+            approved_files_to_create=files_to_create,
+            allow_test_modifications=has_tests,
+            max_files_changed=max(3, total_files),
+            max_duration_seconds=int(timeout) if timeout is not None else 600,
+            iteration=0,
+        )
         grant = self.service.create_execution_grant(
             task_id=plan_task.id,
             plan_artifact_id=plan_art.id,
-            founder_approval_id=founder_approval_id,
+            founder_approval_id="",
+            sandbox_token=sandbox_token,
             approved_files_to_modify=files_to_modify,
             approved_files_to_create=files_to_create,
             verification_actions=verification_actions,
@@ -613,11 +630,13 @@ class EngineeringPipelineAdapter:
             task_id=plan_task.id,
             details={
                 "grant_id": grant.grant_id,
+                "sandbox_token_id": sandbox_token.token_id,
+                "authority_level": grant.authority_level,
                 "base_commit_hash": grant.base_commit_hash,
                 "approved_files_to_modify": list(grant.approved_files_to_modify),
                 "approved_files_to_create": list(grant.approved_files_to_create),
             },
-            reason="ExecutionGrant validated and bound to repository commit",
+            reason="Sandbox ExecutionGrant validated and bound to repository commit",
         )
         self.service.save_company_run(run)
 
@@ -867,19 +886,16 @@ class EngineeringPipelineAdapter:
             )
             self.service.save_company_run(run)
 
-            repair_approvals = {
-                1: f"founder_repair_1_{run.run_id}",
-                2: f"founder_repair_2_{run.run_id}",
-            }
             repair_res = self.service.execute_developer_qa_repair_loop(
                 task_id=plan_task.id,
                 project_id=proj.id,
-                founder_approvals=repair_approvals,
+                founder_approvals=None,
                 original_grant=grant,
                 max_repair_iterations=MAX_REPAIR_ITERATIONS,
                 allow_test_modifications=grant.allow_test_modifications,
                 target_repo_root=target_repo,
                 timeout=timeout,
+                sandbox_run_id=run.run_id,
             )
 
             if repair_res.status == RepairWorkflowStatus.QA_PASSED.value:

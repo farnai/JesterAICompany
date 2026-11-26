@@ -609,13 +609,14 @@ def test_scenario_a_direct_developer_repair_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr(service.runtime, "execute", mock_runtime_execute)
 
-    # Execute Developer <-> QA repair loop
+    # Execute Developer <-> QA repair loop using automated SandboxExecutionToken (Stage 0B)
     repair_res = service.execute_developer_qa_repair_loop(
         task_id=dev_task.id,
-        founder_approvals={1: "founder_repair_appr_1"},
+        founder_approvals=None,
         original_grant=grant,
         max_repair_iterations=2,
         target_repo_root=repo_dir,
+        sandbox_run_id="crun_step23b7f1_direct",
     )
 
     print("TERMINATION REASON:", repair_res.termination_reason)

@@ -1460,11 +1460,24 @@ Exit Status: 0
     });
 
     // ----------------------------------------------------
-    // API CALLS & DATA REFRESH
+    // API CALLS & DATA REFRESH (Stage 0A Same-Origin + CSRF)
     // ----------------------------------------------------
+    function ccFetch(url, options) {
+      const opts = Object.assign({}, options || {});
+      opts.credentials = 'same-origin';
+      const meta = document.querySelector('meta[name="jester-csrf-token"]');
+      const csrf = meta ? meta.getAttribute('content') : '';
+      const headers = Object.assign({}, opts.headers || {});
+      if (csrf) {
+        headers['X-Jester-CSRF-Token'] = csrf;
+      }
+      opts.headers = headers;
+      return fetch(url, opts);
+    }
+
     async function fetchOverview() {
       try {
-        const res = await fetch('/api/overview');
+        const res = await ccFetch('/api/overview');
         if (!res.ok) return;
         overviewState = await res.json();
         renderOverview(overviewState);
@@ -1489,7 +1502,7 @@ Exit Status: 0
 
     async function fetchTasks() {
       try {
-        const res = await fetch('/api/tasks');
+        const res = await ccFetch('/api/tasks');
         if (!res.ok) return;
         const tasks = await res.json();
         renderTasks(tasks);
@@ -1542,7 +1555,7 @@ Exit Status: 0
 
     async function fetchRuns() {
       try {
-        const res = await fetch('/api/runs');
+        const res = await ccFetch('/api/runs');
         if (!res.ok) return;
         const runs = await res.json();
         renderRuns(runs);
@@ -1587,7 +1600,7 @@ Exit Status: 0
     // ----------------------------------------------------
     async function fetchChat() {
       try {
-        const res = await fetch('/api/chat');
+        const res = await ccFetch('/api/chat');
         if (!res.ok) return;
         const data = await res.json();
         if (data.messages && data.messages.length > 0) {
@@ -1636,7 +1649,7 @@ Exit Status: 0
       renderChat(chatMessages);
 
       try {
-        const res = await fetch('/api/chat', {
+        const res = await ccFetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: text, sender_role: 'owner' })
@@ -1702,7 +1715,7 @@ Exit Status: 0
 
     async function viewRunDetails(runId) {
       try {
-        const res = await fetch(`/api/runs/${runId}`);
+        const res = await ccFetch(`/api/runs/${runId}`);
         if (!res.ok) return;
         const run = await res.json();
         document.getElementById('vault-exit-code').innerText = run.status === 'SUCCESS' ? '0 (SUCCESS)' : '1 (FAILED)';
@@ -1768,7 +1781,7 @@ ${veriText.replace(/\n/g, '<br>')}<br>
     // ----------------------------------------------------
     async function executeTask(taskId) {
       try {
-        const res = await fetch(`/api/tasks/${taskId}/execute`, {
+        const res = await ccFetch(`/api/tasks/${taskId}/execute`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ mock: true })
@@ -1794,7 +1807,7 @@ ${veriText.replace(/\n/g, '<br>')}<br>
       const goal = prompt("Enter Task Goal:", "Implement responsive header navigation");
       
       try {
-        const res = await fetch('/api/tasks', {
+        const res = await ccFetch('/api/tasks', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

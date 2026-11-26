@@ -45,11 +45,17 @@ def get_free_port() -> int:
         return s.getsockname()[1]
 
 
-def make_request(base_url: str, path: str, method: str = "GET", data: dict = None) -> tuple:
+_STARTUP_TOKENS: dict[str, str] = {}
+
+
+def make_request(base_url: str, path: str, method: str = "GET", data: dict = None, auth_token: str = None) -> tuple:
     """Execute an HTTP request against the test server."""
     url = f"{base_url}{path}"
-    headers = {"Content-Type": "application/json"} if data else {}
-    body = json.dumps(data).encode("utf-8") if data else None
+    headers = {"Content-Type": "application/json"} if (data is not None or method == "POST") else {}
+    token = auth_token or _STARTUP_TOKENS.get(base_url)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    body = json.dumps(data).encode("utf-8") if data is not None else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
 
     try:
@@ -83,6 +89,7 @@ class TestStartupStateAndInvariants:
         time.sleep(0.05)
 
         base_url = f"http://127.0.0.1:{port}"
+        _STARTUP_TOKENS[base_url] = server.auth_token
         try:
             # 1. Overview endpoint returns cleanly
             status, overview = make_request(base_url, "/api/overview")
@@ -139,6 +146,7 @@ class TestStartupStateAndInvariants:
         time.sleep(0.05)
 
         base_url = f"http://127.0.0.1:{port}"
+        _STARTUP_TOKENS[base_url] = server.auth_token
         try:
             status, runs_data = make_request(base_url, "/api/company-runs")
             assert status == HTTPStatus.OK
@@ -218,6 +226,7 @@ class TestStartupStateAndInvariants:
         time.sleep(0.05)
 
         base_url = f"http://127.0.0.1:{port}"
+        _STARTUP_TOKENS[base_url] = server.auth_token
         try:
             # Check created run
             status, detail_created = make_request(base_url, "/api/company-runs/crun_interrupted_created")
@@ -267,6 +276,7 @@ class TestStartupStateAndInvariants:
         time.sleep(0.05)
 
         base_url = f"http://127.0.0.1:{port}"
+        _STARTUP_TOKENS[base_url] = server.auth_token
         try:
             # Simulate 15 polling/refresh cycles across standard UI endpoints
             for _ in range(15):
@@ -318,6 +328,7 @@ class TestStartupStateAndInvariants:
         time.sleep(0.05)
 
         base_url = f"http://127.0.0.1:{port}"
+        _STARTUP_TOKENS[base_url] = server.auth_token
         try:
             # Poll all endpoints
             endpoints = [
@@ -370,6 +381,7 @@ class TestStartupStateAndInvariants:
         time.sleep(0.05)
 
         base_url = f"http://127.0.0.1:{port}"
+        _STARTUP_TOKENS[base_url] = server.auth_token
         try:
             # 1. Initially no worker is attached
             assert not is_run_actively_executing(run_id)
@@ -446,6 +458,7 @@ class TestStartupStateAndInvariants:
         time.sleep(0.05)
 
         base_url = f"http://127.0.0.1:{port}"
+        _STARTUP_TOKENS[base_url] = server.auth_token
         try:
             # Poll projects, overview, runs
             for _ in range(5):
@@ -498,6 +511,7 @@ class TestStartupStateAndInvariants:
         time.sleep(0.05)
 
         base_url = f"http://127.0.0.1:{port}"
+        _STARTUP_TOKENS[base_url] = server.auth_token
         try:
             # Verify status is loaded as READY_FOR_HUMAN_APPLY and persisted snapshot
             status, detail = make_request(base_url, f"/api/company-runs/{run_id}")
@@ -512,9 +526,9 @@ class TestStartupStateAndInvariants:
                 method="POST",
                 data={"proposal_id": "prop_test_123"},
             )
-            # Must be rejected because founder grant has not been issued
-            assert apply_status in (HTTPStatus.BAD_REQUEST, HTTPStatus.INTERNAL_SERVER_ERROR)
-            assert "grant" in str(apply_res).lower() or "approval" in str(apply_res).lower() or "error" in str(apply_res).lower()
+            # Must be rejected (Stage 0A fail-closed 403 or 400/500)
+            assert apply_status in (HTTPStatus.FORBIDDEN, HTTPStatus.BAD_REQUEST, HTTPStatus.INTERNAL_SERVER_ERROR)
+            assert "grant" in str(apply_res).lower() or "approval" in str(apply_res).lower() or "error" in str(apply_res).lower() or "protected" in str(apply_res).lower()
 
             # The run state was NOT modified to APPLYING or COMPLETED
             status, detail_after = make_request(base_url, f"/api/company-runs/{run_id}")

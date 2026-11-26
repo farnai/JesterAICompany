@@ -960,6 +960,7 @@ class TestRepairWorkflowLimitsAndStates:
 class TestLiveRepairSuccessProof:
     """Live proof demonstrating a real, working repair cycle from initial QA FAIL to repaired QA PASS."""
 
+    @pytest.mark.live
     def test_live_one_repair_success(self, tmp_path):
         """End-to-end integration test with isolated git worktrees, real pytest verification,
         initial defect, repair planning, grant derivation, worktree mutation, cumulative diff,

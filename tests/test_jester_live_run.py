@@ -42,6 +42,8 @@ import subprocess
 from typing import Any, Dict, List
 import pytest
 
+pytestmark = pytest.mark.live
+
 from jester_ai_company.core import (
     Artifact,
     ArtifactType,

@@ -144,8 +144,11 @@ class TaskExecutor:
         orchestration_result = self._orchestrate_and_execute(task, proj, run, run_dir, mock=mock)
 
         # 4. QA Independent Verification
-        default_verify = f'"{sys.executable}" tools/verify_company.py'
-        actual_verify_cmd = verify_cmd if verify_cmd is not None else default_verify
+        default_verify_argv: List[str] = [sys.executable, str(self.repo_root / "tools" / "verify_company.py")]
+        actual_verify_cmd: Any = verify_cmd if verify_cmd is not None else default_verify_argv
+        verify_cmd_display = (
+            verify_cmd if isinstance(verify_cmd, str) else " ".join(default_verify_argv)
+        )
 
         veri_result = self._run_qa_verification(actual_verify_cmd, run_dir)
         run.add_verification(
@@ -172,7 +175,7 @@ class TaskExecutor:
             task.status = TaskStatus.FAILED.value
 
         # 6. Write final run_manifest.json for telemetry compatibility
-        self._write_manifest(task, proj, run, run_dir, actual_verify_cmd)
+        self._write_manifest(task, proj, run, run_dir, verify_cmd_display)
 
         return run
 
@@ -277,14 +280,16 @@ class TaskExecutor:
             "conversation_id": "real-ceo-invocation",
         }
 
-    def _run_qa_verification(self, verify_cmd: str, run_dir: Path) -> VerificationResult:
+    def _run_qa_verification(self, verify_cmd: Any, run_dir: Path) -> VerificationResult:
         """Run independent QA verification command and return VerificationResult."""
-        self._log(f"Running QA verification command: {verify_cmd}")
+        cmd_display = " ".join(verify_cmd) if isinstance(verify_cmd, list) else str(verify_cmd)
+        use_shell = not isinstance(verify_cmd, list)
+        self._log(f"Running QA verification command: {cmd_display}")
         start_time = datetime.now(timezone.utc)
         try:
             proc = subprocess.run(
                 verify_cmd,
-                shell=True,
+                shell=use_shell,
                 cwd=self.repo_root,
                 capture_output=True,
                 text=True,
@@ -308,7 +313,7 @@ class TaskExecutor:
 
         veri_report = {
             "passed": passed,
-            "command": verify_cmd,
+            "command": cmd_display,
             "exit_code": exit_code,
             "duration_seconds": duration,
             "stdout": stdout,

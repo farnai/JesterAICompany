@@ -51,6 +51,12 @@ from .developer_result import (
     ProposedFile,
     extract_developer_json_text,
 )
+from .authority import (
+    AuthorityExpiredError,
+    AuthorityTypeMismatchError,
+    ForgedApprovalError,
+    SandboxExecutionToken,
+)
 from .execution_grant import (
     ALLOWED_VERIFICATION_ACTION_TYPES,
     ExecutionGrant,
@@ -774,23 +780,27 @@ def derive_repair_execution_grant(
     plan: DeveloperRepairPlan,
     previous_grant: ExecutionGrant,
     base_commit_hash: str,
-    founder_approval_id: str,
+    founder_approval_id: str = "",
     allow_test_modifications: bool = False,
     task_id: Optional[str] = None,
     plan_artifact_id: str = "",
     plan_sha256: str = "",
+    sandbox_token: Optional[SandboxExecutionToken] = None,
 ) -> ExecutionGrant:
     """Derive a candidate ExecutionGrant from a validated DeveloperRepairPlan.
     
     Enforces:
-    1. NEVER fabricates founder approval: requires explicit, non-empty founder_approval_id.
+    1. NEVER fabricates founder approval: requires either a bounded SandboxExecutionToken
+       (for isolated worktree repair) or an explicit non-synthetic founder_approval_id.
     2. Monotonic scope control: ensures no protected paths are touched.
     3. Test modification permissions: test files permitted only if allow_test_modifications is True.
     4. Base commit binding: binds to exact original base_commit_hash.
     5. Cumulative scope: includes previously modified/created files that persist in the worktree.
     """
-    if not founder_approval_id or not founder_approval_id.strip():
-        raise MissingApprovalError("Cannot derive repair ExecutionGrant without explicit founder_approval_id.")
+    if sandbox_token is None and (not founder_approval_id or not founder_approval_id.strip()):
+        raise MissingApprovalError(
+            "Cannot derive repair ExecutionGrant without SandboxExecutionToken or explicit founder_approval_id."
+        )
 
     if not plan_artifact_id or not plan_sha256:
         raise GrantValidationError("Repair ExecutionGrant must be bound to durable plan_artifact_id and plan_sha256.")
@@ -886,7 +896,8 @@ def derive_repair_execution_grant(
         max_verification_actions=max(len(candidate_actions), 5),
         max_duration_seconds=max(120, previous_grant.max_duration_seconds if previous_grant else 120),
         network_enabled=False,
-        founder_approval_id=founder_approval_id.strip(),
+        founder_approval_id="" if sandbox_token is not None else founder_approval_id.strip(),
+        sandbox_token=sandbox_token,
     )
 
 

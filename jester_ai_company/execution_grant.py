@@ -12,6 +12,25 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .authority import (
+    AuthorityExpiredError,
+    AuthorityLevel,
+    AuthorityTypeMismatchError,
+    ForgedApprovalError,
+    SandboxExecutionToken,
+    ScopeExpansionForbiddenError,
+)
+
+# Synthetic production approval prefixes forbidden even on sandbox ExecutionGrants (Stage 0B)
+FORBIDDEN_SYNTHETIC_SANDBOX_APPROVAL_PREFIXES: Tuple[str, ...] = (
+    "founder_grant_",
+    "founder_repair_",
+    "founder_ui_",
+    "auto_",
+    "synthetic_",
+    "mock_founder_",
+)
+
 # Allowed verification action types in V1
 ALLOWED_VERIFICATION_ACTION_TYPES: Set[str] = {"pytest", "npm_build", "frontend_build"}
 
@@ -124,10 +143,16 @@ class ExecutionGrant:
     max_duration_seconds: int = 120
     network_enabled: bool = False
     founder_approval_id: str = ""
+    sandbox_token: Optional[SandboxExecutionToken] = None
+    authority_level: str = AuthorityLevel.SANDBOX_EXECUTION.value
     created_at: str = field(default_factory=_utc_now_iso)
 
     def __post_init__(self) -> None:
         validate_execution_grant(self)
+
+    @property
+    def sandbox_token_id(self) -> str:
+        return self.sandbox_token.token_id if self.sandbox_token is not None else ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -146,6 +171,8 @@ class ExecutionGrant:
             "max_duration_seconds": self.max_duration_seconds,
             "network_enabled": self.network_enabled,
             "founder_approval_id": self.founder_approval_id,
+            "sandbox_token_id": self.sandbox_token_id,
+            "authority_level": self.authority_level,
             "created_at": self.created_at,
         }
 
@@ -180,11 +207,65 @@ def validate_execution_grant(grant: ExecutionGrant) -> None:
             f"ExecutionGrant 'base_commit_hash' must be a valid git commit hex hash. Got: '{grant.base_commit_hash}'."
         )
 
-    # Founder approval enforcement (Requirement 4)
-    if not grant.founder_approval_id or not grant.founder_approval_id.strip():
-        raise MissingApprovalError(
-            f"ExecutionGrant '{grant.grant_id}' lacks explicit founder_approval_id."
+    # Authority level invariant: ExecutionGrant is strictly sandbox-scoped
+    if grant.authority_level != AuthorityLevel.SANDBOX_EXECUTION.value:
+        raise AuthorityTypeMismatchError(
+            f"ExecutionGrant '{grant.grant_id}' must have authority_level '{AuthorityLevel.SANDBOX_EXECUTION.value}', "
+            f"got '{grant.authority_level}'."
         )
+
+    # Authority enforcement (Stage 0B: SandboxExecutionToken OR explicit non-synthetic legacy approval)
+    if grant.sandbox_token is not None:
+        if not isinstance(grant.sandbox_token, SandboxExecutionToken):
+            raise AuthorityTypeMismatchError(
+                f"ExecutionGrant '{grant.grant_id}' sandbox_token must be SandboxExecutionToken, "
+                f"got {type(grant.sandbox_token).__name__}."
+            )
+        if grant.sandbox_token.is_expired():
+            raise AuthorityExpiredError(
+                f"SandboxExecutionToken '{grant.sandbox_token.token_id}' expired at {grant.sandbox_token.expires_at}."
+            )
+        if grant.founder_approval_id and grant.founder_approval_id.strip():
+            raise ForgedApprovalError(
+                f"ExecutionGrant '{grant.grant_id}' backed by SandboxExecutionToken must not carry a founder_approval_id."
+            )
+        if grant.sandbox_token.task_id != grant.task_id:
+            raise GrantValidationError(
+                f"SandboxExecutionToken task_id '{grant.sandbox_token.task_id}' != grant task_id '{grant.task_id}'."
+            )
+        if grant.sandbox_token.plan_artifact_id != grant.plan_artifact_id or grant.sandbox_token.plan_sha256 != grant.plan_sha256:
+            raise GrantValidationError(
+                f"SandboxExecutionToken plan binding mismatch for grant '{grant.grant_id}'."
+            )
+        if grant.sandbox_token.base_commit_hash != grant.base_commit_hash:
+            raise GrantValidationError(
+                f"SandboxExecutionToken base_commit_hash '{grant.sandbox_token.base_commit_hash}' "
+                f"!= grant base_commit_hash '{grant.base_commit_hash}'."
+            )
+        token_allowed = {
+            f.strip().replace("\\", "/").lstrip("/").rstrip("/").lower()
+            for f in (grant.sandbox_token.approved_files_to_modify + grant.sandbox_token.approved_files_to_create)
+        }
+        grant_requested = {
+            f.strip().replace("\\", "/").lstrip("/").rstrip("/").lower()
+            for f in (grant.approved_files_to_modify + grant.approved_files_to_create)
+        }
+        extra = sorted(grant_requested - token_allowed)
+        if extra:
+            raise ScopeExpansionForbiddenError(
+                f"ExecutionGrant '{grant.grant_id}' files {extra} exceed SandboxExecutionToken '{grant.sandbox_token.token_id}'."
+            )
+    else:
+        if not grant.founder_approval_id or not grant.founder_approval_id.strip():
+            raise MissingApprovalError(
+                f"ExecutionGrant '{grant.grant_id}' lacks explicit founder_approval_id (or SandboxExecutionToken)."
+            )
+        lower_approval = grant.founder_approval_id.strip().lower()
+        if any(lower_approval.startswith(prefix) for prefix in FORBIDDEN_SYNTHETIC_SANDBOX_APPROVAL_PREFIXES):
+            raise ForgedApprovalError(
+                f"ExecutionGrant '{grant.grant_id}' rejected synthetic founder_approval_id '{grant.founder_approval_id}'. "
+                f"Use SandboxExecutionToken for automated isolated sandbox execution."
+            )
 
     # Network enforcement (Requirement 2 & 15)
     if grant.network_enabled:

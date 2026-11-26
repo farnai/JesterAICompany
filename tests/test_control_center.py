@@ -58,17 +58,26 @@ def test_server() -> Generator[dict, None, None]:
             "service": service,
             "base_url": base_url,
             "tmp_dir": tmp_dir,
+            "auth_token": server.auth_token,
         }
 
         server.shutdown()
         server.server_close()
 
 
-def api_request(base_url: str, path: str, method: str = "GET", data: dict = None) -> tuple[int, dict | str]:
+def api_request(
+    base_url: str,
+    path: str,
+    method: str = "GET",
+    data: dict = None,
+    auth_token: str = None,
+) -> tuple[int, dict | str]:
     """Helper to perform HTTP requests against the test server."""
     url = f"{base_url}{path}"
     req_data = json.dumps(data).encode("utf-8") if data is not None else None
-    headers = {"Content-Type": "application/json"} if req_data is not None else {}
+    headers = {"Content-Type": "application/json"} if (req_data is not None or method == "POST") else {}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
 
     req = urllib.request.Request(url, data=req_data, headers=headers, method=method)
     try:
@@ -109,16 +118,17 @@ def test_control_center_html_root_and_health(test_server):
 def test_control_center_overview_and_agents_roster(test_server):
     """Verify Overview stats and all 7 recognized company employees are exposed."""
     base_url = test_server["base_url"]
+    token = test_server["auth_token"]
 
     # 1. Overview
-    status, ov = api_request(base_url, "/api/overview")
+    status, ov = api_request(base_url, "/api/overview", auth_token=token)
     assert status == HTTPStatus.OK
     assert ov["company"]["name"] == "Jester AI Company"
     assert ov["counts"]["total_employees"] == 7
     assert ov["counts"]["active_employees"] == 7
 
     # 2. Agents Roster
-    status, agents = api_request(base_url, "/api/agents")
+    status, agents = api_request(base_url, "/api/agents", auth_token=token)
     assert status == HTTPStatus.OK
     assert len(agents) == 7
 
@@ -127,7 +137,7 @@ def test_control_center_overview_and_agents_roster(test_server):
     assert roles == expected_roles
 
     # Single agent query
-    status, ceo = api_request(base_url, "/api/agents/ceo")
+    status, ceo = api_request(base_url, "/api/agents/ceo", auth_token=token)
     assert status == HTTPStatus.OK
     assert ceo["role"] == "ceo"
     assert ceo["title"] == "CEO Agent"
@@ -137,6 +147,7 @@ def test_control_center_overview_and_agents_roster(test_server):
 def test_control_center_project_crud(test_server):
     """Verify creating and retrieving projects through Control Center API."""
     base_url = test_server["base_url"]
+    token = test_server["auth_token"]
 
     # Create Project Alpha
     proj_payload = {
@@ -145,32 +156,33 @@ def test_control_center_project_crud(test_server):
         "tech_stack": ["Python", "FastAPI"],
         "root_path": "/repos/cctest",
     }
-    status, proj = api_request(base_url, "/api/projects", method="POST", data=proj_payload)
+    status, proj = api_request(base_url, "/api/projects", method="POST", data=proj_payload, auth_token=token)
     assert status == HTTPStatus.CREATED
     assert proj["id"] == "proj-cc-test"
     assert proj["name"] == "Control Center Test Project"
 
     # List Projects
-    status, projects = api_request(base_url, "/api/projects")
+    status, projects = api_request(base_url, "/api/projects", auth_token=token)
     assert status == HTTPStatus.OK
     assert any(p["id"] == "proj-cc-test" for p in projects)
 
     # Get Single Project
-    status, single = api_request(base_url, "/api/projects/proj-cc-test")
+    status, single = api_request(base_url, "/api/projects/proj-cc-test", auth_token=token)
     assert status == HTTPStatus.OK
     assert single["id"] == "proj-cc-test"
 
 
 def test_control_center_task_lifecycle_and_execution(test_server):
-    """Verify creating a task, executing it (mock), and inspecting runs and QA results."""
+    """Verify creating a task, executing it (mock, no arbitrary verify_cmd), and inspecting runs and QA results."""
     base_url = test_server["base_url"]
+    token = test_server["auth_token"]
 
     # 1. Create Project
     api_request(base_url, "/api/projects", method="POST", data={
         "project_id": "proj-exec",
         "name": "Exec Project",
         "tech_stack": ["Python"],
-    })
+    }, auth_token=token)
 
     # 2. Create Task
     task_payload = {
@@ -180,44 +192,43 @@ def test_control_center_task_lifecycle_and_execution(test_server):
         "constraints": ["Zero dependencies"],
         "required_roles": ["product", "developer", "qa"],
     }
-    status, task = api_request(base_url, "/api/tasks", method="POST", data=task_payload)
+    status, task = api_request(base_url, "/api/tasks", method="POST", data=task_payload, auth_token=token)
     assert status == HTTPStatus.CREATED
     assert task["project_id"] == "proj-exec"
     assert task["title"] == "Build Status Endpoint"
     assert task["status"] == TaskStatus.PENDING.value
     task_id = task["id"]
 
-    # 3. Execute Task (mock=True)
+    # 3. Execute Task (mock=True; Stage 0A disables arbitrary HTTP verify_cmd)
     exec_payload = {
-        "verify_cmd": 'python -c "import sys; sys.exit(0)"',
         "mock": True,
         "dry_run": False,
     }
-    status, run = api_request(base_url, f"/api/tasks/{task_id}/execute", method="POST", data=exec_payload)
+    status, run = api_request(base_url, f"/api/tasks/{task_id}/execute", method="POST", data=exec_payload, auth_token=token)
     assert status == HTTPStatus.OK
     assert run["status"] == RunStatus.SUCCESS.value
     assert run["attempt_number"] == 1
     run_id = run["id"]
 
     # 4. Verify Task State Updated
-    status, updated_task = api_request(base_url, f"/api/tasks/{task_id}")
+    status, updated_task = api_request(base_url, f"/api/tasks/{task_id}", auth_token=token)
     assert status == HTTPStatus.OK
     assert updated_task["status"] == TaskStatus.COMPLETED.value
     assert updated_task["result"] is not None
 
     # 5. List Runs
-    status, runs = api_request(base_url, "/api/runs")
+    status, runs = api_request(base_url, "/api/runs", auth_token=token)
     assert status == HTTPStatus.OK
     assert any(r["id"] == run_id for r in runs)
 
     # 6. Verify QA Checks List
-    status, veris = api_request(base_url, "/api/verifications")
+    status, veris = api_request(base_url, "/api/verifications", auth_token=token)
     assert status == HTTPStatus.OK
     assert len(veris) >= 1
     assert any(v["run_id"] == run_id and v["passed"] is True for v in veris)
 
     # 7. List Artifacts and Read Content
-    status, artifacts = api_request(base_url, "/api/artifacts")
+    status, artifacts = api_request(base_url, "/api/artifacts", auth_token=token)
     assert status == HTTPStatus.OK
     run_artifacts = [a for a in artifacts if a["run_id"] == run_id]
     assert len(run_artifacts) >= 2
@@ -225,7 +236,7 @@ def test_control_center_task_lifecycle_and_execution(test_server):
     # Read artifact content
     first_art = run_artifacts[0]
     art_path = first_art["path"]
-    status, content = api_request(base_url, f"/api/artifacts/content?path={art_path}&run_id={run_id}")
+    status, content = api_request(base_url, f"/api/artifacts/content?path={art_path}&run_id={run_id}", auth_token=token)
     assert status == HTTPStatus.OK
     assert len(content) > 0
 
@@ -233,22 +244,23 @@ def test_control_center_task_lifecycle_and_execution(test_server):
 def test_control_center_error_handling(test_server):
     """Verify Control Center returns proper HTTP error codes for invalid requests."""
     base_url = test_server["base_url"]
+    token = test_server["auth_token"]
 
     # 404 for non-existent project
-    status, err = api_request(base_url, "/api/projects/non-existent-proj")
+    status, err = api_request(base_url, "/api/projects/non-existent-proj", auth_token=token)
     assert status == HTTPStatus.NOT_FOUND
     assert "error" in err
 
     # 404 for non-existent task
-    status, err = api_request(base_url, "/api/tasks/non-existent-task")
+    status, err = api_request(base_url, "/api/tasks/non-existent-task", auth_token=token)
     assert status == HTTPStatus.NOT_FOUND
 
     # 400 for bad task creation (missing project_id)
-    status, err = api_request(base_url, "/api/tasks", method="POST", data={"title": "No Project"})
+    status, err = api_request(base_url, "/api/tasks", method="POST", data={"title": "No Project"}, auth_token=token)
     assert status == HTTPStatus.BAD_REQUEST
 
     # 400 for bad artifact query
-    status, err = api_request(base_url, "/api/artifacts/content")
+    status, err = api_request(base_url, "/api/artifacts/content", auth_token=token)
     assert status == HTTPStatus.BAD_REQUEST
 
 
@@ -297,14 +309,15 @@ def test_control_center_loads_disk_history(tmp_path):
     time.sleep(0.05)
 
     base_url = f"http://127.0.0.1:{port}"
+    token = server.auth_token
     try:
-        status, runs = api_request(base_url, "/api/runs")
+        status, runs = api_request(base_url, "/api/runs", auth_token=token)
         assert status == HTTPStatus.OK
         assert len(runs) >= 1
         assert runs[0]["id"] == "run_20260928_100000"
 
         # Verify artifact content accessible
-        status, content = api_request(base_url, "/api/artifacts/content?path=spec.md&run_id=run_20260928_100000")
+        status, content = api_request(base_url, "/api/artifacts/content?path=spec.md&run_id=run_20260928_100000", auth_token=token)
         assert status == HTTPStatus.OK
         assert "Historic Spec Content" in content
     finally:

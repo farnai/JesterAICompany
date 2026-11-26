@@ -65,10 +65,16 @@ def get_free_port() -> int:
         return s.getsockname()[1]
 
 
+_RELIABILITY_TOKENS: dict[str, str] = {}
+
+
 def make_request(base_url: str, path: str, method: str = "GET", data: dict = None) -> tuple:
     """Execute an HTTP request against the test server."""
     url = f"{base_url}{path}"
-    headers = {"Content-Type": "application/json"} if data else {}
+    headers = {"Content-Type": "application/json"} if (data is not None or method == "POST") else {}
+    token = _RELIABILITY_TOKENS.get(base_url)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     body = json.dumps(data).encode("utf-8") if data else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
 
@@ -280,6 +286,7 @@ def test_backend_responsiveness_during_execution(service: CompanyService) -> Non
     server_thread.start()
 
     base_url = f"http://127.0.0.1:{port}"
+    _RELIABILITY_TOKENS[base_url] = server.auth_token
     try:
         # Start a long-running simulated worker
         run = service.create_company_run(
@@ -356,12 +363,41 @@ def test_durable_failed_state_and_telemetry_attribution(service: CompanyService)
         description="Investigate Jester registration architecture",
     )
     run = service.create_company_run(objective=objective)
-    planned_run = service.plan_company_run(run.run_id)
-    if planned_run.state == CompanyRunState.WAITING_FOR_CLARIFICATION.value:
-        planned_run = service.submit_founder_clarification(
-            run.run_id,
-            response="Focus exclusively on backend user registration endpoints.",
-        )
+
+    mock_ceo_plan = json.dumps({
+        "schema_version": "1.0",
+        "version": 1,
+        "objective_id": "obj_telemetry_fail",
+        "plan_summary": "Research registration architecture offline",
+        "work_items": [
+            {
+                "work_item_id": "wi_research_1",
+                "title": "Research Registration Architecture",
+                "objective": "Investigate backend registration architecture",
+                "role": "research",
+                "depends_on": [],
+            }
+        ],
+    })
+    with unittest.mock.patch.object(
+        service.runtime,
+        "execute",
+        return_value=AgentExecutionResult(
+            agent="ceo",
+            success=True,
+            stdout=f"```json\n{mock_ceo_plan}\n```",
+            stderr="",
+            exit_code=0,
+            duration_ms=12.0,
+            timed_out=False,
+        ),
+    ):
+        planned_run = service.plan_company_run(run.run_id)
+        if planned_run.state == CompanyRunState.WAITING_FOR_CLARIFICATION.value:
+            planned_run = service.submit_founder_clarification(
+                run.run_id,
+                response="Focus exclusively on backend user registration endpoints.",
+            )
     service.start_company_run(run.run_id)
 
     # Force specialist execution to timeout
@@ -382,7 +418,7 @@ def test_durable_failed_state_and_telemetry_attribution(service: CompanyService)
 
     updated_run = service.get_company_run(run.run_id)
     assert updated_run.state == CompanyRunState.FAILED.value
-    assert "timed out" in updated_run.error.lower()
+    assert "timed out" in updated_run.error.lower() or "timeout" in updated_run.error.lower()
 
     # Telemetry check via get_company_run_metrics
     metrics = service.get_company_run_metrics(run.run_id)
@@ -468,6 +504,7 @@ def test_no_duplicate_execution_on_polling(service: CompanyService) -> None:
     server_thread.start()
 
     base_url = f"http://127.0.0.1:{port}"
+    _RELIABILITY_TOKENS[base_url] = server.auth_token
     try:
         initial_runs = service.list_company_runs()
         initial_count = len(initial_runs)

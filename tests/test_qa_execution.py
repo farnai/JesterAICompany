@@ -822,6 +822,7 @@ def test_23_and_24_worktree_cleanup_and_repo_immutability(temp_git_repo):
 # Live Proofs with Real Antigravity Runtime (agy --agent qa)
 # ==============================================================================
 
+@pytest.mark.live
 def test_live_qa_agent_failing_proof():
     """Live Proof (Gap / Failure): Real QA Agent evaluates incomplete patch and issues FAIL or BLOCKED."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -895,6 +896,7 @@ def test_live_qa_agent_failing_proof():
         assert (repo / ".runs" / exec_reports[0].path).exists()
 
 
+@pytest.mark.live
 def test_live_qa_agent_successful_proof():
     """Live Proof (Success): Real QA Agent evaluates fully implemented and verified patch and issues PASS."""
     with tempfile.TemporaryDirectory() as tmpdir:

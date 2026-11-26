@@ -304,6 +304,31 @@ from .ceo_contract import (
     evaluate_team_selection_heuristically,
     is_read_only_research_objective,
 )
+from .authority import (
+    AuthorityExpiredError,
+    AuthorityLevel,
+    AuthorityLockError,
+    AuthorityRegistry,
+    AuthorityReplayError,
+    AuthorityTypeMismatchError,
+    ForgedApprovalError,
+    FounderAuthenticationRequiredError,
+    FounderDecision,
+    FounderDecisionType,
+    FounderSessionAuthenticator,
+    ProtectedOperationGrant,
+    ProtectedOperationType,
+    SandboxExecutionToken,
+    ScopeExpansionForbiddenError,
+    StaleRepositoryHeadError,
+    create_authenticated_founder_decision,
+    derive_protected_operation_grant,
+    issue_sandbox_execution_token,
+    verify_and_consume_protected_operation_grant,
+    verify_and_consume_sandbox_token,
+    verify_protected_operation_grant,
+    verify_sandbox_token_for_worktree,
+)
 from .execution_grant import (
     ExecutionGrant,
     GrantError,
@@ -332,9 +357,11 @@ from .verification import (
 from .policy_hook import (
     WriteAuthorizationDecision,
     authorize_planning_tool,
+    authorize_readonly_tool,
     authorize_tool_mutation,
     install_execution_policy_hook,
     install_planning_policy_hook,
+    install_readonly_policy_hook,
 )
 from .worktree import (
     WorktreeAuditRecord,
@@ -456,6 +483,12 @@ class CompanyService:
         )
         self._real_repo_apply_proposals: Dict[str, RealRepoApplyProposal] = {}
         self._real_repo_apply_grants: Dict[str, RealRepoApplyGrant] = {}
+        self._founder_decisions: Dict[str, FounderDecision] = {}
+        self._protected_operation_grants: Dict[str, ProtectedOperationGrant] = {}
+        self.authority_registry: AuthorityRegistry = AuthorityRegistry(
+            self.output_dir / "authority_registry.json"
+        )
+        self.founder_authenticator: FounderSessionAuthenticator = FounderSessionAuthenticator()
         self._company_runs: Dict[str, CompanyRun] = {}
         self.project_registry: ProjectRegistry = ProjectRegistry()
         self.knowledge_registry: ProjectKnowledgeRegistry = ProjectKnowledgeRegistry()
@@ -959,23 +992,61 @@ class CompanyService:
         return artifacts
 
     def get_artifact_content(self, relative_path: str, run_id: Optional[str] = None) -> Optional[str]:
-        """Safely read and return text content of an artifact file within output_dir."""
-        rel = Path(relative_path)
-        if run_id:
-            target = (self.output_dir / run_id / rel).resolve()
-        else:
-            target = (self.output_dir / rel).resolve()
+        """Safely read and return text content of an artifact file strictly within output_dir (DEF-003).
+
+        Enforces:
+        1. Rejects null bytes, absolute paths, drive letters, backslashes, and '..' traversal segments.
+        2. Strictly confines resolved path inside self.output_dir (no fallback to repo_root).
+        3. Blocks symlinks escaping output_dir and sensitive secret/config filenames.
+        """
+        if not relative_path or not isinstance(relative_path, str):
+            return None
+        if "\x00" in relative_path:
+            return None
+        if run_id is not None:
+            if not isinstance(run_id, str) or not run_id.strip():
+                return None
+            if "\x00" in run_id or "\\" in run_id or "/" in run_id or ".." in run_id or ":" in run_id:
+                return None
+
+        cleaned_rel = relative_path.strip()
+        # Reject UNC paths (\\server\share) and leading separators before normalizing Windows relative separators
+        if not cleaned_rel or cleaned_rel.startswith(("/", "\\")) or ":" in cleaned_rel:
+            return None
+        norm_rel = cleaned_rel.replace("\\", "/")
+        if norm_rel.startswith("/") or any(seg == ".." for seg in norm_rel.split("/")):
+            return None
+
+        rel = Path(norm_rel)
+        if rel.is_absolute() or ".." in rel.parts:
+            return None
 
         out_resolved = self.output_dir.resolve()
-        repo_resolved = self.repo_root.resolve()
-        # Verify target is contained within output_dir or repo_root
+        candidate = (out_resolved / run_id / rel) if run_id else (out_resolved / rel)
         try:
-            target.relative_to(out_resolved)
-        except ValueError:
-            try:
-                target.relative_to(repo_resolved)
-            except ValueError:
-                return None
+            target = candidate.resolve()
+        except OSError:
+            return None
+
+        # Strictly confine to output_dir ONLY (no repo_root fallback)
+        if not target.is_relative_to(out_resolved):
+            return None
+
+        # Reject sensitive/protected filenames even if somehow present under output_dir
+        rel_inside = target.relative_to(out_resolved).as_posix().lower()
+        name_lower = target.name.lower()
+        if (
+            name_lower == ".env"
+            or name_lower.startswith(".env.")
+            or rel_inside == ".git"
+            or rel_inside.startswith(".git/")
+            or "/.git/" in rel_inside
+            or name_lower.endswith(".key")
+            or name_lower.endswith(".pem")
+            or "secret" in name_lower
+            or "credential" in name_lower
+        ):
+            return None
 
         if not target.is_file():
             return None
@@ -1076,10 +1147,10 @@ class CompanyService:
 
         ceo_reply = None
         if sender_role == "owner":
-            # Milestone STEP 3: Chat endpoint invokes strictly the CEO agent via AntigravityRuntime
+            # Milestone STEP 3 + Stage 0B-polish (DEF-006): CEO executes under enforced read-only hook policy
             agent_to_invoke = "ceo"
             try:
-                exec_result = self.runtime.execute(agent=agent_to_invoke, prompt=text)
+                exec_result = self._execute_readonly_agent(agent_name=agent_to_invoke, prompt=text)
                 if exec_result.success and exec_result.stdout and exec_result.stdout.strip():
                     ceo_text = exec_result.stdout.strip()
                 elif exec_result.timed_out:
@@ -1169,7 +1240,7 @@ class CompanyService:
             raise ValueError("Founder request must not be empty.")
 
         prompt = build_task_proposal_prompt(text)
-        result = self.runtime.execute(agent="ceo", prompt=prompt)
+        result = self._execute_readonly_agent(agent_name="ceo", prompt=prompt)
 
         if not result.success:
             logger.warning(
@@ -1249,6 +1320,102 @@ class CompanyService:
     # Specialist Task Execution (STEP 6B & STEP 7)
     # --------------------------------------------------------------------------
 
+    def create_isolated_readonly_workspace(self, agent_name: str) -> Path:
+        """Create an isolated disposable workspace with a strict read-only PreToolUse hook.
+
+        Used to prevent read-only roles (ceo, product, research, ux, marketing, qa)
+        from mutating JesterAICompany or any target repository when executed with live agy.
+        """
+        ro_root = (self.output_dir / "readonly_workspaces" / f"{agent_name}_{uuid.uuid4().hex[:8]}").resolve()
+        ro_root.mkdir(parents=True, exist_ok=True)
+        source_agent_md = self.repo_root / ".agents" / "agents" / agent_name / "agent.md"
+        if not source_agent_md.is_file():
+            source_agent_md = Path(__file__).resolve().parent.parent / ".agents" / "agents" / agent_name / "agent.md"
+        if source_agent_md.is_file():
+            dest_agent_md = ro_root / ".agents" / "agents" / agent_name / "agent.md"
+            dest_agent_md.parent.mkdir(parents=True, exist_ok=True)
+            dest_agent_md.write_text(source_agent_md.read_text(encoding="utf-8"), encoding="utf-8")
+        install_readonly_policy_hook(ro_root, protect_company_control=True)
+        return ro_root
+
+    def _runtime_supports_isolation_kwargs(self) -> bool:
+        """Return True if self.runtime.execute accepts workspace_dir and env kwargs."""
+        import inspect
+        try:
+            sig = inspect.signature(self.runtime.execute)
+            params = sig.parameters
+            has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+            return has_var_kw or ("workspace_dir" in params and "env" in params)
+        except (TypeError, ValueError):
+            return isinstance(self.runtime, AntigravityRuntime)
+
+    def _execute_readonly_agent(
+        self,
+        agent_name: str,
+        prompt: str,
+        timeout: Optional[float] = None,
+        workspace_dir: Optional[Path] = None,
+        env: Optional[Dict[str, str]] = None,
+    ) -> Any:
+        """Execute a read-only agent (ceo, product, research, ux, marketing, qa) under an enforced hook policy.
+
+        - When `workspace_dir` is None and runtime supports isolation kwargs (always True for
+          real `AntigravityRuntime` and standard subclasses), provisions an isolated disposable
+          read-only workspace with `install_readonly_policy_hook` + sanitized env and removes it
+          in `finally:`.
+        - Never falls back silently when executing the real `AntigravityRuntime.execute`.
+        - Preserves compatibility with minimal unit-test stubs whose monkeypatched `execute(...)`
+          signature predates `workspace_dir`/`env`.
+        """
+        import shutil
+
+        is_real_runtime_exec = (
+            type(self.runtime) is AntigravityRuntime
+            and "execute" not in getattr(self.runtime, "__dict__", {})
+        )
+        supports_iso = self._runtime_supports_isolation_kwargs()
+
+        ephemeral_ro_ws: Optional[Path] = None
+        effective_workspace = workspace_dir
+        effective_env = env
+
+        if effective_workspace is None and (is_real_runtime_exec or supports_iso):
+            ephemeral_ro_ws = self.create_isolated_readonly_workspace(agent_name)
+            effective_workspace = ephemeral_ro_ws
+            effective_env = effective_env or sanitize_execution_environment()
+
+        try:
+            if effective_workspace is not None or effective_env is not None:
+                try:
+                    return self.runtime.execute(
+                        agent=agent_name,
+                        prompt=prompt,
+                        timeout=timeout,
+                        workspace_dir=effective_workspace,
+                        env=effective_env,
+                    )
+                except TypeError as exc:
+                    if is_real_runtime_exec or workspace_dir is not None or env is not None:
+                        raise ExecutionError(
+                            f"Runtime '{type(self.runtime).__name__}' does not support required isolation parameters (workspace_dir, env): {exc}"
+                        ) from exc
+                    try:
+                        if timeout is not None:
+                            return self.runtime.execute(agent=agent_name, prompt=prompt, timeout=timeout)
+                        return self.runtime.execute(agent=agent_name, prompt=prompt)
+                    except TypeError:
+                        return self.runtime.execute(agent=agent_name, prompt=prompt)
+
+            try:
+                if timeout is not None:
+                    return self.runtime.execute(agent=agent_name, prompt=prompt, timeout=timeout)
+                return self.runtime.execute(agent=agent_name, prompt=prompt)
+            except TypeError:
+                return self.runtime.execute(agent=agent_name, prompt=prompt)
+        finally:
+            if ephemeral_ro_ws is not None:
+                shutil.rmtree(ephemeral_ro_ws, ignore_errors=True)
+
     def _execute_specialist_task(
         self,
         task: Task,
@@ -1259,43 +1426,47 @@ class CompanyService:
         workspace_dir: Optional[Path] = None,
         env: Optional[Dict[str, str]] = None,
     ) -> TaskRun:
-        """Internal generic specialist execution mechanism (STEP 7).
+        """Internal generic specialist execution mechanism (STEP 7 + Stage 0B-polish).
 
-        Executes the lifecycle mechanics for a specialist task without
-        knowing role-specific semantics:
-        - Transitions TaskRun to RUNNING.
-        - Invokes AntigravityRuntime for agent_name with prompt.
-        - Handles execution failure, timeout, and empty output safely.
-        - Applies the provided result_parser to parse & validate.
-        - Completes TaskRun (SUCCESS or FAILED) and Task (COMPLETED or FAILED).
-        - Persists validated structured result in Task.result.details.
+        Enforces read-only hook isolation for read-only specialist roles (product,
+        research, ux, marketing, qa, ceo) via `_execute_readonly_agent`, while allowing
+        explicitly provisioned planning/mutation workspaces (e.g., Developer Planning
+        worktree with `install_planning_policy_hook`) to keep their dedicated policy.
         """
         run = task.create_run()
         run.status = RunStatus.RUNNING.value
 
-        try:
-            exec_result = self.runtime.execute(
-                agent=agent_name,
+        if workspace_dir is None and agent_name in ("product", "research", "ux", "marketing", "qa", "ceo"):
+            exec_result = self._execute_readonly_agent(
+                agent_name=agent_name,
                 prompt=prompt,
                 timeout=timeout,
-                workspace_dir=workspace_dir,
+                workspace_dir=None,
                 env=env,
             )
-        except TypeError as exc:
-            # Fail closed: never silently drop required isolation parameters (workspace_dir, env).
-            if workspace_dir is not None or env is not None:
-                raise ExecutionError(
-                    f"Runtime '{type(self.runtime).__name__}' does not support required isolation parameters (workspace_dir, env): {exc}"
-                ) from exc
-            # If neither workspace_dir nor env was specified, support test doubles with legacy (agent, prompt, timeout) signature
+        else:
             try:
                 exec_result = self.runtime.execute(
                     agent=agent_name,
                     prompt=prompt,
                     timeout=timeout,
+                    workspace_dir=workspace_dir,
+                    env=env,
                 )
-            except TypeError:
-                raise exc
+            except TypeError as exc:
+                # Fail closed: never silently drop required isolation parameters (workspace_dir, env).
+                if workspace_dir is not None or env is not None:
+                    raise ExecutionError(
+                        f"Runtime '{type(self.runtime).__name__}' does not support required isolation parameters (workspace_dir, env): {exc}"
+                    ) from exc
+                try:
+                    exec_result = self.runtime.execute(
+                        agent=agent_name,
+                        prompt=prompt,
+                        timeout=timeout,
+                    )
+                except TypeError:
+                    raise exc
 
         # 1. Handle runtime failures
         if not exec_result.success:
@@ -2160,7 +2331,7 @@ class CompanyService:
         self,
         task_id: str,
         plan_artifact_id: str,
-        founder_approval_id: str,
+        founder_approval_id: str = "",
         approved_files_to_modify: Optional[List[str]] = None,
         approved_files_to_create: Optional[List[str]] = None,
         verification_actions: Optional[List[VerificationAction]] = None,
@@ -2172,11 +2343,12 @@ class CompanyService:
         project_id: Optional[str] = None,
         grant_id: Optional[str] = None,
         repo_root: Optional[Path] = None,
+        sandbox_token: Optional[SandboxExecutionToken] = None,
     ) -> ExecutionGrant:
         """Create and validate an immutable ExecutionGrant bound to verified company state (STEP 13B-1).
 
         Enforces:
-        1. Explicit founder approval id (no auto-approvals).
+        1. Explicit SandboxExecutionToken OR non-synthetic legacy founder_approval_id (no fabricated founder approvals).
         2. Task exists and is in registered state.
         3. Plan artifact exists in company state and was produced by 'developer'.
         4. Plan artifact is durable and has valid SHA-256 matching disk bytes.
@@ -2186,9 +2358,11 @@ class CompanyService:
         """
         import hashlib
 
-        # 1. Founder approval check (Requirement 4)
-        if not founder_approval_id or not str(founder_approval_id).strip():
-            raise MissingApprovalError("Cannot create ExecutionGrant: founder_approval_id must not be empty.")
+        # 1. Authority check (Stage 0B: SandboxExecutionToken OR explicit non-synthetic legacy approval)
+        if sandbox_token is None and (not founder_approval_id or not str(founder_approval_id).strip()):
+            raise MissingApprovalError(
+                "Cannot create ExecutionGrant: either sandbox_token or explicit founder_approval_id is required."
+            )
 
         # 2. Task lookup
         task = self.get_task(task_id, project_id=project_id)
@@ -2266,7 +2440,8 @@ class CompanyService:
             max_verification_actions=max_verification_actions,
             max_duration_seconds=max_duration_seconds,
             network_enabled=False,
-            founder_approval_id=str(founder_approval_id).strip(),
+            founder_approval_id="" if sandbox_token is not None else str(founder_approval_id).strip(),
+            sandbox_token=sandbox_token,
         )
 
         # Validate approved paths against protected and test policies upfront
@@ -2378,6 +2553,27 @@ class CompanyService:
         cleaned_up = False
 
         try:
+            # Stage 0B-polish: Verify SandboxExecutionToken scope/binding and atomically consume it
+            # single-use so it cannot be replayed across runs, workspaces, or operations.
+            if grant.sandbox_token is not None:
+                try:
+                    verify_and_consume_sandbox_token(
+                        grant.sandbox_token,
+                        worktree_root=session.worktree_path,
+                        real_repo_root=target_repo,
+                        registry=self.authority_registry,
+                        requested_files=list(grant.approved_files_to_modify) + list(grant.approved_files_to_create),
+                        task_id=grant.task_id,
+                        plan_artifact_id=grant.plan_artifact_id,
+                    )
+                except Exception as token_err:
+                    return BoundedDeveloperExecutionOutcome(
+                        grant_id=grant.grant_id,
+                        status=DeveloperMutationStatus.POLICY_DENIED.value,
+                        summary=f"SandboxExecutionToken verification failed: {token_err}",
+                        error=str(token_err),
+                    )
+
             # If initial patch is provided (e.g. during repair), apply it to worktree first
             if initial_patch_text:
                 try:
@@ -2956,19 +3152,15 @@ class CompanyService:
         lineage_metadata: Dict[str, Any],
         timeout: Optional[float] = None,
     ) -> TaskRun:
-        """Internal execution lifecycle for QA Agent inspection (STEP 14A)."""
+        """Internal execution lifecycle for QA Agent inspection (STEP 14A + Stage 0B-polish DEF-006)."""
         run = task.create_run()
         run.status = RunStatus.RUNNING.value
 
-        if timeout is not None:
-            exec_result = self.runtime.execute(
-                agent="qa",
-                prompt=prompt,
-                timeout=timeout,
-                workspace_dir=self.repo_root,
-            )
-        else:
-            exec_result = self.runtime.execute(agent="qa", prompt=prompt)
+        exec_result = self._execute_readonly_agent(
+            agent_name="qa",
+            prompt=prompt,
+            timeout=timeout,
+        )
 
         # 1. Handle runtime failures
         if not exec_result.success:
@@ -3366,7 +3558,15 @@ class CompanyService:
                     worktree_agent_md.parent.mkdir(parents=True, exist_ok=True)
                     worktree_agent_md.write_text(source_agent_md.read_text(encoding="utf-8"), encoding="utf-8")
 
-            # Execute QA Agent under read-only mode
+            # Stage 0B-polish (DEF-006): Enforce strict read-only PreToolUse hook inside
+            # the isolated verification worktree AFTER application-owned verification commands
+            # complete and BEFORE invoking the QA agent to evaluate the verdict.
+            install_readonly_policy_hook(
+                session.worktree_path,
+                protect_company_control=True,
+            )
+
+            # Execute QA Agent under enforced read-only hook mode
             exec_res = self.runtime.execute(
                 agent="qa",
                 prompt=prompt,
@@ -3473,6 +3673,8 @@ class CompanyService:
         allow_test_modifications: bool = False,
         timeout: Optional[float] = None,
         target_repo_root: Optional[Path] = None,
+        sandbox_run_id: Optional[str] = None,
+        sandbox_tokens: Optional[Dict[int, SandboxExecutionToken]] = None,
     ) -> DeveloperQARepairLoopResult:
         """Execute the Developer ↔ QA Controlled Repair Loop (STEP 15).
 
@@ -3619,12 +3821,27 @@ class CompanyService:
             if not base_commit:
                 base_commit = current_patch_art.metadata.get("base_commit_hash") if current_patch_art.metadata else None
             if not base_commit:
-                base_commit = resolve_repo_head_commit(self.repo_root)
+                base_commit = resolve_repo_head_commit(target_repo)
 
             # 4. Initialize grant baseline
             patch_meta = current_patch_art.metadata or {}
             if original_grant is None:
                 orig_mod = tuple(patch_meta.get("changed_files", []))
+                raw_meta_approval = str(patch_meta.get("founder_approval_id") or "").strip()
+                baseline_token: Optional[SandboxExecutionToken] = None
+                if not raw_meta_approval:
+                    baseline_token = issue_sandbox_execution_token(
+                        run_id=sandbox_run_id or f"repair_base_{task.id}",
+                        task_id=task.id,
+                        base_commit_hash=base_commit,
+                        plan_artifact_id=patch_meta.get("plan_artifact_id", original_plan_art.id),
+                        plan_sha256=patch_meta.get("plan_sha256", original_plan_art.sha256 or ""),
+                        approved_files_to_modify=orig_mod,
+                        approved_files_to_create=(),
+                        allow_test_modifications=allow_test_modifications,
+                        max_files_changed=max(len(orig_mod) + 5, 5),
+                        iteration=0,
+                    )
                 original_grant = ExecutionGrant(
                     grant_id=patch_meta.get("execution_grant_id", f"grant_{task.id}"),
                     task_id=task.id,
@@ -3640,7 +3857,8 @@ class CompanyService:
                     max_verification_actions=5,
                     max_duration_seconds=120,
                     network_enabled=False,
-                    founder_approval_id=patch_meta.get("founder_approval_id", "appr_base"),
+                    founder_approval_id="" if baseline_token is not None else raw_meta_approval,
+                    sandbox_token=baseline_token,
                 )
             elif original_grant.allow_test_modifications:
                 allow_test_modifications = True
@@ -3655,7 +3873,11 @@ class CompanyService:
             current_qa_report_art = current_qa_report_art
             current_patch_art = current_patch_art
             current_grant = original_grant
-            used_approval_ids: Set[str] = {original_grant.founder_approval_id}
+            used_approval_ids: Set[str] = (
+                {original_grant.founder_approval_id}
+                if original_grant.founder_approval_id
+                else set()
+            )
 
             attempts: List[RepairAttemptRecord] = []
             dev_planning_invocations = 0
@@ -3699,27 +3921,34 @@ class CompanyService:
                     final_qa_exec_id = current_qa_exec_art.id
                     break
 
-                # 6.2 Founder approval enforcement (Clarification 2)
-                approval_id = (founder_approvals or {}).get(iteration)
-                if not approval_id or not str(approval_id).strip():
-                    final_status = RepairWorkflowStatus.REPAIR_GRANT_REJECTED.value
-                    termination_reason = f"Repair iteration {iteration} rejected: missing legitimate founder approval."
-                    final_code_patch_id = current_patch_art.id
-                    final_qa_exec_id = current_qa_exec_art.id
-                    break
+                # 6.2 Sandbox / Approval Authority Check (Stage 0B: SandboxExecutionToken OR explicit non-synthetic legacy approval)
+                iter_sandbox_token: Optional[SandboxExecutionToken] = (sandbox_tokens or {}).get(iteration)
+                use_auto_sandbox = (iter_sandbox_token is not None) or bool(sandbox_run_id)
+                cleaned_approval_id = ""
+                if not use_auto_sandbox:
+                    approval_id = (founder_approvals or {}).get(iteration)
+                    if not approval_id or not str(approval_id).strip():
+                        final_status = RepairWorkflowStatus.REPAIR_GRANT_REJECTED.value
+                        termination_reason = (
+                            f"Repair iteration {iteration} rejected: missing legitimate founder approval "
+                            f"(or SandboxExecutionToken)."
+                        )
+                        final_code_patch_id = current_patch_art.id
+                        final_qa_exec_id = current_qa_exec_art.id
+                        break
 
-                cleaned_approval_id = str(approval_id).strip()
-                if cleaned_approval_id in used_approval_ids:
-                    final_status = RepairWorkflowStatus.REPAIR_GRANT_REJECTED.value
-                    termination_reason = (
-                        f"Repair iteration {iteration} rejected: reused founder approval '{cleaned_approval_id}'. "
-                        f"Each repair iteration requires a distinct, legitimate approval."
-                    )
-                    final_code_patch_id = current_patch_art.id
-                    final_qa_exec_id = current_qa_exec_art.id
-                    break
+                    cleaned_approval_id = str(approval_id).strip()
+                    if cleaned_approval_id in used_approval_ids:
+                        final_status = RepairWorkflowStatus.REPAIR_GRANT_REJECTED.value
+                        termination_reason = (
+                            f"Repair iteration {iteration} rejected: reused founder approval '{cleaned_approval_id}'. "
+                            f"Each repair iteration requires a distinct, legitimate approval."
+                        )
+                        final_code_patch_id = current_patch_art.id
+                        final_qa_exec_id = current_qa_exec_art.id
+                        break
 
-                used_approval_ids.add(cleaned_approval_id)
+                    used_approval_ids.add(cleaned_approval_id)
 
                 # 6.3 Construct typed DeveloperRepairTask
                 repair_id = f"repair_{task.id}_iter{iteration}"
@@ -3824,13 +4053,54 @@ class CompanyService:
                 plan_run = repair_plan_task.create_run()
                 plan_run.status = RunStatus.RUNNING.value
 
-                plan_exec_res = self.runtime.execute(
-                    agent="developer",
-                    prompt=repair_plan_prompt,
-                    timeout=timeout or 300.0,
-                    workspace_dir=self.repo_root,
-                    env=sanitize_execution_environment(),
+                # Stage 0B 2C: Execute Repair Planning in an isolated disposable worktree derived
+                # from target_repo (NEVER inside self.repo_root / JesterAICompany) with a read-only
+                # planning PreToolUse hook and post-execution diff verification.
+                is_target_main_repo = (target_repo == self.repo_root.resolve())
+                repair_plan_wt_manager = WorktreeManager(
+                    repo_root=target_repo,
+                    worktrees_dir=Path(self.output_dir) / "worktrees",
+                    protect_company_control=is_target_main_repo,
                 )
+                repair_plan_session = repair_plan_wt_manager.create_planning_worktree(
+                    base_commit_hash=base_commit,
+                    session_id=f"repair_plan_{task.id}_iter{iteration}_{uuid.uuid4().hex[:6]}",
+                )
+                company_repo_state_before = self._get_repo_working_tree_state(repo_path=self.repo_root)
+                try:
+                    wt_agent_md = repair_plan_session.worktree_path / ".agents" / "agents" / "developer" / "agent.md"
+                    if not wt_agent_md.exists():
+                        src_agent_md = self.repo_root / ".agents" / "agents" / "developer" / "agent.md"
+                        if src_agent_md.exists():
+                            wt_agent_md.parent.mkdir(parents=True, exist_ok=True)
+                            wt_agent_md.write_text(src_agent_md.read_text(encoding="utf-8"), encoding="utf-8")
+
+                    install_planning_policy_hook(
+                        repair_plan_session.worktree_path,
+                        protect_company_control=True,
+                    )
+
+                    plan_exec_res = self.runtime.execute(
+                        agent="developer",
+                        prompt=repair_plan_prompt,
+                        timeout=timeout or 300.0,
+                        workspace_dir=repair_plan_session.worktree_path,
+                        env=sanitize_execution_environment(),
+                    )
+
+                    plan_diff = repair_plan_session.capture_diff()
+                    if not plan_diff.is_empty:
+                        raise ExecutionError(
+                            f"Unauthorized mutation detected in repair planning worktree during iteration {iteration}: "
+                            f"changed_files={plan_diff.changed_files}"
+                        )
+                    company_repo_state_after = self._get_repo_working_tree_state(repo_path=self.repo_root)
+                    if company_repo_state_before != company_repo_state_after:
+                        raise ExecutionError(
+                            f"JesterAICompany repository mutation detected during repair planning iteration {iteration}!"
+                        )
+                finally:
+                    repair_plan_session.remove()
 
                 try:
                     repair_plan = parse_and_validate_developer_repair_plan(plan_exec_res.stdout)
@@ -3884,8 +4154,29 @@ class CompanyService:
                     filename=f"developer_repair_plan_v{iteration}.md",
                 )
 
-                # 6.5 Derive ExecutionGrant
+                # 6.5 Derive ExecutionGrant (with SandboxExecutionToken when sandbox-driven)
                 try:
+                    effective_iter_token = iter_sandbox_token
+                    if effective_iter_token is None and sandbox_run_id:
+                        proposed_mod = [f.path.replace("\\", "/").strip() for f in repair_plan.files_to_modify]
+                        proposed_create = [f.path.replace("\\", "/").strip() for f in repair_plan.files_to_create]
+                        cum_create = set(current_grant.approved_files_to_create) | set(proposed_create)
+                        cum_mod = set(current_grant.approved_files_to_modify) | {
+                            p for p in proposed_mod if p not in cum_create
+                        }
+                        effective_iter_token = issue_sandbox_execution_token(
+                            run_id=sandbox_run_id,
+                            task_id=task.id,
+                            base_commit_hash=base_commit,
+                            plan_artifact_id=plan_art.id,
+                            plan_sha256=plan_art.sha256 or "",
+                            approved_files_to_modify=sorted(cum_mod),
+                            approved_files_to_create=sorted(cum_create),
+                            allow_test_modifications=allow_test_modifications or current_grant.allow_test_modifications,
+                            max_files_changed=max(len(cum_mod) + len(cum_create), current_grant.max_files_changed, 5),
+                            max_duration_seconds=max(120, current_grant.max_duration_seconds),
+                            iteration=iteration,
+                        )
                     repair_grant = derive_repair_execution_grant(
                         plan=repair_plan,
                         previous_grant=current_grant,
@@ -3895,6 +4186,7 @@ class CompanyService:
                         task_id=task.id,
                         plan_artifact_id=plan_art.id,
                         plan_sha256=plan_art.sha256 or "",
+                        sandbox_token=effective_iter_token,
                     )
                 except Exception as grant_err:
                     final_status = RepairWorkflowStatus.REPAIR_GRANT_REJECTED.value
@@ -4294,6 +4586,243 @@ class CompanyService:
 
         return proposal
 
+    # --------------------------------------------------------------------------
+    # Three-Level Authority API (Stage 0B: FounderDecision & ProtectedOperationGrant)
+    # --------------------------------------------------------------------------
+
+    def issue_founder_session(self, actor: str = "Human Founder", ttl_seconds: int = 3600) -> str:
+        """Issue an active server-tracked authenticated founder session ID."""
+        return self.founder_authenticator.issue_session(actor=actor, ttl_seconds=ttl_seconds)
+
+    def record_founder_decision(
+        self,
+        *,
+        decision_type: FounderDecisionType | str,
+        run_id: str,
+        subject_artifact_id: str,
+        subject_sha256: str,
+        actor: str,
+        auth_session_id: str,
+        decision_payload: Optional[Dict[str, Any]] = None,
+        nonce: Optional[str] = None,
+    ) -> FounderDecision:
+        """Record a cryptographically session-bound FounderDecision with anti-replay nonce check.
+
+        Fail-closed: `auth_session_id` MUST be an active authenticated session registered
+        in `self.founder_authenticator` for `actor`; well-formed strings alone are rejected.
+        """
+        decision = create_authenticated_founder_decision(
+            decision_type=decision_type,
+            run_id=run_id,
+            subject_artifact_id=subject_artifact_id,
+            subject_sha256=subject_sha256,
+            actor=actor,
+            auth_session_id=auth_session_id,
+            decision_payload=decision_payload,
+            nonce=nonce,
+            authenticator=self.founder_authenticator,
+        )
+        self.authority_registry.assert_not_replayed(f"nonce:{decision.nonce}", kind="FounderDecision nonce")
+        self._founder_decisions[decision.decision_id] = decision
+        return decision
+
+    def authorize_protected_operation(
+        self,
+        *,
+        proposal_id: str,
+        founder_decision: Any,
+        operation_type: ProtectedOperationType | str = ProtectedOperationType.REAL_REPO_APPLY,
+        ttl_seconds: int = 900,
+    ) -> ProtectedOperationGrant:
+        """Derive a single-use ProtectedOperationGrant from a cryptographically verified FounderDecision."""
+        if not proposal_id or not proposal_id.strip():
+            raise ProposalMismatchError("proposal_id must not be empty.")
+        proposal = self.get_real_repo_apply_proposal(proposal_id.strip())
+        if not proposal:
+            raise ProposalMismatchError(f"Proposal '{proposal_id}' not found in registered proposals.")
+
+        if isinstance(founder_decision, FounderDecision):
+            self.authority_registry.assert_not_replayed(founder_decision.decision_id, kind="FounderDecision")
+            self.authority_registry.assert_not_replayed(f"nonce:{founder_decision.nonce}", kind="FounderDecision nonce")
+
+        grant = derive_protected_operation_grant(
+            decision=founder_decision,
+            operation_type=operation_type,
+            proposal_id=proposal.proposal_id,
+            proposal_sha256=proposal.proposal_sha256,
+            target_repository_root=proposal.target_repository_root,
+            target_branch=proposal.target_branch,
+            expected_head_hash=proposal.target_head_hash,
+            code_patch_artifact_id=proposal.code_patch_artifact_id,
+            code_patch_sha256=proposal.code_patch_sha256,
+            qa_execution_report_artifact_id=proposal.qa_execution_report_artifact_id,
+            qa_execution_report_sha256=proposal.qa_execution_report_sha256,
+            expected_changed_files=proposal.expected_changed_files,
+            authenticator=self.founder_authenticator,
+            ttl_seconds=ttl_seconds,
+        )
+        self._protected_operation_grants[grant.grant_id] = grant
+        return grant
+
+    def execute_protected_real_repo_apply(
+        self,
+        protected_grant: Any,
+        project_id: Optional[str] = None,
+    ) -> RealRepoApplyResult:
+        """Execute deterministic real repository apply authorized strictly by ProtectedOperationGrant."""
+        if isinstance(protected_grant, SandboxExecutionToken):
+            raise AuthorityTypeMismatchError(
+                "Privilege escalation blocked: SandboxExecutionToken cannot execute real repository apply."
+            )
+        if isinstance(protected_grant, FounderDecision):
+            raise AuthorityTypeMismatchError(
+                "Privilege confusion blocked: FounderDecision cannot directly execute real repository apply."
+            )
+        if not isinstance(protected_grant, ProtectedOperationGrant):
+            raise AuthorityTypeMismatchError(
+                f"Expected ProtectedOperationGrant, got {type(protected_grant).__name__}."
+            )
+
+        target_repo = Path(protected_grant.target_repository_root).resolve()
+        if not (target_repo / ".git").exists():
+            raise TargetRepositoryInvalidError(f"Target directory '{target_repo}' is not a valid Git repository.")
+
+        # Pre-lock fast verification (re-verified atomically inside RealRepoApplyLock + AuthorityRegistry lock below)
+        current_head = resolve_repo_head_commit(target_repo)
+        verify_protected_operation_grant(
+            protected_grant,
+            operation_type=ProtectedOperationType.REAL_REPO_APPLY,
+            target_repository_root=target_repo,
+            current_head_hash=current_head,
+            requested_files=protected_grant.expected_changed_files,
+            registry=self.authority_registry,
+            authenticator=self.founder_authenticator,
+        )
+
+        # Resolve patch bytes & verify SHA-256 + file scope before applying
+        patch_lineage = self.find_artifact(protected_grant.code_patch_artifact_id)
+        if patch_lineage:
+            patch_task, _, patch_art = patch_lineage
+            patch_file_path = _resolve_artifact_file_path(Path(self.output_dir), patch_art)
+            patch_bytes = patch_file_path.read_bytes()
+        else:
+            durable_patch = self.durable_storage.proposals_dir / protected_grant.proposal_id / "patch.diff"
+            if not durable_patch.is_file():
+                raise CandidateNotEligibleError(f"CODE_PATCH artifact '{protected_grant.code_patch_artifact_id}' not found.")
+            patch_bytes = durable_patch.read_bytes()
+            default_proj = list(self.company.projects.values())[0] if self.company.projects else None
+            proj_id = project_id or (default_proj.id if default_proj else "prj_default")
+            patch_task = Task(
+                id=f"task_apply_{protected_grant.proposal_id}",
+                project_id=proj_id,
+                title=f"Protected RealRepoApply for {protected_grant.proposal_id}",
+                goal="Execute authenticated ProtectedOperationGrant real repo apply",
+                required_roles=["developer"],
+            )
+            if default_proj and patch_task.id not in default_proj.tasks:
+                default_proj.add_task(patch_task)
+
+        actual_sha = hashlib.sha256(patch_bytes).hexdigest()
+        if actual_sha != protected_grant.code_patch_sha256:
+            raise CandidateNotEligibleError(
+                f"CODE_PATCH SHA mismatch: computed '{actual_sha}' != grant '{protected_grant.code_patch_sha256}'."
+            )
+        patch_text = patch_bytes.decode("utf-8")
+
+        # Parse touched files in diff to prevent unauthorized scope expansion inside patch body
+        diff_files: List[str] = []
+        for line in patch_text.splitlines():
+            if line.startswith("+++ b/"):
+                diff_files.append(line[6:].strip())
+        effective_requested_files = diff_files if diff_files else list(protected_grant.expected_changed_files)
+
+        start_time = datetime.now(timezone.utc)
+        locks_dir = Path(self.output_dir) / "locks"
+        lock = RealRepoApplyLock(locks_dir=locks_dir, repo_root=target_repo)
+        lock.acquire(protected_grant.proposal_id)
+
+        try:
+            is_clean, dirty_stdout = verify_target_repo_cleanliness(target_repo, allow_untracked=False)
+            if not is_clean:
+                raise TargetRepositoryDirtyError(
+                    f"Target repository '{target_repo}' is dirty before protected apply:\n{dirty_stdout}"
+                )
+
+            locked_head = resolve_repo_head_commit(target_repo)
+            if locked_head != protected_grant.expected_head_hash:
+                raise StaleRepositoryHeadError(
+                    f"TOCTOU violation: repository HEAD changed from approved '{protected_grant.expected_head_hash}' "
+                    f"to '{locked_head}' before protected apply."
+                )
+
+            # Re-verify grant & replay state under RealRepoApplyLock BEFORE mutating repository
+            verify_protected_operation_grant(
+                protected_grant,
+                operation_type=ProtectedOperationType.REAL_REPO_APPLY,
+                target_repository_root=target_repo,
+                current_head_hash=locked_head,
+                requested_files=effective_requested_files,
+                registry=self.authority_registry,
+                authenticator=self.founder_authenticator,
+            )
+
+            precheck_code_patch_applicability(target_repo, patch_text)
+            try:
+                apply_code_patch_to_real_repo(target_repo, patch_text)
+            except PatchApplyFailedError:
+                rollback_real_repo_apply(target_repo, patch_text, protected_grant.expected_changed_files, allow_untracked=False)
+                raise
+
+            try:
+                actual_files = validate_real_repo_diff(target_repo, protected_grant.expected_changed_files, allow_untracked=False)
+            except PostApplyDiffMismatchError:
+                rollback_real_repo_apply(target_repo, patch_text, protected_grant.expected_changed_files, allow_untracked=False)
+                raise
+
+            # Atomically verify + consume grant, decision, and nonce inside ONE dual-locked transaction
+            decision_obj = self._founder_decisions.get(protected_grant.founder_decision_id)
+            extra_keys = [f"nonce:{decision_obj.nonce}"] if decision_obj is not None else []
+            verify_and_consume_protected_operation_grant(
+                protected_grant,
+                operation_type=ProtectedOperationType.REAL_REPO_APPLY,
+                target_repository_root=target_repo,
+                current_head_hash=locked_head,
+                requested_files=actual_files,
+                registry=self.authority_registry,
+                authenticator=self.founder_authenticator,
+                extra_keys=extra_keys,
+            )
+
+            end_time = datetime.now(timezone.utc)
+            duration_ms = (end_time - start_time).total_seconds() * 1000.0
+            result = RealRepoApplyResult(
+                grant_id=protected_grant.grant_id,
+                proposal_id=protected_grant.proposal_id,
+                target_repository_root=protected_grant.target_repository_root,
+                status=RealRepoApplyStatus.APPLIED_SUCCESSFULLY.value,
+                summary=f"Successfully applied CODE_PATCH '{protected_grant.code_patch_artifact_id}' via ProtectedOperationGrant.",
+                pre_apply_head=protected_grant.expected_head_hash,
+                post_apply_head=locked_head,
+                expected_files=list(protected_grant.expected_changed_files),
+                actual_files=actual_files,
+                duration_ms=duration_ms,
+            )
+
+            apply_run = patch_task.create_run()
+            apply_run.status = RunStatus.SUCCESS.value
+            report_art = materialize_real_repo_apply_report_artifact(
+                base_output_dir=Path(self.output_dir),
+                task=patch_task,
+                run=apply_run,
+                result=result,
+                filename="real_repo_apply_report.md",
+            )
+            apply_run.complete(status=RunStatus.SUCCESS.value)
+            result.report_artifact_id = report_art.id
+            return result
+        finally:
+            lock.release()
+
     def approve_real_repo_apply(
         self,
         proposal_id: str,
@@ -4305,6 +4834,11 @@ class CompanyService:
 
         PERFORMS ZERO REPOSITORY MUTATION.
         """
+        if isinstance(founder_approval_id, (SandboxExecutionToken, FounderDecision)):
+            raise AuthorityTypeMismatchError(
+                f"approve_real_repo_apply cannot accept {type(founder_approval_id).__name__} as founder_approval_id; "
+                "use authorize_protected_operation() with FounderDecision."
+            )
         if not proposal_id or not proposal_id.strip():
             raise ProposalMismatchError("proposal_id must not be empty.")
 
@@ -4312,7 +4846,7 @@ class CompanyService:
         if not proposal:
             raise ProposalMismatchError(f"Proposal '{proposal_id}' not found in registered proposals.")
 
-        if not founder_approval_id or not founder_approval_id.strip():
+        if not founder_approval_id or not str(founder_approval_id).strip():
             raise MissingApprovalError("Explicit founder_approval_id is mandatory to approve real repo apply.")
 
         # Snapshot working tree state before
@@ -4353,7 +4887,7 @@ class CompanyService:
 
     def execute_real_repo_apply(
         self,
-        grant_id: str,
+        grant_id: Any,
         project_id: Optional[str] = None,
     ) -> RealRepoApplyResult:
         """Execute transactional application of approved CODE_PATCH to real repository (STEP 16).
@@ -4368,10 +4902,26 @@ class CompanyService:
         7. Non-destructive rollback: reverse patch apply restores clean state if validation fails.
         8. Durable receipt: materializes REAL_REPO_APPLY_REPORT artifact.
         """
-        if not grant_id or not grant_id.strip():
+        # Stage 0B 2A: Strict authority type enforcement
+        if isinstance(grant_id, ProtectedOperationGrant):
+            return self.execute_protected_real_repo_apply(grant_id, project_id=project_id)
+        if isinstance(grant_id, (SandboxExecutionToken, FounderDecision)):
+            raise AuthorityTypeMismatchError(
+                f"Privilege escalation/confusion blocked: {type(grant_id).__name__} cannot execute real repository apply."
+            )
+        if not grant_id or not isinstance(grant_id, str) or not grant_id.strip():
             raise ApprovalInvalidError("grant_id must not be empty.")
 
         clean_grant_id = grant_id.strip()
+        if clean_grant_id.lower().startswith("sbx_") or clean_grant_id.lower().startswith("fdec_"):
+            raise AuthorityTypeMismatchError(
+                f"Privilege escalation/confusion blocked: '{clean_grant_id}' is not a real repository apply grant."
+            )
+        if clean_grant_id in self._protected_operation_grants:
+            return self.execute_protected_real_repo_apply(
+                self._protected_operation_grants[clean_grant_id],
+                project_id=project_id,
+            )
         grant = self.get_real_repo_apply_grant(clean_grant_id)
         if not grant:
             raise ApprovalInvalidError(f"Grant '{grant_id}' not found in registered grants.")
@@ -4605,8 +5155,8 @@ class CompanyService:
             project_knowledge=project_knowledge,
             team_selection=team_selection,
         )
-        exec_result = self.runtime.execute(
-            agent="ceo",
+        exec_result = self._execute_readonly_agent(
+            agent_name="ceo",
             prompt=prompt,
             timeout=timeout,
         )
@@ -4732,8 +5282,8 @@ class CompanyService:
                 max_investigations=run.max_investigations,
             )
             try:
-                exec_result = self.runtime.execute(
-                    agent="ceo",
+                exec_result = self._execute_readonly_agent(
+                    agent_name="ceo",
                     prompt=prompt,
                     timeout=60.0,
                 )
@@ -4771,8 +5321,8 @@ class CompanyService:
                 founder_clarifications=run.founder_clarifications,
             )
             try:
-                exec_result = self.runtime.execute(
-                    agent="ceo",
+                exec_result = self._execute_readonly_agent(
+                    agent_name="ceo",
                     prompt=prompt,
                     timeout=60.0,
                 )

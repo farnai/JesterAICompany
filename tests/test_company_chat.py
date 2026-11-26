@@ -76,22 +76,31 @@ def chat_server() -> Generator[dict, None, None]:
         time.sleep(0.05)
 
         base_url = f"http://{host}:{port}"
+        _CHAT_TOKENS[base_url] = server.auth_token
 
         yield {
             "server": server,
             "service": service,
             "mock_runtime": mock_runtime,
             "base_url": base_url,
+            "auth_token": server.auth_token,
         }
 
+        _CHAT_TOKENS.pop(base_url, None)
         server.shutdown()
         server.server_close()
+
+
+_CHAT_TOKENS: dict[str, str] = {}
 
 
 def api_request(base_url: str, path: str, method: str = "GET", data: dict = None) -> tuple[int, dict | str]:
     url = f"{base_url}{path}"
     req_data = json.dumps(data).encode("utf-8") if data is not None else None
-    headers = {"Content-Type": "application/json"} if req_data is not None else {}
+    headers = {"Content-Type": "application/json"} if (req_data is not None or method == "POST") else {}
+    token = _CHAT_TOKENS.get(base_url)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
 
     req = urllib.request.Request(url, data=req_data, headers=headers, method=method)
     try:

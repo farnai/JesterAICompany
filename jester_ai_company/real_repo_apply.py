@@ -35,6 +35,13 @@ import tempfile
 from typing import Any, Dict, List, Optional, Set, Tuple
 import uuid
 
+from .authority import (
+    AuthorityTypeMismatchError,
+    FounderDecision,
+    ProtectedOperationGrant,
+    SandboxExecutionToken,
+    is_synthetic_approval_id,
+)
 from .core import (
     Artifact,
     ArtifactType,
@@ -834,8 +841,27 @@ def derive_real_repo_apply_grant(
     repository_id: Optional[str] = None,
 ) -> RealRepoApplyGrant:
     """Derive a single-use mutation grant bound to the approved proposal. ZERO REPO MUTATION."""
+    if isinstance(founder_approval_id, SandboxExecutionToken):
+        raise AuthorityTypeMismatchError(
+            "Privilege escalation blocked: SandboxExecutionToken cannot authorize RealRepoApplyGrant."
+        )
+    if isinstance(founder_approval_id, FounderDecision):
+        raise AuthorityTypeMismatchError(
+            "Privilege confusion blocked: use derive_protected_operation_grant() with FounderDecision."
+        )
     if not founder_approval_id or not isinstance(founder_approval_id, str) or not founder_approval_id.strip():
         raise MissingApprovalError("Cannot derive RealRepoApplyGrant without explicit founder_approval_id.")
+
+    # Stage 0A/0B containment: block sandbox tokens and all synthetic/auto-generated approval prefixes
+    cleaned_check = founder_approval_id.strip().lower()
+    if cleaned_check.startswith("sbx_"):
+        raise AuthorityTypeMismatchError(
+            f"Privilege escalation blocked: SandboxExecutionToken id '{founder_approval_id}' cannot authorize RealRepoApplyGrant."
+        )
+    if is_synthetic_approval_id(founder_approval_id):
+        raise MissingApprovalError(
+            f"Rejected synthetic or auto-generated approval identifier '{founder_approval_id}' (DEF-004 containment)."
+        )
 
     # Cross-project mismatch protection
     effective_project_id = proposal.project_id or project_id
